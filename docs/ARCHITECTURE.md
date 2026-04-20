@@ -4,18 +4,19 @@ _Last updated: 2026-04-20_
 
 ## 1) Purpose and product goals
 
-This system collects public feedback about Codex/Copilot usage, classifies issues, and turns raw chatter into actionable engineering signals.
+This system collects public feedback about Codex/Copilot usage, enriches each report with sentiment/impact/category signals, and now adds an LLM-assisted triage layer with human review.
 
 Primary goals:
 
-1. **Detect what needs attention now** (short-term issue spikes, urgency ranking).
-2. **Preserve historical signal quality** (trends, category breakdown, sentiment drift).
-3. **Minimize noisy ingestion** (filter low-value/non-product matches).
-4. **Support fast iteration** (clear extension points for sources, classifiers, and UI modules).
+1. **Detect what needs attention now** (issue spikes, urgency ranking).
+2. **Preserve historical signal quality** (trend stability and classification quality over time).
+3. **Guarantee analyst traceability** (every insight should link to source feedback on the web).
+4. **Support reviewer-in-the-loop governance** (AI suggestion first, human authority final).
+5. **Enable fast iteration** (clear extension points for sources, classifiers, and UI modules).
 
 ---
 
-## 2) High-level architecture
+## 2) End-to-end architecture
 
 ```text
 External Sources
@@ -28,7 +29,7 @@ Scraper + Enrichment Layer (lib/scrapers/index.ts)
   ├─ relevance filtering (Codex-focused)
   ├─ normalization + low-value filtering
   ├─ sentiment scoring
-  ├─ weighted category classification
+  ├─ weighted category classification (heuristic)
   └─ deduplication
          │
          ▼
@@ -36,55 +37,69 @@ Supabase (Postgres)
   ├─ issues
   ├─ categories
   ├─ sources
-  └─ scrape_logs
+  ├─ scrape_logs
+  └─ bug_report_classifications   <-- new LLM triage store
          │
-         ▼
-Next.js API Layer
-  ├─ /api/issues  (query/filter issue rows)
-  ├─ /api/stats   (dashboard aggregates + realtime insights)
-  └─ /api/scrape  (trigger scraper run)
+         ├─ API: analytics/query layer
+         │   ├─ /api/issues
+         │   ├─ /api/stats
+         │   └─ /api/scrape
+         │
+         └─ API: classifier/reviewer layer
+             ├─ /api/classify
+             ├─ /api/classifications
+             ├─ /api/classifications/stats
+             └─ /api/classifications/:id (PATCH)
          │
          ▼
 Dashboard UI (app/page.tsx)
-  ├─ KPI cards
-  ├─ charts (sentiment/source/category/trends)
-  ├─ priority matrix
-  ├─ realtime insights panel
-  └─ issues table
+  ├─ KPI cards + trend/source/sentiment/category visuals
+  ├─ realtime urgency insights
+  ├─ issues table (source links)
+  └─ classification triage panel (traceability + reviewer workflow)
 ```
 
 ---
 
-## 3) Core runtime flows
+## 3) Runtime flows
 
-## 3.1 Ingestion flow
+### 3.1 Ingestion + enrichment flow
 
-1. A scrape is triggered manually (`/api/scrape`) or via cron route.
-2. Scrapers fetch raw records from each provider.
-3. Each candidate is cleaned and filtered:
-   - whitespace normalization,
-   - Codex relevance check,
-   - low-value content exclusion (`[deleted]`, tiny titles, etc.).
-4. Remaining records are enriched:
-   - sentiment,
-   - category assignment via weighted keyword scoring,
-   - impact score.
+1. A scrape is triggered manually (`/api/scrape`) or by cron route.
+2. Source adapters fetch raw records.
+3. Candidates are cleaned and filtered (normalize whitespace, relevance, low-value exclusions).
+4. Remaining records are enriched with sentiment, heuristic category, and impact score.
 5. Records are deduped and upserted to `issues` on `(source_id, external_id)`.
-6. Scrape run status is recorded in `scrape_logs`.
+6. Run metadata is written to `scrape_logs`.
 
-## 3.2 Analytics flow
+### 3.2 LLM classification flow (new)
 
-1. Dashboard loads `/api/stats` every minute.
-2. API computes aggregate metrics:
-   - totals,
-   - sentiment/source/category breakdown,
-   - 30-day trend,
-   - priority matrix data.
-3. API computes **realtime insights**:
-   - recent 72h vs prior 72h category windows,
-   - urgency score from volume + momentum + impact + negative ratio,
-   - top issue samples for each hot category.
-4. UI renders charts + ranked "what to fix now" guidance.
+1. Client/backend posts report payload to `/api/classify`.
+2. Server builds bounded context (`report_text`, env, repro, transcript/tool/log tails).
+3. OpenAI Responses API is called with strict JSON-schema response format (`temperature: 0.2`).
+4. If `confidence < 0.7`, route retries once on larger model.
+5. Boundary validation runs:
+   - enum validation,
+   - `evidence_quotes` substring validation against request payload,
+   - hard review rules (critical/safety/low confidence/sensitive mentions).
+6. Output is returned and optionally stored in `bug_report_classifications` as normalized fields + raw JSON.
+
+### 3.3 Reviewer flow (new)
+
+1. Dashboard fetches queue rows from `GET /api/classifications`.
+2. Dashboard fetches queue KPIs from `GET /api/classifications/stats`.
+3. Reviewer selects a row, checks source-link traceability, and updates status/category/severity/notes.
+4. Dashboard sends patch to `PATCH /api/classifications/:id`.
+5. Record is updated with reviewer metadata (`reviewed_by`, `reviewed_at`, `reviewer_notes`).
+
+### 3.4 Insight traceability flow (new)
+
+From any triage row, the analyst can verify:
+- **Classification context** (`summary`, `category`, `severity`, confidence),
+- **Sentiment linkage** (`source_issue_sentiment`),
+- **Primary evidence path** (source issue title + URL back to external feedback).
+
+This enables end-to-end provenance from dashboard insight → classifier decision → original web feedback.
 
 ---
 
@@ -93,16 +108,15 @@ Dashboard UI (app/page.tsx)
 ### 4.1 `lib/scrapers/index.ts`
 
 Responsibilities:
-- Source-specific fetching (Reddit/HN/GitHub).
-- Cross-source normalization, relevance filtering, and dedupe.
-- Lightweight NLP heuristics (sentiment + category scoring).
-- Impact score derivation.
+- Provider fetch + normalization for Reddit/HN/GitHub.
+- Relevance filtering and de-noising.
+- Heuristic sentiment/category/impact enrichment.
+- Deduplication before persistence.
 
 Extension guidance:
 - Add new providers as isolated `scrapeX()` functions.
-- Reuse shared helpers (`normalizeWhitespace`, relevance filters, classifier helpers).
-- Keep provider-specific query syntax local to each scraper.
-- Prefer explicit query grouping to avoid boolean precedence bugs.
+- Reuse shared helpers (`normalizeWhitespace`, relevance filters).
+- Keep query syntax provider-local.
 
 ### 4.2 `app/api/classify/route.ts`
 
@@ -119,156 +133,190 @@ Extension guidance:
 ### 4.2 `app/api/stats/route.ts`
 
 Responsibilities:
-- Aggregate dashboard metrics from `issues`.
-- Build realtime urgency-ranked category insights.
-- Normalize Supabase relation payload shape (`firstRelation`).
+- Aggregates KPI + trend + realtime urgency metrics from `issues`.
+- Computes urgency score from volume/momentum/impact/negative ratio.
 
 Extension guidance:
-- Keep response backward-compatible for existing UI consumers.
-- For heavy logic growth, extract analytics helpers to `lib/analytics/*`.
-- Add versioning (`/api/stats?v=2`) before breaking response schema.
+- Keep response backward-compatible for existing UI cards/charts.
+- Extract heavy math to `lib/analytics/*` if logic grows.
 
-### 4.3 `hooks/use-dashboard-data.ts`
+### 4.3 `app/api/classify/route.ts`
 
 Responsibilities:
-- Typed API contracts for dashboard consumers.
-- SWR refresh cadence and stale data handling.
+- Validates input contract for classification payload.
+- Constructs bounded user turn for the model.
+- Calls OpenAI with strict schema and retry-on-low-confidence path.
+- Enforces boundary constraints and human-review gates.
+- Writes normalized + raw records with source traceability metadata.
 
 Extension guidance:
-- Treat this as source-of-truth contract for UI typing.
-- If response grows significantly, split into feature-specific hooks.
+- Keep schema versions explicit at API boundary.
+- Track prompt/schema/model versions per record for replayability.
 
-### 4.4 `components/dashboard/*`
+### 4.4 `app/api/classifications/*`
 
 Responsibilities:
-- Visualize metrics and enable fast triage.
-- Keep components presentational; push heavy transforms server-side.
+- Queue retrieval (`GET /api/classifications`) with filter support.
+- Queue KPI aggregation (`GET /api/classifications/stats`) including traceability coverage.
+- Reviewer updates (`PATCH /api/classifications/:id`) with audit metadata timestamps.
 
 Extension guidance:
-- New insight modules should accept already-shaped data.
-- Avoid embedding fetch logic inside visualization components.
+- Add pagination + cursor strategy before queue size grows.
+- Add reviewer override delta logging for training set curation.
+
+### 4.5 `hooks/use-dashboard-data.ts`
+
+Responsibilities:
+- Typed contracts for dashboard stats/issues/classification queue.
+- SWR refresh cadence and refresh orchestration.
+
+Extension guidance:
+- Split into feature hooks when payload surface area expands.
+- Avoid client-side schema drift by co-locating API contract typings.
+
+### 4.6 `components/dashboard/classification-triage.tsx`
+
+Responsibilities:
+- Display triage queue rows and traceability linkouts.
+- Surface confidence/severity/sentiment/review flags.
+- Capture reviewer overrides and notes.
+
+Extension guidance:
+- Keep mutations explicit (no implicit auto-approve).
+- Add optimistic update only after conflict strategy is defined.
 
 ---
 
 ## 5) Data model summary
 
-Key tables:
+### 5.1 Existing operational tables
 
-- `sources`: configured data origins.
-- `categories`: taxonomy for auto-classification.
-- `issues`: canonical enriched issue records.
-- `scrape_logs`: run status, counts, failures.
+- `sources`: source registry.
+- `categories`: canonical heuristic categories.
+- `issues`: normalized issue facts from public sources.
+- `scrape_logs`: ingestion run metadata and failures.
 
-Important constraints:
+### 5.2 New triage table
 
-- Unique issue key: `(source_id, external_id)`.
-- `impact_score` bounded [1..10].
-- `sentiment` constrained to positive/negative/neutral.
+- `bug_report_classifications`:
+  - LLM output fields (`category`, `severity`, `confidence`, etc.),
+  - raw payload (`raw_json`),
+  - reviewer workflow fields (`status`, `reviewed_by`, `reviewed_at`, `reviewer_notes`),
+  - traceability fields (`source_issue_id`, `source_issue_url`, `source_issue_title`, `source_issue_sentiment`),
+  - model metadata (`model_used`, `retried_with_large_model`).
+
+### 5.3 Key indexes and constraints
+
+- Existing unique key for issues: `(source_id, external_id)`.
+- Triage index: `(category, severity, needs_human_review, created_at DESC)`.
+- Traceability index: `(source_issue_id, created_at DESC)`.
 
 ---
 
-## 6) Classification and scoring strategy
+## 6) Analytics and triage quality model
 
-## 6.1 Category assignment
+### 6.1 Heuristic insight scoring (issues table)
 
-Current model: weighted phrase matching with optional whole-word mode.
-
-Why this exists:
-- Improves over first-match substring logic.
-- Allows stronger phrases to override weak incidental words.
-- Supports category-specific weighting without model hosting overhead.
-
-Future improvements:
-1. Add confidence output (top-1 minus top-2 margin).
-2. Route low-confidence to `other` or human review bucket.
-3. Maintain evaluation set for precision/recall per category.
-
-## 6.2 Realtime urgency scoring
-
-Current score blends:
+Urgency score currently blends:
 - recent volume,
-- positive momentum (vs prior 72h),
+- positive momentum vs prior 72h,
 - average impact,
 - negative sentiment ratio.
 
-Future improvements:
-1. Add source diversity term (same issue across multiple sources).
-2. Add time decay inside 72h window (newer issues weighted higher).
-3. Add debiasing for repeated duplicates and repost chains.
+### 6.2 LLM triage quality controls (classification table)
+
+Current controls:
+- strict JSON schema output,
+- enum boundary validation,
+- substring evidence guard,
+- mandatory human-review triggers for risky conditions.
+
+### 6.3 Analyst-grade traceability requirements
+
+For each reviewer-visible classification, target:
+1. Source URL present (linkable back to external feedback).
+2. Source sentiment populated.
+3. Evidence quote list retained.
+4. Reviewer action audit fields populated once adjudicated.
 
 ---
 
 ## 7) Operational playbook
 
-### 7.1 When data quality drops
+### 7.1 When classifier quality drops
 
 Checklist:
-1. Inspect `scrape_logs` for source-specific failures.
-2. Validate source query changes (API syntax/rate-limit behavior).
-3. Sample newest records for non-product noise leakage.
-4. Re-tune relevance filters and category weights.
+1. Compare reviewer overrides by category/severity.
+2. Audit low-confidence distribution and retry rates.
+3. Validate evidence-quote rejection rate and root causes.
+4. Sample false positives where source URL is missing.
 
-### 7.2 When realtime insights feel inaccurate
+### 7.2 When traceability coverage drops
 
 Checklist:
-1. Inspect category window counts (now vs previous).
-2. Verify negative ratio and impact computation inputs.
-3. Check for dedupe misses causing inflated volume.
-4. Compare top issue links against category label quality.
+1. Monitor `% rows with source_issue_url`.
+2. Validate mapping from ingest `issues` rows into classify requests.
+3. Backfill `source_issue_*` fields for legacy rows where possible.
+4. Block “authoritative” status transitions without source URL in strict mode.
 
-### 7.3 Key health metrics to track
+### 7.3 Core health metrics
 
 - scrape success rate by source,
-- ingestion precision (manual sampled relevance %),
-- category precision/recall on labeled set,
-- median time from scrape to dashboard availability,
-- % of insights with at least one high-impact linked issue.
+- ingestion precision (sampled relevance),
+- realtime insight precision (sampled relevance),
+- classifier confidence distribution,
+- reviewer override rate by category/severity,
+- median time from `new` → `triaged`,
+- traceability coverage (`source_issue_url` present),
+- % reviewed rows with reviewer notes.
 
 ---
 
-## 8) Future work roadmap
+## 8) Near-term roadmap (data-analyst lens)
 
-## Short-term (1-2 sprints)
+### Short-term (1–2 sprints)
 
-- Extract analytics calculations into `lib/analytics` modules.
-- Add explicit response schema tests for `/api/stats`.
-- Add per-category confidence and uncertainty indicators.
-- Add snapshot tests for realtime insight ranking.
+- Add queue pagination and stage-based filters (`new`, `triaged`, `in-progress`, etc.).
+- Build reviewer override deltas table for model-eval corpora.
+- Add explicit dashboard card for traceability coverage trend over time.
+- Add contract tests for `/api/classify` and `/api/classifications/*`.
 
-## Medium-term (1-2 months)
+### Medium-term (1–2 months)
 
-- Introduce embedding-based semantic clustering for issue themes.
-- Add anomaly detection for sudden surge alerts.
-- Add source reliability weighting and spam heuristics.
+- Introduce agreement metrics between heuristic category and LLM category.
+- Add anomaly alerts for sudden spikes in critical/safety-policy classifications.
+- Implement weekly few-shot refresh from highest-signal reviewed overrides.
 
-## Long-term
+### Long-term
 
-- Hybrid classifier (rules + lightweight ML model).
-- Feedback loop: human label corrections feeding automatic tuning.
-- Multi-tenant workspace support with custom taxonomies.
+- Hybrid pipeline (heuristics + embeddings + LLM adjudication).
+- Multi-tenant taxonomies with org-specific severity policy.
+- Reviewer productivity analytics (time-to-decision, disagreement hotspots).
 
 ---
 
 ## 9) Architecture principles for contributors
 
-1. **Actionability over vanity metrics**: prefer metrics that change decisions.
-2. **Server-side shaping**: keep heavy analytics in API layer.
-3. **Deterministic heuristics first**: transparent scoring before opaque models.
-4. **Backward compatibility by default**: evolve API contracts deliberately.
-5. **Measure quality continuously**: every data-quality change should have a metric.
+1. **Traceability before automation**: insights must be provable from source evidence.
+2. **Human authority over model output**: AI suggests; reviewer decides.
+3. **Boundary validation is non-negotiable**: reject malformed/unsafe model outputs.
+4. **Schema evolution with replayability**: keep raw records and model metadata.
+5. **Actionability over vanity metrics**: optimize for triage decisions, not chart volume.
 
 ---
 
-## 10) Suggested file/folder evolution
+## 10) Suggested repo evolution
 
 ```text
 lib/
   analytics/
     compute-realtime-insights.ts
-    compute-dashboard-breakdowns.ts
-  classifiers/
-    category-scoring.ts
-    sentiment-heuristics.ts
+    compute-classification-kpis.ts
+  classification/
+    prompt.ts
+    schema.ts
+    report-summary.ts
+    mapping.ts
   scrapers/
     index.ts
     providers/
@@ -276,10 +324,21 @@ lib/
       hackernews.ts
       github.ts
 
+app/api/
+  classify/
+  classifications/
+    route.ts
+    stats/route.ts
+    [id]/route.ts
+  stats/
+  issues/
+  scrape/
+
 docs/
   ARCHITECTURE.md
   DATA_QUALITY_RUNBOOK.md
+  CLASSIFIER_GOVERNANCE.md
   API_CONTRACTS.md
 ```
 
-This split keeps concerns separate and lowers regression risk as feature velocity increases.
+This decomposition keeps ingestion, analytics, and reviewer-governed classification concerns isolated while preserving end-to-end provenance.

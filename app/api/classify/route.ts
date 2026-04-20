@@ -37,6 +37,10 @@ const classifyInputSchema = z.object({
     )
     .optional(),
   screenshot_or_diff: z.string().optional(),
+  source_issue_id: z.string().uuid().optional(),
+  source_issue_url: z.string().url().optional(),
+  source_issue_title: z.string().optional(),
+  source_issue_sentiment: z.enum(["positive", "negative", "neutral"]).optional(),
 })
 
 function parseResponseJson(responseJson: unknown): ClassificationApiRecord {
@@ -160,7 +164,14 @@ export async function POST(request: Request) {
     }
 
     const hardened = applyHardReviewRules(classification, parsed.data.report_text)
-    const dbRecord = toDbRecord(hardened, parsed.data.report_text)
+    const dbRecord = toDbRecord(hardened, parsed.data.report_text, {
+      source_issue_id: parsed.data.source_issue_id,
+      source_issue_url: parsed.data.source_issue_url,
+      source_issue_title: parsed.data.source_issue_title,
+      source_issue_sentiment: parsed.data.source_issue_sentiment,
+      model_used: modelUsed,
+      retried_with_large_model: retriedWithLargeModel,
+    })
 
     if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
       const supabase = createAdminClient()

@@ -36,3 +36,13 @@ Migration: `scripts/003_create_bug_report_classifications.sql`
 - Stores normalized columns + `raw_json` verbatim payload.
 - Adds triage index on `(category, severity, needs_human_review, created_at DESC)`.
 - Includes `related_report_ids` for dedupe/cross-link workflows.
+
+
+## Dashboard integration
+
+- Classifier queue API: `GET /api/classifications`
+- Classifier stats API: `GET /api/classifications/stats`
+- Reviewer update API: `PATCH /api/classifications/:id`
+- UI panel: `components/dashboard/classification-triage.tsx`
+
+Traceability is surfaced via source feedback fields (`source_issue_title`, `source_issue_url`, `source_issue_sentiment`) so every classification can be traced to the original web report.

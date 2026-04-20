@@ -16,6 +16,15 @@ export interface ClassificationApiRecord {
   review_reasons: string[]
 }
 
+export interface ClassificationContext {
+  source_issue_id?: string
+  source_issue_url?: string
+  source_issue_title?: string
+  source_issue_sentiment?: string
+  model_used?: string
+  retried_with_large_model?: boolean
+}
+
 export interface ClassificationDbRecord {
   category: string
   subcategory: string
@@ -34,12 +43,23 @@ export interface ClassificationDbRecord {
   review_reasons: string[]
   raw_json: ClassificationApiRecord
   report_text: string
+  source_issue_id?: string
+  source_issue_url?: string
+  source_issue_title?: string
+  source_issue_sentiment?: string
+  model_used?: string
+  retried_with_large_model?: boolean
 }
 
-export function toDbRecord(record: ClassificationApiRecord, reportText: string): ClassificationDbRecord {
+export function toDbRecord(
+  record: ClassificationApiRecord,
+  reportText: string,
+  context?: ClassificationContext
+): ClassificationDbRecord {
   return {
     ...record,
     raw_json: record,
     report_text: reportText,
+    ...context,
   }
 }
