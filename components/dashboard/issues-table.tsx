@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, Fragment } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -268,10 +268,10 @@ export function IssuesTable({
               </TableHeader>
               <TableBody>
                 {issues.map((issue) => (
-                  <>
+                  <Fragment key={issue.id}>
                     <TableRow
-                      key={issue.id}
-                      className="border-border hover:bg-secondary/50"
+                      className="border-border hover:bg-secondary/50 cursor-pointer"
+                      onClick={() => setExpandedId(expandedId === issue.id ? null : issue.id)}
                     >
                       <TableCell className="font-medium text-foreground">
                         <div className="flex flex-col gap-1.5">
@@ -364,7 +364,7 @@ export function IssuesTable({
                         </TableCell>
                       </TableRow>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </TableBody>
             </Table>
