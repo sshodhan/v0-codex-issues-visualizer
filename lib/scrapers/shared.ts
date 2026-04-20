@@ -1,5 +1,5 @@
-import type { Category } from "@/lib/types"
-import { evaluateCodexRelevance } from "@/lib/scrapers/relevance"
+import type { Category } from "../types"
+import { evaluateCodexRelevance } from "./relevance.ts"
 
 export const COMPETITOR_KEYWORDS: Record<string, string[]> = {
   "claude-code": ["claude code", "anthropic claude code", "claude-code"],
@@ -71,7 +71,7 @@ export function analyzeSentiment(text: string): {
     "accurate",
   ]
   const negativeWords = [
-    "hate", "terrible", "awful", "bad", "worst", "useless",
+    "hate", "terrible", "awful", "bad", "worst", "useless", "unusable",
     "slow", "expensive", "frustrating", "annoying", "disappointing",
     "wrong",
   ]

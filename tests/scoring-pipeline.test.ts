@@ -30,6 +30,30 @@ test("neutral feature requests remain neutral", () => {
   assert.equal(result.keyword_presence, 0)
 })
 
+test("keyword_presence covers tense and plural variants", () => {
+  // Each sentence exercises a variant not matched by bare-stem regexes.
+  const cases: Array<[string, number]> = [
+    ["Codex crashes on startup.", 1],
+    ["The CLI crashed twice yesterday.", 1],
+    ["Codex keeps crashing every few minutes.", 1],
+    ["Two bugs filed, both errors from auth.", 2],
+    ["The request failed with a 500.", 1],
+    ["Intermittent failures when streaming.", 1],
+    ["Recent regressions after the upgrade.", 1],
+  ]
+
+  for (const [text, expected] of cases) {
+    const { keyword_presence } = analyzeSentiment(text)
+    assert.equal(keyword_presence, expected, `"${text}" → expected ${expected}, got ${keyword_presence}`)
+  }
+})
+
+test("valence word 'unusable' still drives negative sentiment", () => {
+  const result = analyzeSentiment("This update made the CLI unusable for my team.")
+  assert.equal(result.sentiment, "negative")
+  assert.ok(result.score < 0)
+})
+
 test("positive comparator mentions stay positive while tracking competitors", () => {
   const text = "I love Codex. It feels faster than Cursor IDE and GitHub Copilot right now."
   const result = analyzeSentiment(text)
