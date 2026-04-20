@@ -232,7 +232,7 @@ await supabase
 
 ---
 
-### P1-6: GitHub scraper only indexes `is:issue`, missing Discussions entirely
+### P1-6: GitHub scraper only indexes `is:issue`, missing Discussions entirely — RESOLVED
 
 **File:** `lib/scrapers/providers/github.ts:14,39`
 
@@ -241,9 +241,14 @@ feedback since the repo switched to Discussions in 2024) are not queryable via
 `/search/issues`. The current scraper never surfaces any discussion threads,
 missing a high-signal feedback channel.
 
-**Fix sketch:** Add a second fetch to the GitHub GraphQL Discussions search
-endpoint (`POST /graphql` with `search(type: DISCUSSION, query: "…")`), or at
-minimum document the gap in the scraper comment.
+**Resolution:** Added `lib/scrapers/providers/github-discussions.ts`, which
+calls GitHub GraphQL `search(type: DISCUSSION)` against the same repo set as
+the REST `github` scraper and degrades to a no-op when `GITHUB_TOKEN` is not
+configured. Registered under slug `github-discussions` in
+`lib/scrapers/index.ts` and seeded via
+`scripts/005_add_github_discussions_and_openai_community_sources.sql`.
+The same migration adds `openai-community` (community.openai.com / Discourse)
+so the two highest-signal channels flagged in this item ship together.
 
 ---
 
@@ -347,7 +352,7 @@ and more".
 | P1-3   | P1       | Data quality   | `app/page.tsx:156,166`                    | Category KPI uses fragile display-name match   |
 | P1-4   | P1       | UX             | `hooks/use-dashboard-data.ts:122`         | Full-text search wired but unreachable from UI |
 | P1-5   | P1       | Performance    | `lib/scrapers/index.ts:65-70`             | Per-row upsert loop, N round-trips per scrape  |
-| P1-6   | P1       | Coverage       | `lib/scrapers/providers/github.ts:14`     | GitHub Discussions not scraped                 |
+| P1-6   | P1       | Coverage       | `lib/scrapers/providers/github.ts:14`     | GitHub Discussions not scraped — RESOLVED (+ OpenAI Community) |
 | P1-7   | P1       | Feature        | `lib/scrapers/index.ts` (absent)          | Classifier never auto-fed from scraper output  |
 | P1-8   | P1       | Coverage       | `lib/scrapers/providers/hackernews.ts`    | HN query too restrictive (possible AND issue)  |
 | P2-1   | P2       | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
