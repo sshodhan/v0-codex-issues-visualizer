@@ -2,9 +2,7 @@
 
 import { useState, Fragment } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Slider } from "@/components/ui/slider"
 import {
   Select,
   SelectContent,
@@ -20,102 +18,54 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ExternalLink, ChevronDown, ChevronUp, Calendar, Filter } from "lucide-react"
+import { ExternalLink, ChevronDown, ChevronUp, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDistanceToNow } from "date-fns"
 import type { Issue } from "@/hooks/use-dashboard-data"
 
-interface Category {
-  name: string
-  slug: string
-  color: string
-}
-
 interface IssuesTableProps {
   issues: Issue[]
   isLoading: boolean
-  categories?: Category[]
+  globalTimeLabel: string
+  globalCategoryLabel: string
   onFilterChange: (filters: {
     sentiment?: string
-    category?: string
-    days?: number
     sortBy?: string
     order?: string
   }) => void
 }
 
-const TIME_WINDOWS = [
-  { label: "All Time", value: 0 },
-  { label: "Last 7 days", value: 7 },
-  { label: "Last 14 days", value: 14 },
-  { label: "Last 30 days", value: 30 },
-  { label: "Last 90 days", value: 90 },
-]
-
 // Issues table with filters and clickable links
 export function IssuesTable({
   issues,
   isLoading,
-  categories = [],
+  globalTimeLabel,
+  globalCategoryLabel,
   onFilterChange,
 }: IssuesTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState("impact_score")
   const [order, setOrder] = useState("desc")
   const [sentimentFilter, setSentimentFilter] = useState("all")
-  const [categoryFilter, setCategoryFilter] = useState("all")
-  const [timeWindow, setTimeWindow] = useState(0)
 
   const handleSort = (column: string) => {
     const newOrder = sortBy === column && order === "desc" ? "asc" : "desc"
     setSortBy(column)
     setOrder(newOrder)
-    onFilterChange({ 
-      sortBy: column, 
+    onFilterChange({
+      sortBy: column,
       order: newOrder,
       sentiment: sentimentFilter === "all" ? undefined : sentimentFilter,
-      category: categoryFilter === "all" ? undefined : categoryFilter,
-      days: timeWindow || undefined,
     })
   }
 
   const handleSentimentChange = (value: string) => {
     setSentimentFilter(value)
-    onFilterChange({ 
+    onFilterChange({
       sentiment: value === "all" ? undefined : value,
-      category: categoryFilter === "all" ? undefined : categoryFilter,
-      days: timeWindow || undefined,
       sortBy,
       order,
     })
-  }
-
-  const handleCategoryChange = (value: string) => {
-    setCategoryFilter(value)
-    onFilterChange({ 
-      sentiment: sentimentFilter === "all" ? undefined : sentimentFilter,
-      category: value === "all" ? undefined : value,
-      days: timeWindow || undefined,
-      sortBy,
-      order,
-    })
-  }
-
-  const handleTimeChange = (value: number[]) => {
-    const days = value[0]
-    setTimeWindow(days)
-    onFilterChange({ 
-      sentiment: sentimentFilter === "all" ? undefined : sentimentFilter,
-      category: categoryFilter === "all" ? undefined : categoryFilter,
-      days: days || undefined,
-      sortBy,
-      order,
-    })
-  }
-
-  const getTimeLabel = () => {
-    const window = TIME_WINDOWS.find(tw => tw.value === timeWindow)
-    return window?.label || "All Time"
   }
 
   const getSentimentBadge = (sentiment: string) => {
@@ -162,14 +112,14 @@ export function IssuesTable({
     <Card className="bg-card border-border col-span-full">
       <CardHeader className="pb-4">
         <div className="flex flex-col gap-4">
-          {/* Title and basic filters row */}
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-lg font-semibold text-foreground">
               All Issues ({issues.length})
             </CardTitle>
             <div className="flex flex-wrap gap-2">
               <Select value={sentimentFilter} onValueChange={handleSentimentChange}>
-                <SelectTrigger className="w-[140px] bg-secondary border-border text-foreground">
+                <SelectTrigger className="w-[160px] bg-secondary border-border text-foreground">
+                  <Filter className="mr-2 h-4 w-4" />
                   <SelectValue placeholder="Sentiment" />
                 </SelectTrigger>
                 <SelectContent>
@@ -179,46 +129,12 @@ export function IssuesTable({
                   <SelectItem value="neutral">Neutral</SelectItem>
                 </SelectContent>
               </Select>
-
-              <Select value={categoryFilter} onValueChange={handleCategoryChange}>
-                <SelectTrigger className="w-[160px] bg-secondary border-border text-foreground">
-                  <Filter className="mr-2 h-4 w-4" />
-                  <SelectValue placeholder="Category" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  {categories.map((cat) => (
-                    <SelectItem key={cat.slug} value={cat.slug}>
-                      <span className="flex items-center gap-2">
-                        <span 
-                          className="h-2 w-2 rounded-full" 
-                          style={{ backgroundColor: cat.color }}
-                        />
-                        {cat.name}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           </div>
 
-          {/* Time window slider */}
-          <div className="flex items-center gap-4 p-3 rounded-lg bg-secondary/50">
-            <Calendar className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground whitespace-nowrap">Time Window:</span>
-            <div className="flex-1 max-w-md">
-              <Slider
-                value={[timeWindow]}
-                onValueChange={handleTimeChange}
-                max={90}
-                step={7}
-                className="cursor-pointer"
-              />
-            </div>
-            <span className="text-sm font-medium text-foreground min-w-[100px]">
-              {getTimeLabel()}
-            </span>
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <Badge variant="secondary">Window: {globalTimeLabel}</Badge>
+            <Badge variant="secondary">Cluster: {globalCategoryLabel}</Badge>
           </div>
         </div>
       </CardHeader>
@@ -276,7 +192,6 @@ export function IssuesTable({
                     >
                       <TableCell className="font-medium text-foreground">
                         <div className="flex flex-col gap-1.5">
-                          {/* Clickable title with external link */}
                           {issue.url ? (
                             <a
                               href={issue.url}
@@ -336,7 +251,6 @@ export function IssuesTable({
                           : "N/A"}
                       </TableCell>
                     </TableRow>
-                    {/* Expandable content row on click */}
                     {expandedId === issue.id && (
                       <TableRow className="border-border bg-secondary/30">
                         <TableCell colSpan={6} className="p-4">
@@ -351,7 +265,7 @@ export function IssuesTable({
                                 {(issue.sentiment_score * 100).toFixed(0)}%
                               </span>
                               {issue.url && (
-                                <a 
+                                <a
                                   href={issue.url}
                                   target="_blank"
                                   rel="noopener noreferrer"
