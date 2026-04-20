@@ -10,11 +10,16 @@ test("bug vocabulary contributes to keyword_presence without forcing negative se
 
   assert.equal(result.sentiment, "neutral")
   assert.equal(result.score, 0)
-  assert.ok(result.keyword_presence > 0)
+  // "bug", "crashes", "error" each contribute once.
+  assert.equal(result.keyword_presence, 3)
 
+  // Because sentiment is neutral (not "negative"), calculateImpactScore does
+  // not apply the 1.5× sentiment boost — the impact equals the pure engagement
+  // score. Before this PR, the same text was classified negative and the
+  // 1.5× boost inflated impact.
   const impact = calculateImpactScore(30, 12, result.sentiment)
-  const oldDoublePenaltyImpact = calculateImpactScore(30, 12, "negative")
-  assert.ok(impact < oldDoublePenaltyImpact)
+  const neutralBaseline = calculateImpactScore(30, 12, "neutral")
+  assert.equal(impact, neutralBaseline)
 })
 
 test("neutral feature requests remain neutral", () => {

@@ -33,7 +33,7 @@ and inflate issue counts.
 
 ---
 
-### P0-2: Sentiment signal conflates functional words with emotional words
+### P0-2: Sentiment signal conflates functional words with emotional words — ✅ addressed in PR #11
 
 **File:** `lib/scrapers/shared.ts:79-84`
 
@@ -51,9 +51,16 @@ regardless of tone. This cascades into `calculateImpactScore` (1.5× multiplier,
 //         "frustrating", "annoying", "disappointing", "unusable"
 ```
 
+**Resolution:** PR #11 pulled bug-topic tokens out of `negativeWords` into
+`NEGATIVE_KEYWORD_PATTERNS` and exposes the count as `keyword_presence` on
+`analyzeSentiment`'s return (currently unconsumed — follow-up needed to wire it
+into impact/urgency). Note: `"broken"` and `"unusable"` are valence words from
+the original fix sketch but were also dropped from `negativeWords`; consider
+restoring them if sentiment detection proves under-sensitive in production.
+
 ---
 
-### P0-3: Negative-sentiment bias is double-counted in urgency score
+### P0-3: Negative-sentiment bias is double-counted in urgency score — ✅ addressed in PR #11
 
 **File:** `lib/scrapers/shared.ts:251-256` and `lib/analytics/realtime.ts:119-127`
 
@@ -67,6 +74,12 @@ scores to be materially overstated vs. feature-request or performance issues.
 **Fix sketch:** Remove the `sentimentBoost` multiplier from
 `calculateImpactScore` (store a pure engagement score) and let the urgency
 formula own the full sentiment weighting.
+
+**Resolution:** PR #11 chose the inverse of the fix sketch: it kept the 1.5×
+`sentimentBoost` in `calculateImpactScore` (so stored `impact_score` still
+reflects sentiment) and removed `negativeRatio * 3` from the urgency formula in
+`realtime.ts`. Either path breaks the double-count; this one trades "urgency
+owns sentiment" for "impact owns sentiment."
 
 ---
 

@@ -11,16 +11,16 @@ export const COMPETITOR_KEYWORDS: Record<string, string[]> = {
 }
 
 const NEGATIVE_KEYWORD_PATTERNS = [
-  /\bbug\b/g,
-  /\berror\b/g,
-  /\bcrash\b/g,
+  /\bbugs?\b/g,
+  /\berrors?\b/g,
+  /\bcrash(?:es|ed|ing)?\b/g,
   /\bbroken\b/g,
-  /\bissue\b/g,
-  /\bproblem\b/g,
-  /\bregression\b/g,
+  /\bissues?\b/g,
+  /\bproblems?\b/g,
+  /\bregressions?\b/g,
   /\bnot\s+working\b/g,
   /\bdoesn['’]?t\s+work\b/g,
-  /\bfails?\b/g,
+  /\bfail(?:s|ed|ing|ure|ures)?\b/g,
 ]
 
 export function normalizeWhitespace(text: string): string {
@@ -87,7 +87,7 @@ export function analyzeSentiment(text: string): {
     if (lowerText.includes(word)) negativeCount++
   })
 
-  const keyword_presence = calculateKeywordPresence(lowerText)
+  const keyword_presence = calculateKeywordPresence(text)
 
   const total = positiveCount + negativeCount
   if (total === 0) return { sentiment: "neutral", score: 0, keyword_presence }
