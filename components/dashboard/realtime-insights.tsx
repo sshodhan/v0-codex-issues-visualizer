@@ -12,6 +12,7 @@ interface RealtimeInsight {
   momentum: number
   avgImpact: number
   negativeRatio: number
+  sourceDiversity: number
   urgencyScore: number
   topIssues: Array<{
     id: string
@@ -74,11 +75,12 @@ export function RealtimeInsights({ insights }: RealtimeInsightsProps) {
                   <Badge variant="outline">Urgency {insight.urgencyScore}</Badge>
                 </div>
 
-                <div className="mb-3 grid gap-2 text-sm text-muted-foreground sm:grid-cols-4">
+                <div className="mb-3 grid gap-2 text-sm text-muted-foreground sm:grid-cols-5">
                   <p><span className="font-medium text-foreground">Now:</span> {insight.nowCount}</p>
                   <p><span className="font-medium text-foreground">Previous:</span> {insight.previousCount}</p>
                   <p><span className="font-medium text-foreground">Avg impact:</span> {insight.avgImpact}</p>
                   <p><span className="font-medium text-foreground">Negative:</span> {insight.negativeRatio}%</p>
+                  <p><span className="font-medium text-foreground">Sources:</span> {insight.sourceDiversity}</p>
                 </div>
 
                 <div className="space-y-1.5">

@@ -12,6 +12,7 @@ import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
 import { IssuesTable } from "@/components/dashboard/issues-table"
 import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
+import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
 import {
   useDashboardStats,
   useIssues,
@@ -180,8 +181,11 @@ export default function DashboardPage() {
             {/* Priority Matrix */}
             <PriorityMatrix data={stats.priorityMatrix} />
 
-            {/* Real-time insights */}
-            <RealtimeInsights insights={stats.realtimeInsights} />
+            {/* Real-time insights + competitive mentions */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              <RealtimeInsights insights={stats.realtimeInsights} />
+              <CompetitiveMentions mentions={stats.competitiveMentions || []} />
+            </div>
 
             {/* Classifier-backed triage with traceability */}
             <ClassificationTriage

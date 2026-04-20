@@ -35,12 +35,28 @@ export interface DashboardStats {
     momentum: number
     avgImpact: number
     negativeRatio: number
+    sourceDiversity: number
     urgencyScore: number
     topIssues: Array<{
       id: string
       title: string
       url: string | null
       source: string
+      impact_score: number
+    }>
+  }>
+  competitiveMentions: Array<{
+    competitor: string
+    totalMentions: number
+    positive: number
+    negative: number
+    neutral: number
+    netSentiment: number
+    topIssues: Array<{
+      id: string
+      title: string
+      url: string | null
+      sentiment: "positive" | "negative" | "neutral" | null
       impact_score: number
     }>
   }>
@@ -94,6 +110,7 @@ export function useIssues(filters?: {
   days?: number
   sortBy?: string
   order?: string
+  q?: string
 }) {
   const params = new URLSearchParams()
   if (filters?.source) params.set("source", filters.source)
@@ -102,6 +119,7 @@ export function useIssues(filters?: {
   if (filters?.days) params.set("days", filters.days.toString())
   if (filters?.sortBy) params.set("sortBy", filters.sortBy)
   if (filters?.order) params.set("order", filters.order)
+  if (filters?.q) params.set("q", filters.q)
 
   const { data, error, isLoading, mutate } = useSWR<{
     data: Issue[]
