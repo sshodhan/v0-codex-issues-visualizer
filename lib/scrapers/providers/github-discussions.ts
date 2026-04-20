@@ -26,7 +26,6 @@ const DISCUSSION_QUERY = /* GraphQL */ `
         __typename
         ... on Discussion {
           id
-          number
           title
           body
           url
@@ -34,7 +33,6 @@ const DISCUSSION_QUERY = /* GraphQL */ `
           upvoteCount
           author { login }
           comments { totalCount }
-          repository { nameWithOwner }
         }
       }
     }
@@ -44,7 +42,6 @@ const DISCUSSION_QUERY = /* GraphQL */ `
 interface DiscussionNode {
   __typename: string
   id: string
-  number: number
   title: string | null
   body: string | null
   url: string
@@ -52,7 +49,6 @@ interface DiscussionNode {
   upvoteCount: number
   author: { login: string } | null
   comments: { totalCount: number }
-  repository: { nameWithOwner: string }
 }
 
 export async function scrapeGitHubDiscussions(
@@ -72,7 +68,9 @@ export async function scrapeGitHubDiscussions(
 
   for (const repo of REPOS) {
     try {
-      const q = `repo:${repo} codex copilot "codex cli" "openai codex" in:title,body`
+      // GitHub search AND's bare keywords — wrap in parens with OR to match
+      // the existing reddit/github REST providers' query style.
+      const q = `repo:${repo} (codex OR copilot OR "openai codex" OR "codex cli") in:title,body`
       const response = await fetchWithRetry(
         "https://api.github.com/graphql",
         {
@@ -87,7 +85,17 @@ export async function scrapeGitHubDiscussions(
         continue
       }
 
+      // GraphQL returns 200 with a populated `errors` array on rate-limit or
+      // schema problems. Without this branch those failures look like an
+      // empty result set.
       const data = await response.json()
+      if (Array.isArray(data?.errors) && data.errors.length > 0) {
+        console.error(
+          `GitHub Discussions GraphQL errors for ${repo}:`,
+          data.errors
+        )
+        continue
+      }
       const nodes: DiscussionNode[] = data?.data?.search?.nodes || []
 
       for (const node of nodes) {

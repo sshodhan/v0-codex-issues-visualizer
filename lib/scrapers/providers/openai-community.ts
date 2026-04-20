@@ -14,7 +14,18 @@ import {
 // us enough signal to classify and score each thread without an extra
 // per-topic fetch.
 const BASE_URL = "https://community.openai.com"
-const SEARCH_TERMS = ["codex", "codex cli", "openai codex", "copilot"]
+// Intentionally omits "copilot" — the term pulls in Microsoft / GitHub
+// Copilot threads that aren't about OpenAI Codex, mirroring the Reddit
+// P0-1 noise problem in BUGS.md.
+const SEARCH_TERMS = ["codex", "codex cli", "openai codex"]
+
+interface DiscoursePost {
+  topic_id: number
+  post_number: number
+  blurb?: string
+  username?: string
+  like_count?: number
+}
 
 interface DiscourseTopic {
   id: number
@@ -31,12 +42,7 @@ interface DiscourseTopic {
 }
 
 interface DiscourseSearchResponse {
-  posts?: Array<{
-    topic_id: number
-    blurb?: string
-    username?: string
-    like_count?: number
-  }>
+  posts?: DiscoursePost[]
   topics?: DiscourseTopic[]
 }
 
@@ -45,6 +51,10 @@ export async function scrapeOpenAICommunity(
   categories: Category[]
 ): Promise<Partial<Issue>[]> {
   const issues: Partial<Issue>[] = []
+  // Dedup across search terms — the same topic routinely matches multiple
+  // terms (e.g. "codex" and "openai codex"), and classifying it twice wastes
+  // work even though the DB upsert would collapse them later.
+  const seenTopicIds = new Set<number>()
 
   for (const term of SEARCH_TERMS) {
     try {
@@ -62,19 +72,21 @@ export async function scrapeOpenAICommunity(
       const topics = data?.topics || []
       const posts = data?.posts || []
 
-      // Discourse returns posts and topics as parallel lists joined by
-      // topic_id. The first post for a topic holds the blurb + author.
-      const firstPostByTopic = new Map<number, (typeof posts)[number]>()
+      // Discourse returns posts ordered by relevance, not thread position,
+      // so a matched reply can appear before its OP. We need post_number=1
+      // to attribute author/content to the topic starter.
+      const opByTopic = new Map<number, DiscoursePost>()
       for (const post of posts) {
-        if (!firstPostByTopic.has(post.topic_id)) {
-          firstPostByTopic.set(post.topic_id, post)
-        }
+        if (post.post_number === 1) opByTopic.set(post.topic_id, post)
       }
 
       for (const topic of topics) {
-        const firstPost = firstPostByTopic.get(topic.id)
+        if (seenTopicIds.has(topic.id)) continue
+        seenTopicIds.add(topic.id)
+
+        const op = opByTopic.get(topic.id)
         const normalizedTitle = normalizeWhitespace(topic.title || "")
-        const normalizedContent = normalizeWhitespace(firstPost?.blurb || "")
+        const normalizedContent = normalizeWhitespace(op?.blurb || "")
         const content = `${normalizedTitle} ${normalizedContent}`
 
         if (!isLikelyCodexIssue(content)) continue
@@ -97,7 +109,7 @@ export async function scrapeOpenAICommunity(
           title: normalizedTitle.slice(0, 500),
           content: normalizedContent.slice(0, 2000),
           url: `${BASE_URL}/t/${topic.slug}/${topic.id}`,
-          author: firstPost?.username || null,
+          author: op?.username || null,
           sentiment,
           sentiment_score: sentimentScore,
           impact_score: calculateImpactScore(upvotes, replyCount, sentiment),
