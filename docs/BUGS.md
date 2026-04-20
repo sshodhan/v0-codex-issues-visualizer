@@ -1,25 +1,49 @@
 # Bug & Issues Backlog
 
-_Generated: 2026-04-20 from two independent senior-engineer end-to-end reviews._
-_Source branch: `claude/audit-data-collection-dPDcG`_
-_Last updated: 2026-04-20 — status tracking + PR cross-references added._
+- **Origin:** two independent senior-engineer end-to-end reviews, merged via [PR #6](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/6) on 2026-04-20.
+- **Last updated:** 2026-04-20 — status tracking, PR cross-references, entry template, and quick index added.
 
-Each entry includes priority, status, a one-sentence description, the exact
-`file:line` reference, and a minimal fix sketch. Priorities follow the standard
+Each entry includes priority, status, a one-line description, a `file:line`
+reference, and a minimal fix sketch. Priorities follow the standard
 P0 (data-corrupt / silent wrong answer) → P1 (significant quality loss) →
 P2 (polish / UX gap) scale.
 
+## Quick index
+
+- [P0 — Data integrity / silent wrong answers](#p0--data-integrity--silent-wrong-answers) — P0-1 … P0-6
+- [P1 — Significant quality or correctness loss](#p1--significant-quality-or-correctness-loss) — P1-1 … P1-8
+- [P2 — Polish / UX gaps](#p2--polish--ux-gaps) — P2-1 … P2-3
+- [Summary table](#summary-table) — status at a glance
+- [Reporting a new issue](#reporting-a-new-issue) — entry template
+- [Change log](#change-log)
+
 ## How to use this document
 
-- Treat this as a living backlog, not a one-shot audit. When a PR lands that
-  addresses an entry, update its **Status** and **Addressed by** lines and
-  update the status column in the summary table at the bottom.
-- When opening a PR that resolves an item, reference the ID (e.g. `P0-1`) in
-  the PR description so the link is bi-directional.
-- Do not delete resolved entries — they are useful context for future
-  regressions. Instead, mark them `Resolved` with the PR link.
-- If a review discovers a new issue, append it with the next free ID in the
-  same priority band and add a row to the summary table.
+This is a living backlog, not a one-shot audit.
+
+- **Cross-reference IDs in PRs.** When opening a PR that touches an entry,
+  mention the ID (e.g. `P0-1`) in the PR description so the link is
+  bi-directional. When a PR lands, update the entry's **Status**,
+  **Addressed by**, and the row in the [Summary table](#summary-table).
+- **Never delete resolved entries.** They are the best defence against
+  regressions — a future reader can see the prior failure mode. Mark them
+  `Resolved` with the PR link and keep the body intact.
+- **Keep `file:line` references honest.** Line numbers drift as the codebase
+  changes. If you touch an entry, re-verify the anchor; if it's stale, update
+  it in the same PR.
+
+### Moving an entry to `Resolved`
+
+Before flipping status to `Resolved`, confirm all of:
+
+- [ ] The fix has landed on `main` (not just the PR branch).
+- [ ] The `file:line` reference still points at the relevant code (often the
+      line number changes post-fix — update it or remove it if the file is
+      gone).
+- [ ] A regression test exists for the failure mode, or the entry body notes
+      explicitly why one is impractical.
+- [ ] The [Summary table](#summary-table) row is updated and the PR is added
+      to the [Change log](#change-log).
 
 ### Status legend
 
@@ -36,9 +60,9 @@ P2 (polish / UX gap) scale.
 
 ### P0-1: Reddit query matches all Microsoft Copilot products, not just Codex-adjacent ones
 
-**Status:** In progress
-**Addressed by:** [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8)
-**File:** `lib/scrapers/providers/reddit.ts:27`
+- **Status:** In progress
+- **Addressed by:** [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8)
+- **File:** `lib/scrapers/providers/reddit.ts:27`
 
 **Problem:** The bare term `copilot` in the OR query matches posts about
 Microsoft 365 Copilot, Windows Copilot, Power Platform Copilot, etc.
@@ -65,8 +89,8 @@ for Sales, Power Platform Copilot, Copilot for M365, etc.).
 
 ### P0-2: Sentiment signal conflates functional words with emotional words
 
-**Status:** Open
-**File:** `lib/scrapers/shared.ts:79-84`
+- **Status:** Open
+- **File:** `lib/scrapers/shared.ts:79-84`
 
 **Problem:** `negativeWords` includes `"bug"`, `"error"`, `"issue"`,
 `"problem"`. These are topic words (the post *is about* a bug), not valence
@@ -86,8 +110,8 @@ regardless of tone. This cascades into `calculateImpactScore` (1.5× multiplier,
 
 ### P0-3: Negative-sentiment bias is double-counted in urgency score
 
-**Status:** Open
-**File:** `lib/scrapers/shared.ts:251-256` and `lib/analytics/realtime.ts:119-127`
+- **Status:** Open
+- **File:** `lib/scrapers/shared.ts:251-256` and `lib/analytics/realtime.ts:119-127`
 
 **Problem:** `calculateImpactScore` already applies a 1.5× multiplier for
 negative sentiment, inflating `impact_score` at ingestion time. The urgency
@@ -104,8 +128,8 @@ formula own the full sentiment weighting.
 
 ### P0-4: Competitive sentiment is attributed to *all* co-mentioned competitors
 
-**Status:** Open
-**File:** `lib/analytics/competitive.ts:55-80`
+- **Status:** Open
+- **File:** `lib/analytics/competitive.ts:55-80`
 
 **Problem:** If one post mentions both `cursor` and `windsurf`, the inner loop
 attributes the post's sentiment to both competitors. A post saying "Cursor is
@@ -122,9 +146,8 @@ matched (conservative).
 
 ### P0-5: `frequency_count` is never aggregated — always shows 1
 
-**Status:** Open
-**File:** `scripts/002_create_issues_schema_v2.sql:46` and
-`lib/scrapers/index.ts:65-70`
+- **Status:** Open
+- **File:** `scripts/002_create_issues_schema_v2.sql:46` and `lib/scrapers/index.ts:65-70`
 
 **Problem:** The column default is 1 and the upsert
 `ignoreDuplicates: false` updates every field except `frequency_count`. Nothing
@@ -152,8 +175,12 @@ mergeColumns: ["title","content","sentiment","impact_score","upvotes",
 
 ### P0-6: `/api/stats` performs 5–6 un-cached full-table scans per request
 
-**Status:** Open
-**File:** `app/api/stats/route.ts:27-138`
+- **Status:** Open
+- **File:** `app/api/stats/route.ts:27-138`
+- **Note:** Priority is debatable — this is a cost/latency problem, not a
+  data-correctness one. Kept at P0 because Supabase compute quota exhaustion
+  can take the whole dashboard offline under load. Downgrade to P1 if that
+  risk is mitigated by a different route.
 
 **Problem:** Every dashboard load (and every SWR 60-second refresh) fires
 at minimum 6 sequential Supabase queries — total-count, sentiment, source join,
@@ -176,8 +203,8 @@ compute quotas are exhausted quickly.
 
 ### P1-1: Error state, empty state, and "no env vars" all render identically
 
-**Status:** Open
-**File:** `app/page.tsx:111`
+- **Status:** Open
+- **File:** `app/page.tsx:111`
 
 ```tsx
 } : !stats || stats.totalIssues === 0 ? (
@@ -197,8 +224,8 @@ HTTP status or message.
 
 ### P1-2: KPI cards show all-time totals with no time-window or delta
 
-**Status:** Open
-**File:** `app/page.tsx:142-175`
+- **Status:** Open
+- **File:** `app/page.tsx:142-175`
 
 **Problem:** "Total Issues", "Negative Issues", "Feature Requests", "Bug
 Reports" are monotonically increasing lifetime counts. A spike last week looks
@@ -214,8 +241,8 @@ all) that filters all four counts.
 
 ### P1-3: Category KPI cards use fragile hardcoded display-name string match
 
-**Status:** Open
-**File:** `app/page.tsx:156,166`
+- **Status:** Open
+- **File:** `app/page.tsx:156,166`
 
 ```tsx
 stats.categoryBreakdown.find((c) => c.name === "Feature Request")?.count || 0
@@ -238,8 +265,8 @@ stats.categoryBreakdown.find((c) => c.slug === "bug")?.count || 0
 
 ### P1-4: Full-text search param `q` is wired in the hook but unreachable from UI
 
-**Status:** Open
-**File:** `hooks/use-dashboard-data.ts:122` and `app/page.tsx` (absent)
+- **Status:** Open
+- **File:** `hooks/use-dashboard-data.ts:122` and `app/page.tsx` (absent)
 
 **Problem:** `useIssues` accepts a `q` parameter and passes it to
 `/api/issues?q=…`, but `IssuesTable` has no search input and `handleFilterChange`
@@ -254,8 +281,8 @@ surfaced.
 
 ### P1-5: Ingestion upsert is a per-row loop — N sequential round-trips per scrape
 
-**Status:** Open
-**File:** `lib/scrapers/index.ts:65-70` and `lib/scrapers/index.ts:157-162`
+- **Status:** Open
+- **File:** `lib/scrapers/index.ts:65-70` and `lib/scrapers/index.ts:157-162`
 
 **Problem:** Both `runAllScrapers` and `runScraper` iterate individual issues
 and `await`s each upsert. For 100 new issues across 4 sources, this is 100+
@@ -274,8 +301,8 @@ await supabase
 
 ### P1-6: GitHub scraper only indexes `is:issue`, missing Discussions entirely
 
-**Status:** Open
-**File:** `lib/scrapers/providers/github.ts:14,39`
+- **Status:** Open
+- **File:** `lib/scrapers/providers/github.ts:14,39`
 
 **Problem:** GitHub Discussions (the primary channel for openai/codex user
 feedback since the repo switched to Discussions in 2024) are not queryable via
@@ -290,8 +317,8 @@ minimum document the gap in the scraper comment.
 
 ### P1-7: Classifier triage queue is never auto-populated from the scraper loop
 
-**Status:** Open
-**File:** `lib/scrapers/index.ts` (absent) and `app/api/classify/route.ts`
+- **Status:** Open
+- **File:** `lib/scrapers/index.ts` (absent) and `app/api/classify/route.ts`
 
 **Problem:** The `/api/classify` endpoint exists and stores rows in
 `bug_report_classifications`, but nothing calls it. The scraper loop upserts to
@@ -306,11 +333,11 @@ them.
 
 ---
 
-### P1-8: Hacker News query scope — too broad, and OR-semantics must stay intact
+### P1-8: Hacker News query keyword set is too broad
 
-**Status:** In progress
-**Addressed by:** [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8)
-**File:** `lib/scrapers/providers/hackernews.ts:15-16`
+- **Status:** In progress
+- **Addressed by:** [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8)
+- **File:** `lib/scrapers/providers/hackernews.ts:15-16`
 
 **Problem (original):** The Algolia HN search API treats space-separated terms
 as AND. A query like `codex copilot "codex cli"` only matches posts that
@@ -338,8 +365,8 @@ poor, fall back to an empty `QUERY` with the scoped list moved entirely into
 
 ### P2-1: Sortable table headers are not keyboard-accessible
 
-**Status:** Open
-**File:** `components/dashboard/issues-table.tsx:247-267`
+- **Status:** Open
+- **File:** `components/dashboard/issues-table.tsx:247-267`
 
 **Problem:** Column sort headers are implemented as `<div onClick>` or similar
 non-interactive elements. Users who navigate with a keyboard or assistive
@@ -353,8 +380,8 @@ technology cannot activate column sorting (no `tabIndex`, no `onKeyDown`, no
 
 ### P2-2: Time-window slider has no accessible label
 
-**Status:** Open
-**File:** `components/dashboard/issues-table.tsx:207-222`
+- **Status:** Open
+- **File:** `components/dashboard/issues-table.tsx:207-222`
 
 **Problem:** The days-range slider control is rendered without an `aria-label`
 or visible `<label>` association. Screen readers announce it as an unlabelled
@@ -374,8 +401,8 @@ range input.
 
 ### P2-3: Dashboard footer still lists only "Reddit, Hacker News, GitHub" — Stack Overflow missing
 
-**Status:** Open
-**File:** `app/page.tsx:224`
+- **Status:** Open
+- **File:** `app/page.tsx:224`
 
 ```tsx
 <p>Codex Issues Visualizer - Aggregating feedback from Reddit, Hacker News, GitHub, and more</p>
@@ -412,10 +439,47 @@ and more".
 | P2-2 | P2       | Open         | Accessibility | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                        | —            |
 | P2-3 | P2       | Open         | Copy          | `app/page.tsx:224`                          | Footer omits Stack Overflow from source list    | —            |
 
+## Reporting a new issue
+
+Append new entries under the appropriate priority section, use the next free
+ID in that band (e.g. the next P1 after P1-8 is `P1-9`), and add a row to the
+[Summary table](#summary-table). Use this skeleton:
+
+```md
+### P?-N: <one-line title in sentence case>
+
+- **Status:** Open
+- **File:** `<path>:<line>` (multiple lines ok, use commas)
+
+**Problem:** <2–5 sentences. State the failure mode and its user-visible
+impact. If priority is debatable, say so here and justify the band.>
+
+**Fix sketch:** <Smallest plausible change. A code block is fine but not
+required — a pointer to the right function/file often suffices.>
+```
+
+Guidance:
+
+- **Priority band.** P0 = silently wrong output or data corruption.
+  P1 = materially wrong but visible (missing feature, poor perf, bad UX that
+  users will notice). P2 = polish, a11y, copy, minor cosmetic.
+- **Title.** Lead with the symptom, not the fix. "KPI cards show all-time
+  totals" beats "Add 7-day window to KPIs".
+- **`file:line`.** Prefer the tightest range that frames the bug. If the
+  issue is architectural (no single line), point at the function or write
+  `(absent)` and explain.
+
+---
+
 ## Change log
 
-- **2026-04-20** — Added status tracking, PR cross-references, a legend, and
-  a "How to use" section. Linked P0-1 and P1-8 to
+- **2026-04-20** — Second pass: converted per-entry metadata to bullet lists
+  so Status / Addressed-by / File render on separate lines on GitHub. Added
+  a quick index, a "Reporting a new issue" template, and a
+  "Moving an entry to Resolved" checklist. Tightened the P1-8 title and
+  flagged P0-6 as priority-debatable.
+- **2026-04-20** — First pass: added status tracking, PR cross-references,
+  a legend, and a "How to use" section. Linked P0-1 and P1-8 to
   [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8).
   Clarified P1-8: OR semantics on `main` are already correct via
   `optionalWords`; the live concern is keyword scope, not boolean mode.
