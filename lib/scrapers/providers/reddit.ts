@@ -4,10 +4,11 @@ import {
   calculateImpactScore,
   categorizeIssue,
   fetchWithRetry,
-  isLikelyCodexIssue,
+  getCodexRelevanceReason,
   isLowValueIssue,
   normalizeWhitespace,
 } from "@/lib/scrapers/shared"
+import { REDDIT_SCOPED_QUERY_TERMS } from "@/lib/scrapers/relevance"
 
 const SUBREDDITS = [
   "OpenAI",
@@ -23,9 +24,7 @@ export async function scrapeReddit(
   categories: Category[]
 ): Promise<Partial<Issue>[]> {
   const issues: Partial<Issue>[] = []
-  const query = encodeURIComponent(
-    '(codex OR copilot OR "openai codex" OR "codex cli")'
-  )
+  const query = encodeURIComponent(`(${REDDIT_SCOPED_QUERY_TERMS.join(" OR ")})`)
 
   for (const subreddit of SUBREDDITS) {
     try {
@@ -44,7 +43,8 @@ export async function scrapeReddit(
         const normalizedContent = normalizeWhitespace(selftext || "")
         const content = `${normalizedTitle} ${normalizedContent}`
 
-        if (!isLikelyCodexIssue(content)) continue
+        const relevanceReason = getCodexRelevanceReason(content)
+        if (!relevanceReason) continue
         if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
         const { sentiment, score: sentimentScore } = analyzeSentiment(content)
@@ -63,6 +63,7 @@ export async function scrapeReddit(
           upvotes: score,
           comments_count: num_comments,
           published_at: new Date(created_utc * 1000).toISOString(),
+          relevance_reason: relevanceReason,
         })
       }
     } catch (error) {

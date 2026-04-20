@@ -4,7 +4,7 @@ import {
   calculateImpactScore,
   categorizeIssue,
   fetchWithRetry,
-  isLikelyCodexIssue,
+  getCodexRelevanceReason,
   isLowValueIssue,
   normalizeWhitespace,
 } from "@/lib/scrapers/shared"
@@ -12,8 +12,8 @@ import {
 // Algolia search treats the `query` as AND-by-default. Using `optionalWords`
 // gives us boolean OR semantics across our keyword set so we don't lose
 // stories that only mention one of them.
-const QUERY = ""
-const OPTIONAL = ["codex", "copilot", "openai", "codex cli", "openai codex"]
+const QUERY = "openai codex"
+const OPTIONAL = ["chatgpt codex", "codex cli", "openai/codex", "codex terminal"]
 
 export async function scrapeHackerNews(
   source: Source,
@@ -41,7 +41,8 @@ export async function scrapeHackerNews(
       const normalizedContent = normalizeWhitespace(hit.story_text || hit.comment_text || "")
       const content = `${normalizedTitle} ${normalizedContent}`
 
-      if (!isLikelyCodexIssue(content)) continue
+      const relevanceReason = getCodexRelevanceReason(content)
+      if (!relevanceReason) continue
       if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
       const { sentiment, score: sentimentScore } = analyzeSentiment(content)
@@ -64,6 +65,7 @@ export async function scrapeHackerNews(
         upvotes: hit.points || 0,
         comments_count: hit.num_comments || 0,
         published_at: hit.created_at,
+        relevance_reason: relevanceReason,
       })
     }
   } catch (error) {

@@ -1,17 +1,5 @@
 import type { Category } from "@/lib/types"
-
-export const CODEX_KEYWORDS = [
-  "codex",
-  "openai codex",
-  "github copilot",
-  "copilot",
-  "codex cli",
-  "chatgpt codex",
-  "openai/codex",
-  "ai coding",
-  "code completion",
-  "ai assistant code",
-]
+import { evaluateCodexRelevance } from "@/lib/scrapers/relevance"
 
 export const COMPETITOR_KEYWORDS: Record<string, string[]> = {
   "claude-code": ["claude code", "anthropic claude code", "claude-code"],
@@ -22,28 +10,16 @@ export const COMPETITOR_KEYWORDS: Record<string, string[]> = {
   cody: ["sourcegraph cody", " cody "],
 }
 
-const NON_PRODUCT_NOISE_PATTERNS = [
-  /\bcodex\s+sinaiticus\b/i,
-  /\bcodex\s+alimentarius\b/i,
-  /\bcodex\s+seraphinianus\b/i,
-  /\bbook\s+codex\b/i,
-  /\bmanuscript\b/i,
-]
-
 export function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim()
 }
 
 export function isLikelyCodexIssue(text: string): boolean {
-  const normalized = normalizeWhitespace(text.toLowerCase())
-  if (!normalized) return false
+  return evaluateCodexRelevance(text).passed
+}
 
-  const hasKeyword = CODEX_KEYWORDS.some((keyword) =>
-    normalized.includes(keyword.toLowerCase())
-  )
-  if (!hasKeyword) return false
-
-  return !NON_PRODUCT_NOISE_PATTERNS.some((pattern) => pattern.test(normalized))
+export function getCodexRelevanceReason(text: string): string | null {
+  return evaluateCodexRelevance(text).relevanceReason
 }
 
 export function isLowValueIssue(title: string, content: string): boolean {
