@@ -28,6 +28,22 @@ export interface DashboardStats {
     sentiment: string
     category: { name: string; color: string } | null
   }>
+  realtimeInsights: Array<{
+    category: { name: string; slug: string; color: string }
+    nowCount: number
+    previousCount: number
+    momentum: number
+    avgImpact: number
+    negativeRatio: number
+    urgencyScore: number
+    topIssues: Array<{
+      id: string
+      title: string
+      url: string | null
+      source: string
+      impact_score: number
+    }>
+  }>
   lastScrape: {
     status: string
     started_at: string
