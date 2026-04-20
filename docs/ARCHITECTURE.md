@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20 (v3 — providers split, Stack Overflow added)_
+_Last updated: 2026-04-20 (v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -281,6 +281,54 @@ For each reviewer-visible classification, target:
 2. Source sentiment populated.
 3. Evidence quote list retained.
 4. Reviewer action audit fields populated once adjudicated.
+
+---
+
+## 6.5) Data provenance — what is real vs reference
+
+This system intentionally keeps zero synthetic dashboard data. Everything the
+running app renders is either a live API response or a Supabase read of rows
+that scrapers/classifiers populated from real public sources.
+
+Real data (live, never seeded):
+- `issues` rows — written by `lib/scrapers/providers/{reddit,hackernews,github,stackoverflow}.ts`,
+  each of which calls a real public API:
+  - Reddit JSON search (`reddit.com/r/<sub>/search.json`)
+  - Hacker News Algolia search (`hn.algolia.com/api/v1/search`)
+  - GitHub Issues Search (`api.github.com/search/issues`)
+  - Stack Exchange (`api.stackexchange.com/2.3/questions`)
+- `scrape_logs` rows — written by `lib/scrapers/index.ts` per run.
+- `bug_report_classifications` rows — written by `app/api/classify/route.ts`
+  from the OpenAI Responses API.
+
+Reference data (seeded once via SQL, required for foreign keys to work):
+- `sources` rows — one per provider (`reddit`, `hackernews`, `github`,
+  `stackoverflow`). See `scripts/001_*.sql`, `002_*.sql`, `003_*.sql`.
+- `categories` rows — taxonomy used by the heuristic classifier (`Bug`,
+  `Feature Request`, `Performance`, …). Same migration files.
+
+**Not wired into the running app (legacy/orphan):**
+- `codex-analysis/codex_analysis_data*.json` — pre-computed historical
+  snapshots. No `app/`, `lib/`, `components/`, or `hooks/` file imports
+  these. They exist for offline analysis only and are ignored by the
+  dashboard runtime.
+- `codex-analysis/backend/load_data_supabase.py` — one-shot Python loader
+  for those snapshots. Not invoked by any API route or hook.
+
+How to verify at any time:
+```sh
+# 1) No fixtures ship as runtime imports
+grep -R --include='*.ts' --include='*.tsx' \
+  -E 'codex-analysis|fixtures?/|mock(Data|Issues)' app lib components hooks
+
+# 2) Every dashboard surface flows from /api/* via SWR
+grep -R --include='*.ts' --include='*.tsx' 'useSWR' hooks
+
+# 3) Scrapers hit live URLs (not local files)
+grep -R --include='*.ts' -E 'fetch\((`|")(https?://)' lib/scrapers
+```
+All three should return only the expected runtime call sites — no
+`codex-analysis/*` references, no fixture imports, no `file://` URLs.
 
 ---
 
