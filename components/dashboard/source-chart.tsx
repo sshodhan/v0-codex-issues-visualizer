@@ -9,6 +9,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
+  LabelList,
 } from "recharts"
 
 interface SourceChartProps {
@@ -56,10 +57,10 @@ export function SourceChart({ data }: SourceChartProps) {
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "hsl(var(--popover))",
-                  border: "1px solid hsl(var(--border))",
+                  backgroundColor: "#1f2937",
+                  border: "1px solid #374151",
                   borderRadius: "8px",
-                  color: "hsl(var(--popover-foreground))",
+                  color: "#f3f4f6",
                 }}
                 formatter={(value: number) => [`${value} issues`]}
               />
@@ -70,6 +71,13 @@ export function SourceChart({ data }: SourceChartProps) {
                     fill={COLORS[index % COLORS.length]}
                   />
                 ))}
+                <LabelList 
+                  dataKey="count" 
+                  position="right" 
+                  fill="#e5e7eb"
+                  fontSize={12}
+                  fontWeight={500}
+                />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
