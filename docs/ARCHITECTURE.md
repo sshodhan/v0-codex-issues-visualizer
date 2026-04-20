@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20 (v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-20 (v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -22,8 +22,10 @@ Primary goals:
 External Sources
   ├─ Reddit JSON API
   ├─ Hacker News Algolia API
-  ├─ GitHub Issues Search API
-  └─ Stack Exchange (Stack Overflow) API
+  ├─ GitHub Issues Search API (REST)
+  ├─ GitHub Discussions Search API (GraphQL)
+  ├─ Stack Exchange (Stack Overflow) API
+  └─ OpenAI Community (Discourse search.json)
          │
          ▼
 Provider Scrapers (lib/scrapers/providers/*.ts)
@@ -130,9 +132,11 @@ Layout:
 - `lib/scrapers/shared.ts` — relevance filters, sentiment, category scoring,
   impact scoring, competitor keyword detection, retry/backoff fetch helper,
   dedupe.
-- `lib/scrapers/providers/{reddit,hackernews,github,stackoverflow}.ts` —
+- `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts` —
   one provider per file. Each owns its source-specific query and the
-  mapping into a `Partial<Issue>`.
+  mapping into a `Partial<Issue>`. `github-discussions` and `openai-community`
+  cover the high-signal channels (GitHub Discussions, community.openai.com)
+  that the REST `github` scraper and the news/Q&A providers miss.
 
 Extension guidance:
 - Add a new provider by creating `providers/<slug>.ts` and registering it in
@@ -291,19 +295,22 @@ running app renders is either a live API response or a Supabase read of rows
 that scrapers/classifiers populated from real public sources.
 
 Real data (live, never seeded):
-- `issues` rows — written by `lib/scrapers/providers/{reddit,hackernews,github,stackoverflow}.ts`,
+- `issues` rows — written by `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts`,
   each of which calls a real public API:
   - Reddit JSON search (`reddit.com/r/<sub>/search.json`)
   - Hacker News Algolia search (`hn.algolia.com/api/v1/search`)
-  - GitHub Issues Search (`api.github.com/search/issues`)
+  - GitHub Issues Search — REST (`api.github.com/search/issues`)
+  - GitHub Discussions Search — GraphQL (`api.github.com/graphql`, `search(type: DISCUSSION)`; requires `GITHUB_TOKEN`, degrades to a no-op when absent)
   - Stack Exchange (`api.stackexchange.com/2.3/questions`)
+  - OpenAI Community — Discourse (`community.openai.com/search.json`)
 - `scrape_logs` rows — written by `lib/scrapers/index.ts` per run.
 - `bug_report_classifications` rows — written by `app/api/classify/route.ts`
   from the OpenAI Responses API.
 
 Reference data (seeded once via SQL, required for foreign keys to work):
 - `sources` rows — one per provider (`reddit`, `hackernews`, `github`,
-  `stackoverflow`). See `scripts/001_*.sql`, `002_*.sql`, `003_*.sql`.
+  `github-discussions`, `stackoverflow`, `openai-community`). See
+  `scripts/001_*.sql`, `002_*.sql`, `003_*.sql`, `005_*.sql`.
 - `categories` rows — taxonomy used by the heuristic classifier (`Bug`,
   `Feature Request`, `Performance`, …). Same migration files.
 
@@ -420,6 +427,9 @@ lib/
       reddit.ts
       hackernews.ts
       github.ts
+      github-discussions.ts
+      stackoverflow.ts
+      openai-community.ts
 
 app/api/
   classify/
