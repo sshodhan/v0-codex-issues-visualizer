@@ -11,10 +11,13 @@ import { PriorityMatrix } from "@/components/dashboard/priority-matrix"
 import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
 import { IssuesTable } from "@/components/dashboard/issues-table"
 import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
+import { ClassificationTriage } from "@/components/dashboard/classification-triage"
 import {
   useDashboardStats,
   useIssues,
   useScrape,
+  useClassifications,
+  useClassificationStats,
 } from "@/hooks/use-dashboard-data"
 import { formatDistanceToNow } from "date-fns"
 
@@ -31,12 +34,14 @@ export default function DashboardPage() {
   const { stats, isLoading: statsLoading, refresh: refreshStats } = useDashboardStats()
   const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues(filters)
   const { scrape } = useScrape()
+  const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({ limit: 30 })
+  const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats()
 
   const handleRefresh = async () => {
     setIsRefreshing(true)
     try {
       await scrape()
-      await Promise.all([refreshStats(), refreshIssues()])
+      await Promise.all([refreshStats(), refreshIssues(), refreshClassifications(), refreshClassificationStats()])
     } catch (error) {
       console.error("Failed to refresh:", error)
     } finally {
@@ -177,6 +182,16 @@ export default function DashboardPage() {
 
             {/* Real-time insights */}
             <RealtimeInsights insights={stats.realtimeInsights} />
+
+            {/* Classifier-backed triage with traceability */}
+            <ClassificationTriage
+              records={classifications}
+              stats={classificationStats}
+              isLoading={classificationsLoading}
+              onRefresh={async () => {
+                await Promise.all([refreshClassifications(), refreshClassificationStats()])
+              }}
+            />
 
             {/* Trend Chart */}
             {stats.trendData.length > 0 && (
