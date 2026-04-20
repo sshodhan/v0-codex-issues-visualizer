@@ -1,11 +1,13 @@
-import { COMPETITOR_KEYWORDS } from "../scrapers/shared.ts"
+import { COMPETITOR_KEYWORDS, COMPETITOR_DISPLAY_NAMES } from "./competitors.ts"
+import { NEGATIVE_WORDS, NEGATORS, POSITIVE_WORDS } from "./sentiment-lexicon.ts"
 
 type Sentiment = "positive" | "negative" | "neutral"
 
 type MentionSentiment = {
   score: number
   confidence: number
-  sentiment: Sentiment
+  sentiment: Sentiment | null
+  valenceTokens: number
 }
 
 export interface CompetitiveIssueInput {
@@ -33,36 +35,32 @@ export interface CompetitiveMention {
     id: string
     title: string
     url: string | null
-    sentiment: Sentiment
+    sentiment: Sentiment | null
     confidence: number
     impact_score: number
   }>
 }
 
-const PRETTY_NAME: Record<string, string> = {
-  "claude-code": "Claude Code",
-  copilot: "GitHub Copilot",
-  cursor: "Cursor",
-  windsurf: "Windsurf",
-  gemini: "Gemini Code",
-  cody: "Sourcegraph Cody",
+export interface CompetitiveMentionsOptions {
+  // Brand that competitor sentiment is expressed *relative to*. Used for
+  // comparative phrasing detection ("X is better than <anchor>"). Defaults to
+  // "codex" to match the product this dashboard is built around; parameterize
+  // to reuse the module for another brand.
+  anchorBrand?: string
 }
 
-const POSITIVE_WORDS = new Set([
-  "good", "great", "awesome", "excellent", "fast", "faster", "helpful", "love", "solid",
-  "fine", "works", "working", "better", "best", "improved", "reliable",
-])
+const DEFAULT_OPTIONS: Required<CompetitiveMentionsOptions> = {
+  anchorBrand: "codex",
+}
 
-const NEGATIVE_WORDS = new Set([
-  "bad", "awful", "terrible", "slow", "slower", "broken", "buggy", "hate", "worse", "worst",
-  "unusable", "frustrating", "fails", "failing", "error", "errors",
-])
-
-const NEGATORS = new Set(["not", "never", "no", "hardly", "scarcely", "without", "n't"])
+const POSITIVE_THRESHOLD = 0.25
+const NEGATIVE_THRESHOLD = -0.25
+const NEGATION_LOOKBACK_TOKENS = 3
+const COMPARATIVE_BOOST = 1.0
 
 function classifySentiment(score: number): Sentiment {
-  if (score > 0.25) return "positive"
-  if (score < -0.25) return "negative"
+  if (score > POSITIVE_THRESHOLD) return "positive"
+  if (score < NEGATIVE_THRESHOLD) return "negative"
   return "neutral"
 }
 
@@ -70,27 +68,29 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+// Strict sentence window. Returns the text between the nearest sentence-ending
+// punctuation (or buffer start/end) bracketing the mention, with no padding —
+// padding beyond sentence bounds is what reintroduced cross-sentence pollution
+// in an earlier iteration.
 function getSentenceWindow(text: string, mentionIndex: number): string {
-  const leftBound = Math.max(
-    text.lastIndexOf(".", mentionIndex),
-    text.lastIndexOf("!", mentionIndex),
-    text.lastIndexOf("?", mentionIndex),
-    text.lastIndexOf("\n", mentionIndex)
-  )
+  const SENTENCE_BOUNDARIES = [".", "!", "?", "\n"]
 
-  const rightCandidates = [
-    text.indexOf(".", mentionIndex),
-    text.indexOf("!", mentionIndex),
-    text.indexOf("?", mentionIndex),
-    text.indexOf("\n", mentionIndex),
-  ].filter((i) => i !== -1)
+  let leftBound = -1
+  for (const char of SENTENCE_BOUNDARIES) {
+    leftBound = Math.max(leftBound, text.lastIndexOf(char, mentionIndex - 1))
+  }
 
-  const rightBound = rightCandidates.length > 0 ? Math.min(...rightCandidates) : text.length
+  let rightBound = text.length
+  for (const char of SENTENCE_BOUNDARIES) {
+    const idx = text.indexOf(char, mentionIndex)
+    if (idx !== -1 && idx < rightBound) rightBound = idx
+  }
 
-  const windowStart = Math.max(0, leftBound + 1 - 120)
-  const windowEnd = Math.min(text.length, rightBound + 120)
-
-  return text.slice(windowStart, windowEnd)
+  return text.slice(leftBound + 1, rightBound)
 }
 
 function findMentionIndexes(text: string, phrase: string): number[] {
@@ -106,6 +106,8 @@ function findMentionIndexes(text: string, phrase: string): number[] {
 
     const leftChar = idx === 0 ? " " : text[idx - 1]
     const rightChar = idx + clean.length >= text.length ? " " : text[idx + clean.length]
+    // Word boundary: alphanumerics on either side would indicate we matched
+    // inside a longer identifier (e.g. "cursor" inside "myCursorHelper").
     const leftOk = !/[a-z0-9]/.test(leftChar)
     const rightOk = !/[a-z0-9]/.test(rightChar)
 
@@ -119,85 +121,125 @@ function findMentionIndexes(text: string, phrase: string): number[] {
   return indices
 }
 
-
-function getDetectionPhrases(competitorKey: string, phrases: string[]): string[] {
-  const pretty = PRETTY_NAME[competitorKey] ?? competitorKey
-  const defaults = [
-    competitorKey.replace(/-/g, " "),
-    pretty.toLowerCase(),
-    pretty.toLowerCase().replace(/\scode$/, ""),
-  ]
-
-  return Array.from(new Set([...phrases, ...defaults].map((p) => p.trim()).filter(Boolean)))
-}
-
-export function scoreMentionSentiment(windowText: string): MentionSentiment {
+/**
+ * Score sentiment for a single mention window.
+ *
+ * Confidence is defined as `evidence_density × polarity_agreement`, where
+ * density saturates at three valence tokens and agreement is the absolute
+ * value of the normalized score. A window with no valence tokens returns
+ * `sentiment: null` so callers can distinguish "no signal" from "neutral
+ * signal" — which matters for the API's topIssues contract.
+ */
+export function scoreMentionSentiment(
+  windowText: string,
+  options: CompetitiveMentionsOptions = {}
+): MentionSentiment {
+  const { anchorBrand } = { ...DEFAULT_OPTIONS, ...options }
   const lower = windowText.toLowerCase()
   const tokens = lower.match(/[a-z']+/g) ?? []
 
   let score = 0
-  let evidenceHits = 0
+  let valenceTokens = 0
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i]
     let tokenScore = 0
 
     if (POSITIVE_WORDS.has(token)) tokenScore = 1
-    if (NEGATIVE_WORDS.has(token)) tokenScore = -1
+    else if (NEGATIVE_WORDS.has(token)) tokenScore = -1
     if (tokenScore === 0) continue
 
-    const prev3 = tokens.slice(Math.max(0, i - 3), i)
-    const hasNegation = prev3.some((prev) => NEGATORS.has(prev))
-    if (hasNegation) tokenScore *= -1
+    const lookback = tokens.slice(Math.max(0, i - NEGATION_LOOKBACK_TOKENS), i)
+    if (lookback.some((prev) => NEGATORS.has(prev))) tokenScore *= -1
 
     score += tokenScore
-    evidenceHits++
+    valenceTokens++
   }
 
-  if (/better\s+than\s+codex/.test(lower)) {
-    score += 1.5
-    evidenceHits++
+  // Comparative phrasing against the anchor brand is a strong explicit signal.
+  // We intentionally count it as one additional valence token rather than two
+  // to avoid double-counting with the "better"/"worse" token already scored
+  // above.
+  const anchor = escapeRegExp(anchorBrand.toLowerCase())
+  if (new RegExp(`\\bbetter\\s+than\\s+${anchor}\\b`).test(lower)) {
+    score += COMPARATIVE_BOOST
+    valenceTokens++
   }
-  if (/worse\s+than\s+codex/.test(lower)) {
-    score -= 1.5
-    evidenceHits++
+  if (new RegExp(`\\bworse\\s+than\\s+${anchor}\\b`).test(lower)) {
+    score -= COMPARATIVE_BOOST
+    valenceTokens++
   }
 
-  if (evidenceHits === 0) {
-    return { score: 0, confidence: 0, sentiment: "neutral" }
+  if (valenceTokens === 0) {
+    return { score: 0, confidence: 0, sentiment: null, valenceTokens: 0 }
   }
 
-  const normalized = clamp(score / Math.max(1, evidenceHits), -1, 1)
-  const confidence = clamp(0.25 + evidenceHits * 0.2 + Math.abs(normalized) * 0.35, 0, 1)
-  const sentiment = classifySentiment(normalized)
+  const normalized = clamp(score / valenceTokens, -1, 1)
+  // Confidence = density × agreement. Both components are principled:
+  //   density:   Math.min(1, valenceTokens / 3) — three valence tokens in a
+  //              single sentence window saturates confidence.
+  //   agreement: 0.5 + 0.5 × |normalized| — mixed-polarity windows (score ≈ 0)
+  //              get half weight; clean one-sided signals get full weight.
+  const density = Math.min(1, valenceTokens / 3)
+  const agreement = 0.5 + 0.5 * Math.abs(normalized)
+  const confidence = clamp(density * agreement, 0, 1)
 
   return {
     score: Number(normalized.toFixed(3)),
     confidence: Number(confidence.toFixed(3)),
-    sentiment,
+    sentiment: classifySentiment(normalized),
+    valenceTokens,
   }
 }
 
+/**
+ * Aggregate per-mention sentiment into a single per-issue signal for one
+ * competitor. Returns null when the competitor isn't mentioned. Windows with
+ * zero evidence are still counted in `mentionCount` (so we can report raw
+ * mention volume) but do not contribute to `avgScore` or `avgConfidence`.
+ *
+ * When every window was evidence-free, the issue-level sentiment falls back
+ * to `fallbackSentiment` (the ingest-time classifier's verdict) if provided —
+ * using it only as a weak prior. Without a fallback, the returned sentiment
+ * is null to let the dashboard render "no signal" rather than "neutral."
+ */
 export function aggregateCompetitorSentimentForIssue(
   issueText: string,
-  competitorPhrases: string[]
+  competitorPhrases: string[],
+  options: CompetitiveMentionsOptions & { fallbackSentiment?: Sentiment | null } = {}
 ): {
   mentionCount: number
   scoredMentions: number
   score: number
   confidence: number
-  sentiment: Sentiment
+  sentiment: Sentiment | null
 } | null {
+  const { fallbackSentiment = null, ...scoreOptions } = options
   const lower = issueText.toLowerCase()
-  const mentionIndexes = competitorPhrases.flatMap((phrase) => findMentionIndexes(lower, phrase))
+  const mentionIndexes = competitorPhrases.flatMap((phrase) =>
+    findMentionIndexes(lower, phrase)
+  )
 
   if (mentionIndexes.length === 0) return null
 
-  const mentionScores = mentionIndexes.map((idx) => scoreMentionSentiment(getSentenceWindow(issueText, idx)))
-  const scoredMentions = mentionScores.filter((m) => m.confidence > 0).length
+  const mentionScores = mentionIndexes.map((idx) =>
+    scoreMentionSentiment(getSentenceWindow(issueText, idx), scoreOptions)
+  )
+  const scored = mentionScores.filter((m) => m.valenceTokens > 0)
+  const scoredMentions = scored.length
 
-  const avgScore = mentionScores.reduce((sum, m) => sum + m.score, 0) / mentionScores.length
-  const avgConfidence = mentionScores.reduce((sum, m) => sum + m.confidence, 0) / mentionScores.length
+  if (scoredMentions === 0) {
+    return {
+      mentionCount: mentionIndexes.length,
+      scoredMentions: 0,
+      score: 0,
+      confidence: 0,
+      sentiment: fallbackSentiment,
+    }
+  }
+
+  const avgScore = scored.reduce((sum, m) => sum + m.score, 0) / scoredMentions
+  const avgConfidence = scored.reduce((sum, m) => sum + m.confidence, 0) / scoredMentions
 
   return {
     mentionCount: mentionIndexes.length,
@@ -209,7 +251,8 @@ export function aggregateCompetitorSentimentForIssue(
 }
 
 export function computeCompetitiveMentions(
-  issues: CompetitiveIssueInput[]
+  issues: CompetitiveIssueInput[],
+  options: CompetitiveMentionsOptions = {}
 ): CompetitiveMention[] {
   const buckets = new Map<
     string,
@@ -218,10 +261,12 @@ export function computeCompetitiveMentions(
       rawMentions: number
       scoredMentions: number
       confidenceSum: number
+      confidenceWeightedMentions: number
       positive: number
       negative: number
       neutral: number
       sentimentSum: number
+      sentimentWeight: number
       samples: CompetitiveMention["topIssues"]
     }
   >()
@@ -231,8 +276,13 @@ export function computeCompetitiveMentions(
     if (!issueText) continue
 
     for (const [competitor, phrases] of Object.entries(COMPETITOR_KEYWORDS)) {
-      const detectionPhrases = getDetectionPhrases(competitor, phrases)
-      const issueAggregate = aggregateCompetitorSentimentForIssue(issueText, detectionPhrases)
+      // Detection phrases come exclusively from the canonical keyword list.
+      // Deriving phrases from display names is a proven false-positive source
+      // (e.g. "Sourcegraph Cody" → "sourcegraph" matching the company).
+      const issueAggregate = aggregateCompetitorSentimentForIssue(issueText, phrases, {
+        ...options,
+        fallbackSentiment: issue.sentiment,
+      })
       if (!issueAggregate) continue
 
       const bucket = buckets.get(competitor) ?? {
@@ -240,22 +290,33 @@ export function computeCompetitiveMentions(
         rawMentions: 0,
         scoredMentions: 0,
         confidenceSum: 0,
+        confidenceWeightedMentions: 0,
         positive: 0,
         negative: 0,
         neutral: 0,
         sentimentSum: 0,
+        sentimentWeight: 0,
         samples: [],
       }
 
       bucket.total++
       bucket.rawMentions += issueAggregate.mentionCount
       bucket.scoredMentions += issueAggregate.scoredMentions
-      bucket.confidenceSum += issueAggregate.confidence
-      bucket.sentimentSum += issueAggregate.score
+
+      // Only scored issues contribute to confidence/net-sentiment averages so
+      // zero-evidence mentions don't dilute the KPIs.
+      if (issueAggregate.scoredMentions > 0) {
+        bucket.confidenceSum += issueAggregate.confidence
+        bucket.confidenceWeightedMentions += 1
+        bucket.sentimentSum += issueAggregate.score
+        bucket.sentimentWeight += 1
+      }
 
       if (issueAggregate.sentiment === "positive") bucket.positive++
       else if (issueAggregate.sentiment === "negative") bucket.negative++
-      else bucket.neutral++
+      else if (issueAggregate.sentiment === "neutral") bucket.neutral++
+      // sentiment === null → evidence-free mention; keep it out of bucket
+      // positive/negative/neutral but still visible via rawMentions.
 
       bucket.samples.push({
         id: issue.id,
@@ -272,16 +333,18 @@ export function computeCompetitiveMentions(
 
   return Array.from(buckets.entries())
     .map(([competitor, b]) => ({
-      competitor: PRETTY_NAME[competitor] || competitor,
+      competitor: COMPETITOR_DISPLAY_NAMES[competitor] || competitor,
       totalMentions: b.total,
       rawMentions: b.rawMentions,
       scoredMentions: b.scoredMentions,
       coverage: Number((b.scoredMentions / Math.max(1, b.rawMentions)).toFixed(2)),
-      avgConfidence: Number((b.confidenceSum / Math.max(1, b.total)).toFixed(2)),
+      avgConfidence: Number(
+        (b.confidenceSum / Math.max(1, b.confidenceWeightedMentions)).toFixed(2)
+      ),
       positive: b.positive,
       negative: b.negative,
       neutral: b.neutral,
-      netSentiment: Number((b.sentimentSum / Math.max(1, b.total)).toFixed(2)),
+      netSentiment: Number((b.sentimentSum / Math.max(1, b.sentimentWeight)).toFixed(2)),
       topIssues: b.samples.sort((x, y) => y.impact_score - x.impact_score).slice(0, 3),
     }))
     .sort((a, b) => b.totalMentions - a.totalMentions)

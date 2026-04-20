@@ -72,17 +72,46 @@ formula own the full sentiment weighting.
 
 ### P0-4: Competitive sentiment is attributed to *all* co-mentioned competitors
 
-**Status:** ✅ Fixed on 2026-04-20.
+**Status:** ✅ Fixed on 2026-04-20 and hardened after senior review.
 
-**Implemented fix:** `lib/analytics/competitive.ts` now computes sentiment at
-the mention level (sentence/window around each competitor phrase), aggregates
-multiple mentions per competitor per issue, and then rolls up positive/negative/
-neutral counts and net sentiment. This prevents a single issue-level sentiment
-from being blindly copied to every co-mentioned competitor.
+**Implemented fix:** `lib/analytics/competitive.ts` computes sentiment at the
+mention level (strict sentence window around each competitor phrase),
+aggregates multiple mentions per competitor per issue, and rolls up
+positive/negative/neutral counts with a net-sentiment mean weighted by scored
+mentions only. A single issue-level sentiment is never blindly copied to
+every co-mentioned competitor.
 
-**Transparency additions:** The analytics payload now exposes `rawMentions`,
-`scoredMentions`, `coverage`, and `avgConfidence` per competitor, plus
-`competitiveMentionsMeta` in `/api/stats` for dashboard-level context.
+**Hardening (post-review):**
+- **API contract preserved.** `topIssues[*].sentiment` stays `"positive" |
+  "negative" | "neutral" | null` — the initial rewrite narrowed `null` out,
+  which violated the "Keep response backward-compatible" rule in
+  `docs/ARCHITECTURE.md` §4.2. Evidence-free mention windows now propagate
+  `null` through to the dashboard so clients can distinguish "no signal"
+  from "neutral signal."
+- **No display-name-derived detection.** Detection phrases come exclusively
+  from `COMPETITOR_KEYWORDS` in the new `lib/analytics/competitors.ts`.
+  Deriving phrases from the display-name table (e.g. stripping trailing
+  " Code" from "Sourcegraph Cody" → "sourcegraph") is a false-positive
+  factory that would match every unrelated "Sourcegraph" or "Gemini"
+  mention. Regression-tested in `competitive.test.ts`.
+- **Strict sentence window.** No cross-sentence padding — earlier pads of
+  ±120 characters beyond the sentence bounds reintroduced the neighboring-
+  sentence leak the mention-window rewrite was meant to fix.
+- **Parameterized anchor brand.** `/(better|worse)\s+than\s+<anchor>/` is
+  driven by `options.anchorBrand` (default `"codex"`). Hardcoding the brand
+  into a module named `competitive.ts` was an unnecessary coupling.
+- **Canonical shared lexicon.** `POSITIVE_WORDS`, `NEGATIVE_WORDS`, and
+  `NEGATORS` now live in `lib/analytics/sentiment-lexicon.ts` so the
+  mention-level classifier can't drift from any future ingest-time consumer.
+- **Weighted meta.** `competitiveMentionsMeta.{mentionCoverage,avgConfidence}`
+  are weighted by mention volume (not unweighted averages across
+  competitors). The new `totalScoredMentions` field surfaces the volume
+  behind the KPIs.
+
+**Transparency additions:** The analytics payload exposes `rawMentions`,
+`scoredMentions`, `coverage`, and `avgConfidence` per competitor. The
+`CompetitiveMentions` card renders the weighted coverage/confidence summary
+with tooltip definitions inline, so the metrics are no longer dead payload.
 
 ---
 

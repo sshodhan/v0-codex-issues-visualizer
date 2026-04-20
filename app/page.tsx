@@ -213,7 +213,10 @@ export default function DashboardPage() {
             {/* Real-time insights + competitive mentions */}
             <div className="grid gap-6 lg:grid-cols-2">
               <RealtimeInsights insights={stats.realtimeInsights} />
-              <CompetitiveMentions mentions={stats.competitiveMentions || []} />
+              <CompetitiveMentions
+                mentions={stats.competitiveMentions || []}
+                meta={stats.competitiveMentionsMeta}
+              />
             </div>
 
 

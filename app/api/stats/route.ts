@@ -133,10 +133,21 @@ export async function GET() {
 
   const realtimeInsights = computeRealtimeInsights(normalizedRecent)
   const competitiveMentions = computeCompetitiveMentions(normalizedRecent)
+
+  // Meta is weighted by mention volume so a competitor with one low-confidence
+  // mention does not drag the dashboard KPI to the same degree as one with
+  // dozens of mentions. Unweighted means were actively misleading.
+  const totalRaw = competitiveMentions.reduce((sum, item) => sum + item.rawMentions, 0)
+  const totalScored = competitiveMentions.reduce((sum, item) => sum + item.scoredMentions, 0)
+  const weightedConfidence = competitiveMentions.reduce(
+    (sum, item) => sum + item.avgConfidence * item.scoredMentions,
+    0,
+  )
   const competitiveMentionsMeta = {
     competitorsTracked: competitiveMentions.length,
-    mentionCoverage: Number((competitiveMentions.reduce((sum, item) => sum + item.coverage, 0) / Math.max(1, competitiveMentions.length)).toFixed(2)),
-    avgConfidence: Number((competitiveMentions.reduce((sum, item) => sum + item.avgConfidence, 0) / Math.max(1, competitiveMentions.length)).toFixed(2)),
+    mentionCoverage: Number((totalRaw === 0 ? 0 : totalScored / totalRaw).toFixed(2)),
+    avgConfidence: Number((totalScored === 0 ? 0 : weightedConfidence / totalScored).toFixed(2)),
+    totalScoredMentions: totalScored,
   }
 
   const { data: lastScrape } = await supabase

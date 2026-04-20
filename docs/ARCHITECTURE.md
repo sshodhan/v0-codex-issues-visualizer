@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20 (v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-20 (v7 — comprehensive competitive-sentiment hardening: backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -66,8 +66,10 @@ Supabase (Postgres)
          │
          ▼
 Analytics modules (lib/analytics/*)
-  ├─ realtime.ts     (urgency = volume × decay + momentum + impact + neg + diversity)
-  └─ competitive.ts  (mention-window sentiment per competitor + confidence/coverage)
+  ├─ realtime.ts           (urgency = volume × decay + momentum + impact + neg + diversity)
+  ├─ competitive.ts        (mention-window sentiment per competitor + confidence/coverage)
+  ├─ competitors.ts        (canonical competitor keyword + display-name source of truth)
+  └─ sentiment-lexicon.ts  (shared polarity/negator lexicon — dependency-free)
          │
          ▼
 Dashboard UI (app/page.tsx)
@@ -159,21 +161,70 @@ Responsibilities:
 Heavy analytics live in `lib/analytics/*`:
 - `lib/analytics/realtime.ts` — urgency-ranked category insights with
   source diversity and recency decay.
-- `lib/analytics/competitive.ts` — mention-level scoring around each competitor
-  phrase, per-issue aggregation of multiple mentions, and per-competitor
-  confidence/coverage metrics.
+- `lib/analytics/competitive.ts` — mention-level sentiment scoring with
+  per-issue aggregation and per-competitor confidence/coverage metrics. Reads
+  competitor phrases from `competitors.ts` and polarity words from
+  `sentiment-lexicon.ts` so the module has zero scraper-side dependencies and
+  can be unit-tested under `node --test --experimental-strip-types` in
+  isolation.
+- `lib/analytics/competitors.ts` — canonical `COMPETITOR_KEYWORDS` and
+  `COMPETITOR_DISPLAY_NAMES`. **Display names are never derived into detection
+  phrases** — doing so is a proven false-positive source (e.g. stripping
+  trailing " Code" from "Sourcegraph Cody" would match the bare string
+  "sourcegraph"). Detection is driven exclusively by `COMPETITOR_KEYWORDS`.
+  `lib/scrapers/shared.ts` re-exports `COMPETITOR_KEYWORDS` from this module
+  for backward compatibility with existing ingest-time callers.
+- `lib/analytics/sentiment-lexicon.ts` — shared `POSITIVE_WORDS`,
+  `NEGATIVE_WORDS`, and `NEGATORS` sets. Any future sentiment consumer should
+  import from here to prevent lexicon drift between ingest-time and
+  analytics-time classifiers.
 
 Extension guidance:
 - Keep response backward-compatible for existing UI consumers.
 - Add new metrics as additional analytics modules called from the route.
 - Add versioning (`/api/stats?v=2`) before breaking response schema.
 
-Competitive payload details (current):
-- `competitiveMentions[*]` now includes `rawMentions`, `scoredMentions`,
-  `coverage`, and `avgConfidence` for dashboard transparency.
-- `topIssues[*]` uses mention-aggregated sentiment with per-issue confidence.
-- `/api/stats` also returns `competitiveMentionsMeta` with
-  `competitorsTracked`, average `mentionCoverage`, and average `avgConfidence`.
+Competitive payload details (current contract):
+- `competitiveMentions[*]` carries `totalMentions` (issues), `rawMentions`
+  (per-mention count across those issues), `scoredMentions` (mentions whose
+  window had at least one valence token), `coverage` (= `scoredMentions /
+  rawMentions`), `avgConfidence` (mean confidence **over scored mentions
+  only**), and `netSentiment` (mean score over scored mentions only). Issues
+  with only zero-evidence windows contribute to `totalMentions`/`rawMentions`
+  but do not dilute sentiment or confidence KPIs.
+- `topIssues[*].sentiment` is `"positive" | "negative" | "neutral" | null`
+  — `null` is preserved when every window in the issue was evidence-free.
+  This preserves the original API contract; clients that relied on the
+  nullable shape continue to work unchanged.
+- `/api/stats` returns `competitiveMentionsMeta` with `competitorsTracked`,
+  `mentionCoverage` (= `Σ scoredMentions / Σ rawMentions`, weighted by
+  mention volume), `avgConfidence` (= `Σ (avgConfidence × scoredMentions) /
+  Σ scoredMentions`, weighted by mention volume), and `totalScoredMentions`.
+  Unweighted arithmetic means across competitors were actively misleading —
+  a single one-mention competitor could drag the dashboard KPI.
+
+Competitive scoring invariants (enforced by `lib/analytics/competitive.test.ts`):
+- **Strict sentence window.** Each mention is scored on the text between the
+  nearest sentence-ending punctuation (`.`, `!`, `?`, `\n`) on either side,
+  with no cross-sentence padding. Earlier revisions padded ±120 chars and
+  leaked sentiment from neighboring sentences.
+- **Canonical-phrase detection only.** No display-name derivation, no
+  trailing-word stripping.
+- **Word-boundary-safe mention matching.** Alphanumerics on either side of
+  the phrase defeat a match (so `myCursorHelper` does not match).
+- **Negation lookback is bounded.** Three tokens — far enough for `"not
+  bad"` / `"never great"`, tight enough to keep `"it is not the case that
+  ... said great"` from flipping.
+- **Comparative anchor is parameterized.** `computeCompetitiveMentions(...,
+  { anchorBrand })` controls which brand is used as the `/(better|worse)
+  \s+than\s+<anchor>/` comparative target. Defaults to `"codex"` to match
+  this dashboard's product.
+- **Null sentiment propagates.** `scoreMentionSentiment` returns
+  `sentiment: null` for evidence-free windows; the per-issue aggregator
+  falls back to the ingest-time `issue.sentiment` as a weak prior only when
+  explicitly asked via `fallbackSentiment`. `computeCompetitiveMentions`
+  opts in to that fallback so UI rows still show a best-effort sentiment
+  tag where possible.
 
 ### 4.3 `app/api/classify/route.ts`
 

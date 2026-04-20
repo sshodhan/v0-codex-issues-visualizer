@@ -1,14 +1,12 @@
 import type { Category } from "@/lib/types"
 import { evaluateCodexRelevance } from "@/lib/scrapers/relevance"
+import { COMPETITOR_KEYWORDS as ANALYTICS_COMPETITOR_KEYWORDS } from "@/lib/analytics/competitors"
 
-export const COMPETITOR_KEYWORDS: Record<string, string[]> = {
-  "claude-code": ["claude code", "anthropic claude code", "claude-code"],
-  copilot: ["github copilot", "copilot chat", "copilot workspace"],
-  cursor: ["cursor ide", "cursor editor", "cursor.sh"],
-  windsurf: ["windsurf", "codeium windsurf"],
-  gemini: ["gemini code assist", "gemini cli", "google gemini code"],
-  cody: ["sourcegraph cody", " cody "],
-}
+// Re-exported so existing ingest-time consumers keep importing from this
+// module. The source of truth lives in lib/analytics/competitors to avoid the
+// dependency cycle between scrapers and analytics and to keep the competitive
+// module tree-shakable under node --test.
+export const COMPETITOR_KEYWORDS = ANALYTICS_COMPETITOR_KEYWORDS
 
 export function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim()

@@ -60,7 +60,7 @@ export interface DashboardStats {
       id: string
       title: string
       url: string | null
-      sentiment: "positive" | "negative" | "neutral"
+      sentiment: "positive" | "negative" | "neutral" | null
       confidence: number
       impact_score: number
     }>
@@ -69,6 +69,7 @@ export interface DashboardStats {
     competitorsTracked: number
     mentionCoverage: number
     avgConfidence: number
+    totalScoredMentions: number
   }
   lastScrape: {
     status: string
