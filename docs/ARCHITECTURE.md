@@ -118,6 +118,18 @@ Extension guidance:
 - Reuse shared helpers (`normalizeWhitespace`, relevance filters).
 - Keep query syntax provider-local.
 
+### 4.2 `app/api/classify/route.ts`
+
+Responsibilities:
+- Build bounded classification context from report/env/tails/logs.
+- Call OpenAI Responses API with strict JSON schema output.
+- Enforce enum validation + `evidence_quotes` substring checks before acceptance.
+- Apply hard human-review gates and optionally dual-write normalized + raw JSON.
+
+Extension guidance:
+- Keep schema versioned and backward compatible at the API boundary.
+- Add reviewer override logging + few-shot rotation as separate workers.
+
 ### 4.2 `app/api/stats/route.ts`
 
 Responsibilities:
