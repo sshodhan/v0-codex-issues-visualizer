@@ -118,18 +118,6 @@ Extension guidance:
 - Reuse shared helpers (`normalizeWhitespace`, relevance filters).
 - Keep query syntax provider-local.
 
-### 4.2 `app/api/classify/route.ts`
-
-Responsibilities:
-- Build bounded classification context from report/env/tails/logs.
-- Call OpenAI Responses API with strict JSON schema output.
-- Enforce enum validation + `evidence_quotes` substring checks before acceptance.
-- Apply hard human-review gates and optionally dual-write normalized + raw JSON.
-
-Extension guidance:
-- Keep schema versioned and backward compatible at the API boundary.
-- Add reviewer override logging + few-shot rotation as separate workers.
-
 ### 4.2 `app/api/stats/route.ts`
 
 Responsibilities:
@@ -190,6 +178,33 @@ Extension guidance:
 ## 5) Data model summary
 
 ### 5.1 Existing operational tables
+
+- `sources`: source registry.
+- `categories`: canonical heuristic categories.
+- `issues`: normalized issue facts from public sources.
+- `scrape_logs`: ingestion run metadata and failures.
+
+### 5.2 New triage table
+
+- `bug_report_classifications`:
+  - LLM output fields (`category`, `severity`, `confidence`, etc.),
+  - raw payload (`raw_json`),
+  - reviewer workflow fields (`status`, `reviewed_by`, `reviewed_at`, `reviewer_notes`),
+  - traceability fields (`source_issue_id`, `source_issue_url`, `source_issue_title`, `source_issue_sentiment`),
+  - model metadata (`model_used`, `retried_with_large_model`).
+
+### 5.3 Key indexes and constraints
+
+- Existing unique key for issues: `(source_id, external_id)`.
+- Triage index: `(category, severity, needs_human_review, created_at DESC)`.
+- Traceability index: `(source_issue_id, created_at DESC)`.
+
+---
+
+## 6) Analytics and triage quality model
+
+### 6.1 Heuristic insight scoring (issues table)
+
 
 - `sources`: source registry.
 - `categories`: canonical heuristic categories.
