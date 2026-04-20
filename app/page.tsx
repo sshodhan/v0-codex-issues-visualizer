@@ -14,6 +14,7 @@ import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { SeniorReviewCallout } from "@/components/dashboard/senior-review-callout"
+import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
 import {
   useDashboardStats,
   useIssues,
@@ -211,6 +212,8 @@ export default function DashboardPage() {
 
             {/* Real-time insights */}
             <RealtimeInsights insights={stats.realtimeInsights} />
+
+            <CompetitiveMentions issues={issues} />
 
             {/* Classifier-backed triage with traceability */}
             <ClassificationTriage
