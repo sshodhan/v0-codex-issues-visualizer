@@ -4,11 +4,20 @@ import { dedupeIssues } from "@/lib/scrapers/shared"
 import { scrapeReddit } from "@/lib/scrapers/providers/reddit"
 import { scrapeHackerNews } from "@/lib/scrapers/providers/hackernews"
 import { scrapeGitHub } from "@/lib/scrapers/providers/github"
+import { scrapeGitHubDiscussions } from "@/lib/scrapers/providers/github-discussions"
 import { scrapeStackOverflow } from "@/lib/scrapers/providers/stackoverflow"
+import { scrapeOpenAICommunity } from "@/lib/scrapers/providers/openai-community"
 
 // Re-export provider scrapers + shared utilities so callers can hit a single
 // entry point regardless of how the project is structured later.
-export { scrapeReddit, scrapeHackerNews, scrapeGitHub, scrapeStackOverflow }
+export {
+  scrapeReddit,
+  scrapeHackerNews,
+  scrapeGitHub,
+  scrapeGitHubDiscussions,
+  scrapeStackOverflow,
+  scrapeOpenAICommunity,
+}
 export * from "@/lib/scrapers/shared"
 
 type Scraper = (s: Source, c: Category[]) => Promise<Partial<Issue>[]>
@@ -17,7 +26,9 @@ const SCRAPERS: Record<string, Scraper> = {
   reddit: scrapeReddit,
   hackernews: scrapeHackerNews,
   github: scrapeGitHub,
+  "github-discussions": scrapeGitHubDiscussions,
   stackoverflow: scrapeStackOverflow,
+  "openai-community": scrapeOpenAICommunity,
 }
 
 interface RunSummary {
