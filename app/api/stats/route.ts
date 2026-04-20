@@ -1,6 +1,32 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 
+type Sentiment = "positive" | "negative" | "neutral"
+
+interface SourceJoin {
+  source: { name: string; slug: string }[] | { name: string; slug: string } | null
+}
+
+interface CategoryJoin {
+  category:
+    | { name: string; slug: string; color: string }[]
+    | { name: string; slug: string; color: string }
+    | null
+}
+
+interface InsightIssue {
+  id: string
+  title: string
+  url: string | null
+  source: string
+  impact_score: number
+}
+
+function firstRelation<T>(value: T[] | T | null | undefined): T | null {
+  if (!value) return null
+  return Array.isArray(value) ? value[0] || null : value
+}
+
 export async function GET() {
   const supabase = await createClient()
 
@@ -17,7 +43,7 @@ export async function GET() {
     negative: 0,
     neutral: 0,
   }
-  sentimentData?.forEach((issue) => {
+  sentimentData?.forEach((issue: { sentiment: Sentiment | null }) => {
     if (issue.sentiment) {
       sentimentCounts[issue.sentiment as keyof typeof sentimentCounts]++
     }
@@ -29,8 +55,8 @@ export async function GET() {
   `)
 
   const sourceCounts: Record<string, number> = {}
-  sourceData?.forEach((issue) => {
-    const sourceName = (issue.source as { name: string } | null)?.name || "Unknown"
+  sourceData?.forEach((issue: SourceJoin) => {
+    const sourceName = firstRelation(issue.source)?.name || "Unknown"
     sourceCounts[sourceName] = (sourceCounts[sourceName] || 0) + 1
   })
 
@@ -40,8 +66,8 @@ export async function GET() {
   `)
 
   const categoryCounts: Record<string, { count: number; color: string }> = {}
-  categoryData?.forEach((issue) => {
-    const cat = issue.category as { name: string; color: string } | null
+  categoryData?.forEach((issue: CategoryJoin) => {
+    const cat = firstRelation(issue.category)
     if (cat) {
       if (!categoryCounts[cat.name]) {
         categoryCounts[cat.name] = { count: 0, color: cat.color }
@@ -88,6 +114,114 @@ export async function GET() {
     category:categories(name, color)
   `)
 
+  // Real-time issue signals (engineer-focused "what to fix now")
+  const sixDaysAgo = new Date()
+  sixDaysAgo.setDate(sixDaysAgo.getDate() - 6)
+  const threeDaysAgo = new Date()
+  threeDaysAgo.setDate(threeDaysAgo.getDate() - 3)
+
+  const { data: insightIssues } = await supabase.from("issues").select(`
+    id,
+    title,
+    url,
+    published_at,
+    sentiment,
+    impact_score,
+    category:categories(name, slug, color),
+    source:sources(name, slug)
+  `)
+    .gte("published_at", sixDaysAgo.toISOString())
+    .order("published_at", { ascending: false })
+
+  const insightBuckets: Record<
+    string,
+    {
+      category: { name: string; slug: string; color: string }
+      nowCount: number
+      previousCount: number
+      negativeCount: number
+      impactTotal: number
+      samples: InsightIssue[]
+    }
+  > = {}
+
+  insightIssues?.forEach((issue: {
+    id: string
+    title: string
+    url: string | null
+    published_at: string | null
+    sentiment: Sentiment | null
+    impact_score: number | null
+    category:
+      | { name: string; slug: string; color: string }[]
+      | { name: string; slug: string; color: string }
+      | null
+    source: { name: string; slug: string }[] | { name: string; slug: string } | null
+  }) => {
+    const category = firstRelation(issue.category)
+    if (!issue.published_at || !category) return
+
+    const publishedAt = new Date(issue.published_at)
+    const categoryKey = category.slug
+    const bucket = insightBuckets[categoryKey] || {
+      category,
+      nowCount: 0,
+      previousCount: 0,
+      negativeCount: 0,
+      impactTotal: 0,
+      samples: [],
+    }
+
+    const isNowWindow = publishedAt >= threeDaysAgo
+    if (isNowWindow) {
+      bucket.nowCount++
+      bucket.impactTotal += issue.impact_score || 0
+      if (issue.sentiment === "negative") bucket.negativeCount++
+      bucket.samples.push({
+        id: issue.id,
+        title: issue.title,
+        url: issue.url,
+        source: firstRelation(issue.source)?.name || "Unknown",
+        impact_score: issue.impact_score || 0,
+      })
+    } else {
+      bucket.previousCount++
+    }
+
+    insightBuckets[categoryKey] = bucket
+  })
+
+  const realtimeInsights = Object.values(insightBuckets)
+    .map((bucket) => {
+      const momentum = bucket.nowCount - bucket.previousCount
+      const avgImpact = bucket.nowCount > 0 ? bucket.impactTotal / bucket.nowCount : 0
+      const negativeRatio = bucket.nowCount > 0 ? bucket.negativeCount / bucket.nowCount : 0
+      const urgencyScore = Number(
+        (
+          bucket.nowCount * 1.8 +
+          Math.max(momentum, 0) * 1.5 +
+          avgImpact * 1.1 +
+          negativeRatio * 3
+        ).toFixed(2)
+      )
+
+      return {
+        category: bucket.category,
+        nowCount: bucket.nowCount,
+        previousCount: bucket.previousCount,
+        momentum,
+        avgImpact: Number(avgImpact.toFixed(2)),
+        negativeRatio: Number((negativeRatio * 100).toFixed(1)),
+        urgencyScore,
+        topIssues: bucket.samples
+          .sort((a, b) => b.impact_score - a.impact_score)
+          .slice(0, 3),
+      }
+    })
+    .filter((bucket) => bucket.nowCount > 0)
+    .sort((a, b) => b.urgencyScore - a.urgencyScore)
+    .slice(0, 5)
+
   // Get last scrape info
   const { data: lastScrape } = await supabase
     .from("scrape_logs")
@@ -110,6 +244,7 @@ export async function GET() {
     })),
     trendData: Object.values(trendByDay),
     priorityMatrix: priorityData || [],
+    realtimeInsights,
     lastScrape,
   })
 }

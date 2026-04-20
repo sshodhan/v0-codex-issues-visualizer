@@ -10,6 +10,7 @@ import { TrendChart } from "@/components/dashboard/trend-chart"
 import { PriorityMatrix } from "@/components/dashboard/priority-matrix"
 import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
 import { IssuesTable } from "@/components/dashboard/issues-table"
+import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
 import {
   useDashboardStats,
   useIssues,
@@ -173,6 +174,9 @@ export default function DashboardPage() {
 
             {/* Priority Matrix */}
             <PriorityMatrix data={stats.priorityMatrix} />
+
+            {/* Real-time insights */}
+            <RealtimeInsights insights={stats.realtimeInsights} />
 
             {/* Trend Chart */}
             {stats.trendData.length > 0 && (
