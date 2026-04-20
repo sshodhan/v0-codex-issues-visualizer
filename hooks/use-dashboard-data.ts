@@ -48,6 +48,10 @@ export interface DashboardStats {
   competitiveMentions: Array<{
     competitor: string
     totalMentions: number
+    rawMentions: number
+    scoredMentions: number
+    coverage: number
+    avgConfidence: number
     positive: number
     negative: number
     neutral: number
@@ -56,10 +60,16 @@ export interface DashboardStats {
       id: string
       title: string
       url: string | null
-      sentiment: "positive" | "negative" | "neutral" | null
+      sentiment: "positive" | "negative" | "neutral"
+      confidence: number
       impact_score: number
     }>
   }>
+  competitiveMentionsMeta: {
+    competitorsTracked: number
+    mentionCoverage: number
+    avgConfidence: number
+  }
   lastScrape: {
     status: string
     started_at: string

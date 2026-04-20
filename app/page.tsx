@@ -216,7 +216,6 @@ export default function DashboardPage() {
               <CompetitiveMentions mentions={stats.competitiveMentions || []} />
             </div>
 
-            <CompetitiveMentions issues={issues} />
 
             {/* Classifier-backed triage with traceability */}
             <ClassificationTriage

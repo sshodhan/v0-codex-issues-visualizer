@@ -1,39 +1,23 @@
 "use client"
 
-import { useMemo } from "react"
 import { Trophy, TrendingUp } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import type { Issue } from "@/hooks/use-dashboard-data"
 
-interface CompetitiveMentionsProps {
-  issues: Issue[]
+type MentionItem = {
+  competitor: string
+  totalMentions: number
+  coverage: number
+  avgConfidence: number
+  netSentiment: number
 }
 
-const COMPETITORS = [
-  { label: "Cursor", terms: ["cursor"] },
-  { label: "Claude", terms: ["claude"] },
-  { label: "GitHub Copilot", terms: ["copilot", "github copilot"] },
-  { label: "Windsurf", terms: ["windsurf", "codeium"] },
-  { label: "Replit", terms: ["replit"] },
-]
+interface CompetitiveMentionsProps {
+  mentions: MentionItem[]
+}
 
-export function CompetitiveMentions({ issues }: CompetitiveMentionsProps) {
-  const mentions = useMemo(() => {
-    const totals = COMPETITORS.map((competitor) => {
-      const count = issues.reduce((acc, issue) => {
-        const haystack = `${issue.title} ${issue.content}`.toLowerCase()
-        const hasMention = competitor.terms.some((term) => haystack.includes(term))
-        return hasMention ? acc + 1 : acc
-      }, 0)
-
-      return { name: competitor.label, count }
-    })
-
-    return totals.filter((item) => item.count > 0).sort((a, b) => b.count - a.count)
-  }, [issues])
-
-  const totalMentioned = mentions.reduce((acc, item) => acc + item.count, 0)
+export function CompetitiveMentions({ mentions }: CompetitiveMentionsProps) {
+  const totalMentioned = mentions.reduce((acc, item) => acc + item.totalMentions, 0)
 
   return (
     <Card>
@@ -43,7 +27,7 @@ export function CompetitiveMentions({ issues }: CompetitiveMentionsProps) {
           Competitive mentions
         </CardTitle>
         <CardDescription>
-          Track which alternatives users mention in scoped issues to prioritize competitive gaps faster.
+          Mention-level sentiment with confidence and coverage metrics for transparent competitive benchmarking.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -60,8 +44,8 @@ export function CompetitiveMentions({ issues }: CompetitiveMentionsProps) {
             </div>
             <div className="flex flex-wrap gap-2">
               {mentions.map((item) => (
-                <Badge key={item.name} variant="secondary" className="text-xs">
-                  {item.name}: {item.count}
+                <Badge key={item.competitor} variant="secondary" className="text-xs">
+                  {item.competitor}: {item.totalMentions} · conf {Math.round(item.avgConfidence * 100)}% · cov {Math.round(item.coverage * 100)}%
                 </Badge>
               ))}
             </div>

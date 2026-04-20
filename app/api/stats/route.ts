@@ -133,6 +133,11 @@ export async function GET() {
 
   const realtimeInsights = computeRealtimeInsights(normalizedRecent)
   const competitiveMentions = computeCompetitiveMentions(normalizedRecent)
+  const competitiveMentionsMeta = {
+    competitorsTracked: competitiveMentions.length,
+    mentionCoverage: Number((competitiveMentions.reduce((sum, item) => sum + item.coverage, 0) / Math.max(1, competitiveMentions.length)).toFixed(2)),
+    avgConfidence: Number((competitiveMentions.reduce((sum, item) => sum + item.avgConfidence, 0) / Math.max(1, competitiveMentions.length)).toFixed(2)),
+  }
 
   const { data: lastScrape } = await supabase
     .from("scrape_logs")
@@ -157,6 +162,7 @@ export async function GET() {
     priorityMatrix: priorityData || [],
     realtimeInsights,
     competitiveMentions,
+    competitiveMentionsMeta,
     lastScrape,
   })
 }
