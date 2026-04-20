@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20_
+_Last updated: 2026-04-20 (v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -22,15 +22,24 @@ Primary goals:
 External Sources
   ├─ Reddit JSON API
   ├─ Hacker News Algolia API
-  └─ GitHub Issues Search API
+  ├─ GitHub Issues Search API
+  └─ Stack Exchange (Stack Overflow) API
          │
          ▼
-Scraper + Enrichment Layer (lib/scrapers/index.ts)
+Provider Scrapers (lib/scrapers/providers/*.ts)
   ├─ relevance filtering (Codex-focused)
   ├─ normalization + low-value filtering
+  ├─ shared retry/backoff fetch
   ├─ sentiment scoring
   ├─ weighted category classification (heuristic)
+  ├─ competitor mention detection
   └─ deduplication
+         │
+         ▼
+Orchestrator (lib/scrapers/index.ts)
+  ├─ runs all providers in parallel
+  ├─ writes per-source scrape_logs
+  └─ runScraper(slug) for single-source runs
          │
          ▼
 Supabase (Postgres)
@@ -41,9 +50,11 @@ Supabase (Postgres)
   └─ bug_report_classifications   <-- new LLM triage store
          │
          ├─ API: analytics/query layer
-         │   ├─ /api/issues
-         │   ├─ /api/stats
-         │   └─ /api/scrape
+         │   ├─ /api/issues          (query/filter; supports q, days, source, category)
+         │   ├─ /api/stats           (dashboard aggregates + realtime + competitive)
+         │   ├─ /api/scrape          (trigger all scrapers)
+         │   ├─ /api/scrape/[source] (trigger one scraper)
+         │   └─ /api/cron/scrape     (Vercel cron entry)
          │
          └─ API: classifier/reviewer layer
              ├─ /api/classify
@@ -52,9 +63,15 @@ Supabase (Postgres)
              └─ /api/classifications/:id (PATCH)
          │
          ▼
+Analytics modules (lib/analytics/*)
+  ├─ realtime.ts     (urgency = volume × decay + momentum + impact + neg + diversity)
+  └─ competitive.ts  (per-competitor mention counts + net sentiment)
+         │
+         ▼
 Dashboard UI (app/page.tsx)
   ├─ KPI cards + trend/source/sentiment/category visuals
-  ├─ realtime urgency insights
+  ├─ realtime urgency insights (now with source diversity)
+  ├─ competitive mentions panel
   ├─ issues table (source links)
   └─ classification triage panel (traceability + reviewer workflow)
 ```
@@ -105,28 +122,46 @@ This enables end-to-end provenance from dashboard insight → classifier decisio
 
 ## 4) Module map and responsibilities
 
-### 4.1 `lib/scrapers/index.ts`
+### 4.1 `lib/scrapers/`
 
-Responsibilities:
-- Provider fetch + normalization for Reddit/HN/GitHub.
-- Relevance filtering and de-noising.
-- Heuristic sentiment/category/impact enrichment.
-- Deduplication before persistence.
+Layout:
+- `lib/scrapers/index.ts` — orchestrator. `runAllScrapers()` (parallel) and
+  `runScraper(slug)` (single-source). Owns scrape_logs lifecycle and upserts.
+- `lib/scrapers/shared.ts` — relevance filters, sentiment, category scoring,
+  impact scoring, competitor keyword detection, retry/backoff fetch helper,
+  dedupe.
+- `lib/scrapers/providers/{reddit,hackernews,github,stackoverflow}.ts` —
+  one provider per file. Each owns its source-specific query and the
+  mapping into a `Partial<Issue>`.
 
 Extension guidance:
-- Add new providers as isolated `scrapeX()` functions.
-- Reuse shared helpers (`normalizeWhitespace`, relevance filters).
-- Keep query syntax provider-local.
+- Add a new provider by creating `providers/<slug>.ts` and registering it in
+  the `SCRAPERS` map in `index.ts`. Add the matching `sources` row via a
+  numbered SQL migration.
+- Reuse shared helpers (`normalizeWhitespace`, `analyzeSentiment`,
+  `categorizeIssue`, `fetchWithRetry`).
+- Keep provider-specific query syntax local to each provider.
+- Prefer explicit query grouping (or `optionalWords`-style boolean OR) to
+  avoid boolean precedence bugs.
 
 ### 4.2 `app/api/stats/route.ts`
 
 Responsibilities:
-- Aggregates KPI + trend + realtime urgency metrics from `issues`.
-- Computes urgency score from volume/momentum/impact/negative ratio.
+- Aggregate KPI + trend + realtime urgency metrics from `issues`.
+- Pull a single 6-day window once and feed both realtime and competitive
+  analytics from it (avoids duplicate queries).
+- Normalize Supabase relation payload shape (`firstRelation`).
+
+Heavy analytics live in `lib/analytics/*`:
+- `lib/analytics/realtime.ts` — urgency-ranked category insights with
+  source diversity and recency decay.
+- `lib/analytics/competitive.ts` — per-competitor mention counts and net
+  sentiment.
 
 Extension guidance:
-- Keep response backward-compatible for existing UI cards/charts.
-- Extract heavy math to `lib/analytics/*` if logic grows.
+- Keep response backward-compatible for existing UI consumers.
+- Add new metrics as additional analytics modules called from the route.
+- Add versioning (`/api/stats?v=2`) before breaking response schema.
 
 ### 4.3 `app/api/classify/route.ts`
 
@@ -203,42 +238,35 @@ Extension guidance:
 
 ## 6) Analytics and triage quality model
 
-### 6.1 Heuristic insight scoring (issues table)
+### 6.1 Heuristic category model
 
+Current model: weighted phrase matching with optional whole-word mode.
 
-- `sources`: source registry.
-- `categories`: canonical heuristic categories.
-- `issues`: normalized issue facts from public sources.
-- `scrape_logs`: ingestion run metadata and failures.
+Why this exists:
+- Improves over first-match substring logic.
+- Allows stronger phrases to override weak incidental words.
+- Supports category-specific weighting without model hosting overhead.
 
-### 5.2 New triage table
+Future improvements:
+1. Add confidence output (top-1 minus top-2 margin).
+2. Route low-confidence to `other` or human review bucket.
+3. Maintain evaluation set for precision/recall per category.
 
-- `bug_report_classifications`:
-  - LLM output fields (`category`, `severity`, `confidence`, etc.),
-  - raw payload (`raw_json`),
-  - reviewer workflow fields (`status`, `reviewed_by`, `reviewed_at`, `reviewer_notes`),
-  - traceability fields (`source_issue_id`, `source_issue_url`, `source_issue_title`, `source_issue_sentiment`),
-  - model metadata (`model_used`, `retried_with_large_model`).
+### 6.2 Realtime urgency scoring
 
-### 5.3 Key indexes and constraints
-
-- Existing unique key for issues: `(source_id, external_id)`.
-- Triage index: `(category, severity, needs_human_review, created_at DESC)`.
-- Traceability index: `(source_issue_id, created_at DESC)`.
-
----
-
-## 6) Analytics and triage quality model
-
-### 6.1 Heuristic insight scoring (issues table)
-
-Urgency score currently blends:
-- recent volume,
-- positive momentum vs prior 72h,
+Current score (`lib/analytics/realtime.ts`) blends:
+- recency-decayed volume (linear from 1.0 at "now" to 0.0 at window edge),
+- positive momentum (vs prior 72h window),
 - average impact,
-- negative sentiment ratio.
+- negative sentiment ratio,
+- source diversity (number of distinct sources reporting in the category).
 
-### 6.2 LLM triage quality controls (classification table)
+Future improvements:
+1. Add cross-source duplicate clustering (same story across HN + Reddit).
+2. Per-category dynamic thresholds (some categories are noisy by default).
+3. Anomaly detection for sudden surge alerts independent of urgency rank.
+
+### 6.3 LLM triage quality controls (classification table)
 
 Current controls:
 - strict JSON schema output,
@@ -246,13 +274,67 @@ Current controls:
 - substring evidence guard,
 - mandatory human-review triggers for risky conditions.
 
-### 6.3 Analyst-grade traceability requirements
+### 6.4 Analyst-grade traceability requirements
 
 For each reviewer-visible classification, target:
 1. Source URL present (linkable back to external feedback).
 2. Source sentiment populated.
 3. Evidence quote list retained.
 4. Reviewer action audit fields populated once adjudicated.
+
+---
+
+## 6.5) Data provenance — what is real vs reference
+
+This system intentionally keeps zero synthetic dashboard data. Everything the
+running app renders is either a live API response or a Supabase read of rows
+that scrapers/classifiers populated from real public sources.
+
+Real data (live, never seeded):
+- `issues` rows — written by `lib/scrapers/providers/{reddit,hackernews,github,stackoverflow}.ts`,
+  each of which calls a real public API:
+  - Reddit JSON search (`reddit.com/r/<sub>/search.json`)
+  - Hacker News Algolia search (`hn.algolia.com/api/v1/search`)
+  - GitHub Issues Search (`api.github.com/search/issues`)
+  - Stack Exchange (`api.stackexchange.com/2.3/questions`)
+- `scrape_logs` rows — written by `lib/scrapers/index.ts` per run.
+- `bug_report_classifications` rows — written by `app/api/classify/route.ts`
+  from the OpenAI Responses API.
+
+Reference data (seeded once via SQL, required for foreign keys to work):
+- `sources` rows — one per provider (`reddit`, `hackernews`, `github`,
+  `stackoverflow`). See `scripts/001_*.sql`, `002_*.sql`, `003_*.sql`.
+- `categories` rows — taxonomy used by the heuristic classifier (`Bug`,
+  `Feature Request`, `Performance`, …). Same migration files.
+
+**Not wired into the running app, and now removed from the repo entirely:**
+- A previous `codex-analysis/` directory contained pre-computed JSON
+  snapshots (`codex_analysis_data*.json`) and a Python loader
+  (`backend/load_data_supabase.py`) that wrote synthetic monthly timeline
+  rows directly into the `issues` table. None of it was ever imported by
+  `app/`, `lib/`, `components/`, or `hooks/`, but its mere presence meant
+  the loader could be run against a real Supabase and pollute the
+  dashboard with fake data. The entire directory has been deleted so the
+  repo no longer ships any placeholder dataset.
+
+How to verify at any time:
+```sh
+# 1) No placeholder dataset, mock module, or fixture folder exists
+test ! -d codex-analysis && \
+  ! grep -R --include='*.ts' --include='*.tsx' \
+    -E 'fixtures?/|mock(Data|Issues)|SAMPLE_ISSUES' app lib components hooks
+
+# 2) Every dashboard surface flows from /api/* via SWR
+grep -R --include='*.ts' --include='*.tsx' 'useSWR' hooks
+
+# 3) Scrapers hit live HTTPS URLs (not local files)
+grep -R --include='*.ts' -n 'https://' lib/scrapers/providers
+
+# 4) SQL migrations only seed reference taxonomy, never issues
+grep -nE 'INSERT INTO issues' scripts/*.sql   # should print nothing
+```
+All four should return only the expected runtime call sites — no fixture
+imports, no seeded `issues` rows, no `file://` URLs.
 
 ---
 

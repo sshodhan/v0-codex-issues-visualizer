@@ -210,8 +210,11 @@ export default function DashboardPage() {
             {/* Priority Matrix */}
             <PriorityMatrix data={stats.priorityMatrix} />
 
-            {/* Real-time insights */}
-            <RealtimeInsights insights={stats.realtimeInsights} />
+            {/* Real-time insights + competitive mentions */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              <RealtimeInsights insights={stats.realtimeInsights} />
+              <CompetitiveMentions mentions={stats.competitiveMentions || []} />
+            </div>
 
             <CompetitiveMentions issues={issues} />
 
