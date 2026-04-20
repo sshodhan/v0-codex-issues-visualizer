@@ -72,18 +72,17 @@ formula own the full sentiment weighting.
 
 ### P0-4: Competitive sentiment is attributed to *all* co-mentioned competitors
 
-**File:** `lib/analytics/competitive.ts:55-80`
+**Status:** ✅ Fixed on 2026-04-20.
 
-**Problem:** If one post mentions both `cursor` and `windsurf`, the inner loop
-attributes the post's sentiment to both competitors. A post saying "Cursor is
-much better than Windsurf" is logged as a positive signal for Cursor *and* a
-positive signal for Windsurf. Net-sentiment bars in the dashboard are therefore
-misleading whenever two competitors appear in the same post.
+**Implemented fix:** `lib/analytics/competitive.ts` now computes sentiment at
+the mention level (sentence/window around each competitor phrase), aggregates
+multiple mentions per competitor per issue, and then rolls up positive/negative/
+neutral counts and net sentiment. This prevents a single issue-level sentiment
+from being blindly copied to every co-mentioned competitor.
 
-**Fix sketch:** Either attribute only to competitors the sentence polarity
-points toward (hard), or deduplicate per-post: only mark the first matched
-competitor (simple) or skip sentiment attribution when `>1` competitor is
-matched (conservative).
+**Transparency additions:** The analytics payload now exposes `rawMentions`,
+`scoredMentions`, `coverage`, and `avgConfidence` per competitor, plus
+`competitiveMentionsMeta` in `/api/stats` for dashboard-level context.
 
 ---
 
@@ -344,7 +343,7 @@ and more".
 | P0-1   | P0       | Data quality   | `lib/scrapers/providers/reddit.ts:27`     | Bare `copilot` query matches unrelated products |
 | P0-2   | P0       | Sentiment      | `lib/scrapers/shared.ts:79-84`            | Topic nouns inflate negative-sentiment count   |
 | P0-3   | P0       | Analytics      | `shared.ts:255` + `realtime.ts:124`       | Negative bias double-counted in urgency score  |
-| P0-4   | P0       | Analytics      | `lib/analytics/competitive.ts:55-80`      | Co-mentioned competitors share same sentiment  |
+| P0-4   | P0       | Analytics      | `lib/analytics/competitive.ts`            | ✅ Fixed: mention-level competitive sentiment  |
 | P0-5   | P0       | Data model     | `index.ts:65` + `sql:46`                  | `frequency_count` never increments, always 1  |
 | P0-6   | P0       | Performance    | `app/api/stats/route.ts:27-138`           | 6 un-cached full-table scans per page load     |
 | P1-1   | P1       | UX / errors    | `app/page.tsx:111`                        | Error and empty state look identical           |

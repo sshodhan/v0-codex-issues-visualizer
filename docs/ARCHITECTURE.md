@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20 (v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-20 (v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -67,7 +67,7 @@ Supabase (Postgres)
          ▼
 Analytics modules (lib/analytics/*)
   ├─ realtime.ts     (urgency = volume × decay + momentum + impact + neg + diversity)
-  └─ competitive.ts  (per-competitor mention counts + net sentiment)
+  └─ competitive.ts  (mention-window sentiment per competitor + confidence/coverage)
          │
          ▼
 Dashboard UI (app/page.tsx)
@@ -159,13 +159,21 @@ Responsibilities:
 Heavy analytics live in `lib/analytics/*`:
 - `lib/analytics/realtime.ts` — urgency-ranked category insights with
   source diversity and recency decay.
-- `lib/analytics/competitive.ts` — per-competitor mention counts and net
-  sentiment.
+- `lib/analytics/competitive.ts` — mention-level scoring around each competitor
+  phrase, per-issue aggregation of multiple mentions, and per-competitor
+  confidence/coverage metrics.
 
 Extension guidance:
 - Keep response backward-compatible for existing UI consumers.
 - Add new metrics as additional analytics modules called from the route.
 - Add versioning (`/api/stats?v=2`) before breaking response schema.
+
+Competitive payload details (current):
+- `competitiveMentions[*]` now includes `rawMentions`, `scoredMentions`,
+  `coverage`, and `avgConfidence` for dashboard transparency.
+- `topIssues[*]` uses mention-aggregated sentiment with per-issue confidence.
+- `/api/stats` also returns `competitiveMentionsMeta` with
+  `competitorsTracked`, average `mentionCoverage`, and average `avgConfidence`.
 
 ### 4.3 `app/api/classify/route.ts`
 
