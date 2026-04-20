@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { RefreshCw, AlertCircle, Loader2, BarChart3 } from "lucide-react"
 import { StatCard } from "@/components/dashboard/stat-card"
@@ -12,6 +12,8 @@ import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
 import { IssuesTable } from "@/components/dashboard/issues-table"
 import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
+import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
+import { SeniorReviewCallout } from "@/components/dashboard/senior-review-callout"
 import {
   useDashboardStats,
   useIssues,
@@ -23,16 +25,20 @@ import { formatDistanceToNow } from "date-fns"
 
 export default function DashboardPage() {
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [filters, setFilters] = useState<{
+  const [globalDays, setGlobalDays] = useState(30)
+  const [globalCategory, setGlobalCategory] = useState("all")
+  const [issueFilters, setIssueFilters] = useState<{
     sentiment?: string
-    category?: string
-    days?: number
     sortBy?: string
     order?: string
   }>({})
 
   const { stats, isLoading: statsLoading, refresh: refreshStats } = useDashboardStats()
-  const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues(filters)
+  const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues({
+    ...issueFilters,
+    days: globalDays || undefined,
+    category: globalCategory === "all" ? undefined : globalCategory,
+  })
   const { scrape } = useScrape()
   const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({ limit: 30 })
   const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats()
@@ -49,9 +55,22 @@ export default function DashboardPage() {
     }
   }
 
-  const handleFilterChange = (newFilters: typeof filters) => {
-    setFilters((prev) => ({ ...prev, ...newFilters }))
+  const handleFilterChange = (newFilters: typeof issueFilters) => {
+    setIssueFilters((prev) => ({ ...prev, ...newFilters }))
   }
+
+  const categoryOptions = useMemo(() => {
+    const dynamic = (stats?.categoryBreakdown || []).map((category) => ({
+      value: category.name.toLowerCase().replace(/\s+/g, "-"),
+      label: category.name,
+      count: category.count,
+    }))
+
+    return [{ value: "all", label: "All categories", count: stats?.totalIssues || 0 }, ...dynamic]
+  }, [stats])
+
+  const globalTimeLabel = globalDays === 0 ? "All time" : `Last ${globalDays} days`
+  const globalCategoryLabel = categoryOptions.find((option) => option.value === globalCategory)?.label || "All categories"
 
   const lastScrapeTime = stats?.lastScrape?.completed_at
     ? formatDistanceToNow(new Date(stats.lastScrape.completed_at), {
@@ -170,6 +189,16 @@ export default function DashboardPage() {
               />
             </div>
 
+            <GlobalFilterBar
+              timeDays={globalDays}
+              onTimeChange={setGlobalDays}
+              categoryOptions={categoryOptions}
+              categoryValue={globalCategory}
+              onCategoryChange={setGlobalCategory}
+            />
+
+            <SeniorReviewCallout />
+
             {/* Charts Row 1 */}
             <div className="grid gap-6 lg:grid-cols-3">
               <SentimentChart data={stats.sentimentBreakdown} />
@@ -188,6 +217,8 @@ export default function DashboardPage() {
               records={classifications}
               stats={classificationStats}
               isLoading={classificationsLoading}
+              activeCategory={globalCategory}
+              timeDays={globalDays}
               onRefresh={async () => {
                 await Promise.all([refreshClassifications(), refreshClassificationStats()])
               }}
@@ -202,11 +233,8 @@ export default function DashboardPage() {
             <IssuesTable
               issues={issues}
               isLoading={issuesLoading}
-              categories={stats.categoryBreakdown.map(c => ({
-                name: c.name,
-                slug: c.name.toLowerCase().replace(/\s+/g, '-'),
-                color: c.color,
-              }))}
+              globalTimeLabel={globalTimeLabel}
+              globalCategoryLabel={globalCategoryLabel}
               onFilterChange={handleFilterChange}
             />
           </div>

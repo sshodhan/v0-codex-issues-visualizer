@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatDistanceToNow } from "date-fns"
+import { formatDistanceToNow, subDays } from "date-fns"
 import type { ClassificationRecord, ClassificationStats } from "@/hooks/use-dashboard-data"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
 
@@ -30,13 +30,15 @@ interface ClassificationTriageProps {
   records: ClassificationRecord[]
   stats?: ClassificationStats
   isLoading: boolean
+  activeCategory: string
+  timeDays: number
   onRefresh: () => Promise<unknown>
 }
 
 const STATUS_OPTIONS = ["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"] as const
 const SEVERITY_OPTIONS = ["critical", "high", "medium", "low"] as const
 
-export function ClassificationTriage({ records, stats, isLoading, onRefresh }: ClassificationTriageProps) {
+export function ClassificationTriage({ records, stats, isLoading, activeCategory, timeDays, onRefresh }: ClassificationTriageProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [statusOverride, setStatusOverride] = useState<string>("triaged")
   const [severityOverride, setSeverityOverride] = useState<string>("medium")
@@ -44,10 +46,42 @@ export function ClassificationTriage({ records, stats, isLoading, onRefresh }: C
   const [reviewer, setReviewer] = useState<string>("")
   const [notes, setNotes] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [clusterFilter, setClusterFilter] = useState<string>("all")
+
+  const globallyFilteredRecords = useMemo(() => {
+    const timeCutoff = timeDays > 0 ? subDays(new Date(), timeDays) : null
+
+    return records.filter((record) => {
+      const categoryMatch = activeCategory === "all" || record.category.toLowerCase() === activeCategory
+      const timeMatch = !timeCutoff || new Date(record.created_at) >= timeCutoff
+      return categoryMatch && timeMatch
+    })
+  }, [records, activeCategory, timeDays])
+
+  const clusters = useMemo(() => {
+    const grouped = new Map<string, { total: number; highRisk: number }>()
+    for (const record of globallyFilteredRecords) {
+      const key = `${record.category} › ${record.subcategory || "General"}`
+      const current = grouped.get(key) || { total: 0, highRisk: 0 }
+      current.total += 1
+      if (record.severity === "critical" || record.severity === "high") current.highRisk += 1
+      grouped.set(key, current)
+    }
+
+    return Array.from(grouped.entries())
+      .map(([name, values]) => ({ name, ...values }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10)
+  }, [globallyFilteredRecords])
+
+  const triageRecords = useMemo(() => {
+    if (clusterFilter === "all") return globallyFilteredRecords
+    return globallyFilteredRecords.filter((record) => `${record.category} › ${record.subcategory || "General"}` === clusterFilter)
+  }, [globallyFilteredRecords, clusterFilter])
 
   const selected = useMemo(
-    () => records.find((record) => record.id === selectedId) || null,
-    [records, selectedId]
+    () => triageRecords.find((record) => record.id === selectedId) || null,
+    [triageRecords, selectedId]
   )
 
   const submitReview = async () => {
@@ -78,7 +112,7 @@ export function ClassificationTriage({ records, stats, isLoading, onRefresh }: C
           Classification Triage & Reviewer Workflow
         </CardTitle>
         <CardDescription>
-          Every classification row links back to source feedback URL and sentiment so reviewers can trace AI insights to real user reports.
+          Clustered classification lanes make it faster to jump into dense issue pockets and review related reports in one pass.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -88,12 +122,12 @@ export function ClassificationTriage({ records, stats, isLoading, onRefresh }: C
             <p className="text-xl font-semibold">{stats?.total ?? records.length}</p>
           </div>
           <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Needs human review</p>
-            <p className="text-xl font-semibold">{stats?.needsReviewCount ?? records.filter((r) => r.needs_human_review).length}</p>
+            <p className="text-xs text-muted-foreground">In current scope</p>
+            <p className="text-xl font-semibold">{globallyFilteredRecords.length}</p>
           </div>
           <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Traceable to source URL</p>
-            <p className="text-xl font-semibold">{stats?.traceableCount ?? records.filter((r) => r.source_issue_url).length}</p>
+            <p className="text-xs text-muted-foreground">Needs human review</p>
+            <p className="text-xl font-semibold">{stats?.needsReviewCount ?? records.filter((r) => r.needs_human_review).length}</p>
           </div>
           <div className="rounded-md border p-3">
             <p className="text-xs text-muted-foreground">Traceability coverage</p>
@@ -101,10 +135,32 @@ export function ClassificationTriage({ records, stats, isLoading, onRefresh }: C
           </div>
         </div>
 
+        <div className="space-y-2 rounded-md border p-3">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Top classification clusters</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant={clusterFilter === "all" ? "default" : "outline"} onClick={() => setClusterFilter("all")}>
+              All clusters
+            </Button>
+            {clusters.map((cluster) => (
+              <Button
+                key={cluster.name}
+                size="sm"
+                variant={clusterFilter === cluster.name ? "default" : "outline"}
+                onClick={() => setClusterFilter(cluster.name)}
+                className="gap-2"
+              >
+                <span className="truncate max-w-[220px]">{cluster.name}</span>
+                <Badge variant="secondary">{cluster.total}</Badge>
+                {cluster.highRisk > 0 && <Badge variant="destructive">{cluster.highRisk} high</Badge>}
+              </Button>
+            ))}
+          </div>
+        </div>
+
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading classifications...</p>
-        ) : records.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No classifier records yet. Run classification to populate this queue.</p>
+        ) : triageRecords.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No classifier records in this scope. Adjust global sliders or cluster filter.</p>
         ) : (
           <div className="overflow-x-auto rounded-md border">
             <Table>
@@ -120,7 +176,7 @@ export function ClassificationTriage({ records, stats, isLoading, onRefresh }: C
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {records.map((record) => (
+                {triageRecords.map((record) => (
                   <TableRow
                     key={record.id}
                     onClick={() => {
