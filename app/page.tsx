@@ -1,8 +1,9 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { RefreshCw, AlertCircle, Loader2, BarChart3 } from "lucide-react"
+import { RefreshCw, AlertCircle, Loader2, BarChart3, LineChart } from "lucide-react"
 import { StatCard } from "@/components/dashboard/stat-card"
 import { SentimentChart } from "@/components/dashboard/sentiment-chart"
 import { SourceChart } from "@/components/dashboard/source-chart"
@@ -72,6 +73,12 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <Button asChild variant="outline" className="gap-2">
+              <Link href="/analysis">
+                <LineChart className="h-4 w-4" />
+                Market Analysis
+              </Link>
+            </Button>
             <div className="text-right text-sm">
               <p className="text-muted-foreground">Last synced</p>
               <p className="font-medium text-foreground">{lastScrapeTime}</p>
