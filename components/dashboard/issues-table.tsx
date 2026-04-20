@@ -52,6 +52,7 @@ const TIME_WINDOWS = [
   { label: "Last 90 days", value: 90 },
 ]
 
+// Issues table with filters and clickable links
 export function IssuesTable({
   issues,
   isLoading,
