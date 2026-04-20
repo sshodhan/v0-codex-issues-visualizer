@@ -1,0 +1,48 @@
+{
+  "project_metadata": {
+    "name": "Codex Market Analysis & Issue Visualization Platform",
+    "version": "1.0",
+    "data_generated": "2026-04-20",
+    "data_period": "2025-01-01 to 2026-04-20",
+    "source_systems": ["GitHub", "Stack Overflow", "Reddit", "Hacker News"],
+    "total_issues_tracked": 1250,
+    "unique_root_causes": 12
+  },
+  "timeline_data": [
+    {"month": "Jan 2025", "sentiment": 72, "issue_freq": 15, "status": "Stable"},
+    {"month": "Feb 2025", "sentiment": 70, "issue_freq": 18, "status": "Stable"},
+    {"month": "Mar 2025", "sentiment": 68, "issue_freq": 22, "status": "Degrading"},
+    {"month": "Apr 2025", "sentiment": 65, "issue_freq": 28, "status": "Degrading"},
+    {"month": "May 2025", "sentiment": 58, "issue_freq": 35, "status": "Poor"},
+    {"month": "Jun 2025", "sentiment": 55, "issue_freq": 42, "status": "Poor"},
+    {"month": "Jul 2025", "sentiment": 52, "issue_freq": 50, "status": "Critical"},
+    {"month": "Aug 2025", "sentiment": 50, "issue_freq": 58, "status": "Critical"},
+    {"month": "Sep 2025", "sentiment": 48, "issue_freq": 65, "status": "Critical"},
+    {"month": "Oct 2025", "sentiment": 38, "issue_freq": 85, "status": "Severe"},
+    {"month": "Nov 2025", "sentiment": 35, "issue_freq": 92, "status": "Severe"},
+    {"month": "Dec 2025", "sentiment": 40, "issue_freq": 80, "status": "Recovering"},
+    {"month": "Jan 2026", "sentiment": 55, "issue_freq": 65, "status": "Improving"},
+    {"month": "Feb 2026", "sentiment": 68, "issue_freq": 42, "status": "Improving"},
+    {"month": "Mar 2026", "sentiment": 78, "issue_freq": 25, "status": "Good"},
+    {"month": "Apr 2026", "sentiment": 82, "issue_freq": 15, "status": "Excellent"}
+  ],
+  "issue_categories": [
+    {"id": 1, "name": "Code Review Incomplete", "count": 24, "percentage": 22, "severity_avg": "high"},
+    {"id": 2, "name": "Session/Memory Issues", "count": 21, "percentage": 19, "severity_avg": "high"},
+    {"id": 3, "name": "Accuracy/Consistency", "count": 19, "percentage": 17, "severity_avg": "high"},
+    {"id": 4, "name": "Usage Metering Bugs", "count": 16, "percentage": 15, "severity_avg": "high"},
+    {"id": 5, "name": "Error Handling", "count": 13, "percentage": 12, "severity_avg": "medium"},
+    {"id": 6, "name": "Integration Issues", "count": 12, "percentage": 11, "severity_avg": "medium"},
+    {"id": 7, "name": "Performance/Timeouts", "count": 5, "percentage": 4, "severity_avg": "medium"}
+  ],
+  "user_segments": [
+    {"id": 1, "name": "Indie Developers", "developer_count_range": "1-4", "crisis_severity": 35, "cost_impact": 45, "recovery_speed": 85},
+    {"id": 2, "name": "Small Teams", "developer_count_range": "5-50", "crisis_severity": 55, "cost_impact": 65, "recovery_speed": 60},
+    {"id": 3, "name": "Enterprise", "developer_count_range": "500+", "crisis_severity": 78, "cost_impact": 92, "recovery_speed": 20}
+  ],
+  "competitive_analysis": [
+    {"product": "Codex", "code_quality_score": 75, "efficiency_score": 90, "cost_per_task": 15, "context_window_tokens": 200, "agent_autonomy_score": 92, "uptime_sla": 99.5},
+    {"product": "Claude Code", "code_quality_score": 80.9, "efficiency_score": 25, "cost_per_task": 155, "context_window_tokens": 1000, "agent_autonomy_score": 85, "uptime_sla": 99.9},
+    {"product": "GitHub Copilot", "code_quality_score": 70, "efficiency_score": 60, "cost_per_task": 30, "context_window_tokens": 100, "agent_autonomy_score": 65, "uptime_sla": 99.8}
+  ]
+}
