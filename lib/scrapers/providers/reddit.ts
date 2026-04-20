@@ -4,10 +4,13 @@ import {
   calculateImpactScore,
   categorizeIssue,
   fetchWithRetry,
-  isLikelyCodexIssue,
   isLowValueIssue,
   normalizeWhitespace,
 } from "@/lib/scrapers/shared"
+import {
+  REDDIT_SCOPED_QUERY_TERMS,
+  evaluateCodexRelevance,
+} from "@/lib/scrapers/relevance"
 
 const SUBREDDITS = [
   "OpenAI",
@@ -18,14 +21,14 @@ const SUBREDDITS = [
   "ArtificialInteligence",
 ]
 
+const RELEVANCE_DEBUG = process.env.RELEVANCE_DEBUG === "1"
+
 export async function scrapeReddit(
   source: Source,
   categories: Category[]
 ): Promise<Partial<Issue>[]> {
   const issues: Partial<Issue>[] = []
-  const query = encodeURIComponent(
-    '(codex OR copilot OR "openai codex" OR "codex cli")'
-  )
+  const query = encodeURIComponent(`(${REDDIT_SCOPED_QUERY_TERMS.join(" OR ")})`)
 
   for (const subreddit of SUBREDDITS) {
     try {
@@ -44,7 +47,13 @@ export async function scrapeReddit(
         const normalizedContent = normalizeWhitespace(selftext || "")
         const content = `${normalizedTitle} ${normalizedContent}`
 
-        if (!isLikelyCodexIssue(content)) continue
+        const relevance = evaluateCodexRelevance(content)
+        if (!relevance.passed) {
+          if (RELEVANCE_DEBUG) {
+            console.debug(`[relevance] reddit/${subreddit} rejected: ${relevance.decision}`)
+          }
+          continue
+        }
         if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
         const { sentiment, score: sentimentScore } = analyzeSentiment(content)
@@ -63,6 +72,7 @@ export async function scrapeReddit(
           upvotes: score,
           comments_count: num_comments,
           published_at: new Date(created_utc * 1000).toISOString(),
+          relevance_reason: relevance.relevanceReason,
         })
       }
     } catch (error) {

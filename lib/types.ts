@@ -31,6 +31,7 @@ export interface Issue {
   upvotes: number
   comments_count: number
   published_at: string | null
+  relevance_reason: string | null
   scraped_at: string
   created_at: string
   updated_at: string

@@ -4,16 +4,19 @@ import {
   calculateImpactScore,
   categorizeIssue,
   fetchWithRetry,
-  isLikelyCodexIssue,
   isLowValueIssue,
   normalizeWhitespace,
 } from "@/lib/scrapers/shared"
+import {
+  HACKERNEWS_QUERY_PARAMS,
+  evaluateCodexRelevance,
+} from "@/lib/scrapers/relevance"
 
-// Algolia search treats the `query` as AND-by-default. Using `optionalWords`
-// gives us boolean OR semantics across our keyword set so we don't lose
-// stories that only mention one of them.
-const QUERY = ""
-const OPTIONAL = ["codex", "copilot", "openai", "codex cli", "openai codex"]
+// Algolia treats the `query` as AND-by-default. The required phrase + a
+// scoped `optionalWords` list gives us OR semantics over the shared
+// CODEX_CORE_PHRASES in relevance.ts — a single source of truth with
+// Reddit.
+const RELEVANCE_DEBUG = process.env.RELEVANCE_DEBUG === "1"
 
 export async function scrapeHackerNews(
   source: Source,
@@ -21,10 +24,10 @@ export async function scrapeHackerNews(
 ): Promise<Partial<Issue>[]> {
   const issues: Partial<Issue>[] = []
   const params = new URLSearchParams({
-    query: QUERY,
+    query: HACKERNEWS_QUERY_PARAMS.query,
     tags: "story",
     hitsPerPage: "75",
-    optionalWords: OPTIONAL.join(" "),
+    optionalWords: HACKERNEWS_QUERY_PARAMS.optional.join(" "),
   })
 
   try {
@@ -41,7 +44,13 @@ export async function scrapeHackerNews(
       const normalizedContent = normalizeWhitespace(hit.story_text || hit.comment_text || "")
       const content = `${normalizedTitle} ${normalizedContent}`
 
-      if (!isLikelyCodexIssue(content)) continue
+      const relevance = evaluateCodexRelevance(content)
+      if (!relevance.passed) {
+        if (RELEVANCE_DEBUG) {
+          console.debug(`[relevance] hackernews rejected: ${relevance.decision}`)
+        }
+        continue
+      }
       if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
       const { sentiment, score: sentimentScore } = analyzeSentiment(content)
@@ -64,6 +73,7 @@ export async function scrapeHackerNews(
         upvotes: hit.points || 0,
         comments_count: hit.num_comments || 0,
         published_at: hit.created_at,
+        relevance_reason: relevance.relevanceReason,
       })
     }
   } catch (error) {
