@@ -30,6 +30,19 @@ const NON_PRODUCT_NOISE_PATTERNS = [
   /\bmanuscript\b/i,
 ]
 
+const NEGATIVE_KEYWORD_PATTERNS = [
+  /\bbug\b/g,
+  /\berror\b/g,
+  /\bcrash\b/g,
+  /\bbroken\b/g,
+  /\bissue\b/g,
+  /\bproblem\b/g,
+  /\bregression\b/g,
+  /\bnot\s+working\b/g,
+  /\bdoesn['’]?t\s+work\b/g,
+  /\bfails?\b/g,
+]
+
 export function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim()
 }
@@ -66,9 +79,18 @@ export function detectCompetitorMentions(text: string): string[] {
   return Array.from(found)
 }
 
+export function calculateKeywordPresence(text: string): number {
+  const lowerText = text.toLowerCase()
+
+  return NEGATIVE_KEYWORD_PATTERNS.reduce((count, pattern) => {
+    return count + (lowerText.match(pattern) || []).length
+  }, 0)
+}
+
 export function analyzeSentiment(text: string): {
   sentiment: "positive" | "negative" | "neutral"
   score: number
+  keyword_presence: number
 } {
   const positiveWords = [
     "love", "great", "amazing", "awesome", "excellent", "fantastic",
@@ -77,10 +99,9 @@ export function analyzeSentiment(text: string): {
     "accurate",
   ]
   const negativeWords = [
-    "hate", "terrible", "awful", "bad", "worst", "broken", "useless",
-    "bug", "error", "crash", "slow", "expensive", "frustrating",
-    "annoying", "disappointing", "wrong", "fail", "issue", "problem",
-    "doesn't work", "not working", "regression", "unusable",
+    "hate", "terrible", "awful", "bad", "worst", "useless",
+    "slow", "expensive", "frustrating", "annoying", "disappointing",
+    "wrong",
   ]
 
   const lowerText = text.toLowerCase()
@@ -94,13 +115,19 @@ export function analyzeSentiment(text: string): {
     if (lowerText.includes(word)) negativeCount++
   })
 
+  const keyword_presence = calculateKeywordPresence(lowerText)
+
   const total = positiveCount + negativeCount
-  if (total === 0) return { sentiment: "neutral", score: 0 }
+  if (total === 0) return { sentiment: "neutral", score: 0, keyword_presence }
 
   const score = (positiveCount - negativeCount) / total
-  if (score > 0.2) return { sentiment: "positive", score: Math.min(score, 0.99) }
-  if (score < -0.2) return { sentiment: "negative", score: Math.max(score, -0.99) }
-  return { sentiment: "neutral", score }
+  if (score > 0.2) {
+    return { sentiment: "positive", score: Math.min(score, 0.99), keyword_presence }
+  }
+  if (score < -0.2) {
+    return { sentiment: "negative", score: Math.max(score, -0.99), keyword_presence }
+  }
+  return { sentiment: "neutral", score, keyword_presence }
 }
 
 type CategoryPattern = {
