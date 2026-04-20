@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS issues (
   sentiment_score DECIMAL(3, 2) DEFAULT 0,
   impact_score INTEGER DEFAULT 1 CHECK (impact_score BETWEEN 1 AND 10),
   frequency_count INTEGER DEFAULT 1,
+  cluster_key TEXT,
+  canonical_issue_id UUID REFERENCES issues(id) ON DELETE SET NULL,
+  is_canonical BOOLEAN DEFAULT TRUE,
   upvotes INTEGER DEFAULT 0,
   comments_count INTEGER DEFAULT 0,
   published_at TIMESTAMPTZ,
@@ -69,6 +72,8 @@ CREATE TABLE IF NOT EXISTS scrape_logs (
 CREATE INDEX IF NOT EXISTS idx_issues_source ON issues(source_id);
 CREATE INDEX IF NOT EXISTS idx_issues_category ON issues(category_id);
 CREATE INDEX IF NOT EXISTS idx_issues_sentiment ON issues(sentiment);
+CREATE INDEX IF NOT EXISTS idx_issues_cluster_key ON issues(cluster_key);
+CREATE INDEX IF NOT EXISTS idx_issues_canonical ON issues(is_canonical);
 CREATE INDEX IF NOT EXISTS idx_issues_published_at ON issues(published_at);
 CREATE INDEX IF NOT EXISTS idx_issues_scraped_at ON issues(scraped_at);
 CREATE INDEX IF NOT EXISTS idx_scrape_logs_source ON scrape_logs(source_id);

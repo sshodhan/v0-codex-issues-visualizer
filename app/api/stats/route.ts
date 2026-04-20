@@ -95,11 +95,12 @@ export async function GET() {
   const { data: priorityData } = await supabase.from("issues").select(`
     id,
     title,
+    cluster_key,
     impact_score,
     frequency_count,
     sentiment,
     category:categories(name, color)
-  `)
+  `).eq("is_canonical", true)
 
   // Pull a single 6-day window once and split it for both realtime insights
   // and recent competitive mentions (avoids duplicate queries).

@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import type { Issue, Source, Category } from "@/lib/types"
-import { dedupeIssues } from "@/lib/scrapers/shared"
+import { dedupeIssues, buildIssueClusterKey } from "@/lib/scrapers/shared"
 import { scrapeReddit } from "@/lib/scrapers/providers/reddit"
 import { scrapeHackerNews } from "@/lib/scrapers/providers/hackernews"
 import { scrapeGitHub } from "@/lib/scrapers/providers/github"
@@ -36,6 +36,67 @@ interface RunSummary {
   added: number
   errors: string[]
   bySource: Array<{ source: string; found: number; added: number; status: "success" | "error"; error?: string }>
+}
+
+async function persistIssueWithClustering(
+  supabase: ReturnType<typeof createAdminClient>,
+  issue: Partial<Issue>
+): Promise<boolean> {
+  if (!issue.source_id || !issue.external_id || !issue.title) return false
+
+  const clusterKey = buildIssueClusterKey(issue.title)
+
+  const { data: existing } = await supabase
+    .from("issues")
+    .select("id")
+    .eq("source_id", issue.source_id)
+    .eq("external_id", issue.external_id)
+    .maybeSingle()
+
+  if (existing) {
+    const { error } = await supabase
+      .from("issues")
+      .update({
+        ...issue,
+        cluster_key: clusterKey,
+      })
+      .eq("id", existing.id)
+    return !error
+  }
+
+  const { data: canonical } = await supabase
+    .from("issues")
+    .select("id, frequency_count")
+    .eq("cluster_key", clusterKey)
+    .eq("is_canonical", true)
+    .limit(1)
+    .maybeSingle()
+
+  if (canonical) {
+    const { error: insertError } = await supabase.from("issues").insert({
+      ...issue,
+      cluster_key: clusterKey,
+      canonical_issue_id: canonical.id,
+      is_canonical: false,
+      frequency_count: 1,
+    })
+    if (insertError) return false
+
+    const { error: updateError } = await supabase
+      .from("issues")
+      .update({ frequency_count: (canonical.frequency_count || 1) + 1 })
+      .eq("id", canonical.id)
+    return !updateError
+  }
+
+  const { error } = await supabase.from("issues").insert({
+    ...issue,
+    cluster_key: clusterKey,
+    canonical_issue_id: null,
+    is_canonical: true,
+    frequency_count: 1,
+  })
+  return !error
 }
 
 export async function runAllScrapers(): Promise<RunSummary> {
@@ -74,11 +135,8 @@ export async function runAllScrapers(): Promise<RunSummary> {
         let added = 0
 
         for (const issue of issues) {
-          const { error } = await supabase.from("issues").upsert(issue, {
-            onConflict: "source_id,external_id",
-            ignoreDuplicates: false,
-          })
-          if (!error) added++
+          const persisted = await persistIssueWithClustering(supabase, issue)
+          if (persisted) added++
         }
 
         if (log) {
@@ -166,11 +224,8 @@ export async function runScraper(slug: string): Promise<RunSummary> {
   const issues = dedupeIssues(await scraper(source, categories))
   let added = 0
   for (const issue of issues) {
-    const { error } = await supabase.from("issues").upsert(issue, {
-      onConflict: "source_id,external_id",
-      ignoreDuplicates: false,
-    })
-    if (!error) added++
+    const persisted = await persistIssueWithClustering(supabase, issue)
+    if (persisted) added++
   }
 
   return {

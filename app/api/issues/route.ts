@@ -9,6 +9,7 @@ const ALLOWED_SORT = new Set([
   "published_at",
   "scraped_at",
   "sentiment_score",
+  "frequency_count",
 ])
 
 export async function GET(request: NextRequest) {
@@ -20,6 +21,7 @@ export async function GET(request: NextRequest) {
   const sentiment = searchParams.get("sentiment")
   const days = searchParams.get("days")
   const search = searchParams.get("q")
+  const clusterKey = searchParams.get("clusterKey")
   const sortByRaw = searchParams.get("sortBy") || "impact_score"
   const sortBy = ALLOWED_SORT.has(sortByRaw) ? sortByRaw : "impact_score"
   const order = searchParams.get("order") === "asc" ? "asc" : "desc"
@@ -83,6 +85,10 @@ export async function GET(request: NextRequest) {
     // Match on title or content. Both columns are text so ilike is safe.
     const escaped = search.replace(/[%_]/g, (m) => `\\${m}`)
     query = query.or(`title.ilike.%${escaped}%,content.ilike.%${escaped}%`)
+  }
+
+  if (clusterKey) {
+    query = query.eq("cluster_key", clusterKey)
   }
 
   const { data, error, count } = await query
