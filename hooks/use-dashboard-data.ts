@@ -125,3 +125,101 @@ export function useScrape() {
 
   return { scrape }
 }
+
+
+export interface ClassificationRecord {
+  id: string
+  category: string
+  subcategory: string
+  severity: "critical" | "high" | "medium" | "low"
+  status: "new" | "triaged" | "in-progress" | "resolved" | "wont-fix" | "duplicate"
+  confidence: number
+  summary: string
+  evidence_quotes: string[]
+  alternate_categories: string[]
+  needs_human_review: boolean
+  review_reasons: string[]
+  source_issue_title: string | null
+  source_issue_url: string | null
+  source_issue_sentiment: "positive" | "negative" | "neutral" | null
+  created_at: string
+  reviewed_at: string | null
+  reviewed_by: string | null
+  reviewer_notes: string | null
+}
+
+export interface ClassificationStats {
+  total: number
+  needsReviewCount: number
+  traceableCount: number
+  traceabilityCoverage: number
+  byCategory: Record<string, number>
+  bySeverity: Record<string, number>
+  byStatus: Record<string, number>
+  bySentiment: Record<string, number>
+}
+
+export function useClassifications(filters?: {
+  status?: string
+  category?: string
+  needs_human_review?: boolean
+  limit?: number
+}) {
+  const params = new URLSearchParams()
+  if (filters?.status) params.set("status", filters.status)
+  if (filters?.category) params.set("category", filters.category)
+  if (typeof filters?.needs_human_review === "boolean") params.set("needs_human_review", String(filters.needs_human_review))
+  if (filters?.limit) params.set("limit", String(filters.limit))
+
+  const { data, error, isLoading, mutate } = useSWR<{ data: ClassificationRecord[] }>(
+    `/api/classifications?${params.toString()}`,
+    fetcher,
+    { refreshInterval: 60000 }
+  )
+
+  return {
+    classifications: data?.data || [],
+    isLoading,
+    isError: error,
+    refresh: mutate,
+  }
+}
+
+export function useClassificationStats() {
+  const { data, error, isLoading, mutate } = useSWR<ClassificationStats>(
+    "/api/classifications/stats",
+    fetcher,
+    { refreshInterval: 60000 }
+  )
+
+  return {
+    classificationStats: data,
+    isLoading,
+    isError: error,
+    refresh: mutate,
+  }
+}
+
+export async function reviewClassification(
+  id: string,
+  payload: {
+    status?: "new" | "triaged" | "in-progress" | "resolved" | "wont-fix" | "duplicate"
+    category?: string
+    severity?: "critical" | "high" | "medium" | "low"
+    needs_human_review?: boolean
+    reviewer_notes?: string
+    reviewed_by?: string
+  }
+) {
+  const response = await fetch(`/api/classifications/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to update classification: ${response.status}`)
+  }
+
+  return response.json()
+}
