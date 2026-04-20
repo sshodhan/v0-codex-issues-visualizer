@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20 (v7 — comprehensive competitive-sentiment hardening: backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-20 (v8 — fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -131,9 +131,12 @@ This enables end-to-end provenance from dashboard insight → classifier decisio
 Layout:
 - `lib/scrapers/index.ts` — orchestrator. `runAllScrapers()` (parallel) and
   `runScraper(slug)` (single-source). Owns scrape_logs lifecycle and upserts.
-- `lib/scrapers/shared.ts` — relevance filters, sentiment, category scoring,
-  impact scoring, competitor keyword detection, retry/backoff fetch helper,
-  dedupe.
+- `lib/scrapers/shared.ts` — relevance filter (delegates to `relevance.ts`),
+  ingest-time sentiment classifier (`analyzeSentiment`, consumes the
+  canonical lexicon in `lib/analytics/sentiment-lexicon.ts`), category
+  scoring, impact scoring, retry/backoff fetch helper, dedupe. **Does not
+  own polarity word lists or competitor phrases** — those are imported from
+  the analytics-layer canonical modules.
 - `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts` —
   one provider per file. Each owns its source-specific query and the
   mapping into a `Partial<Issue>`. `github-discussions` and `openai-community`
@@ -145,10 +148,24 @@ Extension guidance:
   the `SCRAPERS` map in `index.ts`. Add the matching `sources` row via a
   numbered SQL migration.
 - Reuse shared helpers (`normalizeWhitespace`, `analyzeSentiment`,
-  `categorizeIssue`, `fetchWithRetry`).
+  `categorizeIssue`, `fetchWithRetry`). `analyzeSentiment` and any future
+  sentiment consumer MUST import polarity words from
+  `lib/analytics/sentiment-lexicon.ts` — never inline a copy. Inline word
+  lists that disagree with the canonical set are how P0-2 and the
+  mention-vs-ingest drift happened historically.
 - Keep provider-specific query syntax local to each provider.
 - Prefer explicit query grouping (or `optionalWords`-style boolean OR) to
   avoid boolean precedence bugs.
+
+Testability invariant:
+- Any `lib/scrapers/*.ts` file that is imported by a `*.test.ts` file must
+  use relative (`./`, `../`) imports, not `@/` aliases — the `node --test
+  --experimental-strip-types` runner does not resolve the `@/` path mapping.
+  Files not reached by a test can continue to use `@/`. When a test is
+  added that transitively loads a new source file, convert that file's
+  external imports to relative form. See `relevance.ts`, `shared.ts`,
+  `competitive.ts`, `competitors.ts`, `sentiment-lexicon.ts` for the
+  established pattern.
 
 ### 4.2 `app/api/stats/route.ts`
 
@@ -161,28 +178,32 @@ Responsibilities:
 Heavy analytics live in `lib/analytics/*`:
 - `lib/analytics/realtime.ts` — urgency-ranked category insights with
   source diversity and recency decay.
-- `lib/analytics/competitive.ts` — mention-level sentiment scoring with
-  per-issue aggregation and per-competitor confidence/coverage metrics. Reads
-  competitor phrases from `competitors.ts` and polarity words from
-  `sentiment-lexicon.ts` so the module has zero scraper-side dependencies and
-  can be unit-tested under `node --test --experimental-strip-types` in
-  isolation.
+- `lib/analytics/competitive.ts` — mention-level sentiment scoring,
+  per-issue aggregation, per-competitor confidence/coverage metrics, AND the
+  payload summarizer `summarizeCompetitiveMentions`. The API route is a
+  thin caller; all aggregation math lives here so per-competitor shape
+  changes and meta aggregation stay in one file.
 - `lib/analytics/competitors.ts` — canonical `COMPETITOR_KEYWORDS` and
   `COMPETITOR_DISPLAY_NAMES`. **Display names are never derived into detection
   phrases** — doing so is a proven false-positive source (e.g. stripping
   trailing " Code" from "Sourcegraph Cody" would match the bare string
   "sourcegraph"). Detection is driven exclusively by `COMPETITOR_KEYWORDS`.
-  `lib/scrapers/shared.ts` re-exports `COMPETITOR_KEYWORDS` from this module
-  for backward compatibility with existing ingest-time callers.
-- `lib/analytics/sentiment-lexicon.ts` — shared `POSITIVE_WORDS`,
-  `NEGATIVE_WORDS`, and `NEGATORS` sets. Any future sentiment consumer should
-  import from here to prevent lexicon drift between ingest-time and
-  analytics-time classifiers.
+- `lib/analytics/sentiment-lexicon.ts` — the single source of truth for
+  `POSITIVE_WORDS`, `NEGATIVE_WORDS`, and `NEGATORS`. **Every** sentiment
+  consumer in the app imports from here — the mention-window classifier in
+  `competitive.ts` and the ingest-time classifier in `shared.ts`. No inline
+  word lists are permitted anywhere else; that path produced P0-2 and the
+  mention-vs-ingest drift that the senior review flagged. Topic nouns
+  ("bug", "error", "issue", "problem", "fail") are deliberately absent.
 
 Extension guidance:
 - Keep response backward-compatible for existing UI consumers.
 - Add new metrics as additional analytics modules called from the route.
 - Add versioning (`/api/stats?v=2`) before breaking response schema.
+- When adding a metric backed by a new analytics module, co-locate its
+  summarizer with the module (as `summarizeCompetitiveMentions` is
+  co-located). Do not inline reduce-chains in the API route — the code
+  review history shows this accumulates drift.
 
 Competitive payload details (current contract):
 - `competitiveMentions[*]` carries `totalMentions` (issues), `rawMentions`
@@ -191,12 +212,16 @@ Competitive payload details (current contract):
   rawMentions`), `avgConfidence` (mean confidence **over scored mentions
   only**), and `netSentiment` (mean score over scored mentions only). Issues
   with only zero-evidence windows contribute to `totalMentions`/`rawMentions`
-  but do not dilute sentiment or confidence KPIs.
-- `topIssues[*].sentiment` is `"positive" | "negative" | "neutral" | null`
-  — `null` is preserved when every window in the issue was evidence-free.
-  This preserves the original API contract; clients that relied on the
-  nullable shape continue to work unchanged.
-- `/api/stats` returns `competitiveMentionsMeta` with `competitorsTracked`,
+  but do not dilute sentiment, confidence, or positive/negative/neutral
+  counters.
+- `topIssues[*].sentiment` is `"positive" | "negative" | "neutral" | null`.
+  `null` is preserved when every window in the issue was evidence-free.
+  The ingest-time `issue.sentiment` is **never** substituted as a fallback
+  for a zero-evidence window — doing so would re-introduce P0-4 through a
+  side channel (a post dominated by anti-anchor sentiment that merely
+  name-drops a competitor would otherwise inherit that negative signal).
+- `/api/stats` returns `competitiveMentionsMeta` (= the output of
+  `summarizeCompetitiveMentions`) with `competitorsTracked`,
   `mentionCoverage` (= `Σ scoredMentions / Σ rawMentions`, weighted by
   mention volume), `avgConfidence` (= `Σ (avgConfidence × scoredMentions) /
   Σ scoredMentions`, weighted by mention volume), and `totalScoredMentions`.
@@ -204,27 +229,34 @@ Competitive payload details (current contract):
   a single one-mention competitor could drag the dashboard KPI.
 
 Competitive scoring invariants (enforced by `lib/analytics/competitive.test.ts`):
-- **Strict sentence window.** Each mention is scored on the text between the
-  nearest sentence-ending punctuation (`.`, `!`, `?`, `\n`) on either side,
-  with no cross-sentence padding. Earlier revisions padded ±120 chars and
-  leaked sentiment from neighboring sentences.
+- **Bounded sentence window.** Each mention is scored on the text between
+  the nearest sentence-ending punctuation (`.`, `!`, `?`, `\n`) on either
+  side, **capped at `MAX_WINDOW_CHARS = 280` per side**. The cap prevents
+  unpunctuated social-media blobs from collapsing the window back to
+  "score the entire post." Earlier revisions padded ±120 chars beyond the
+  sentence bounds; that reintroduced cross-sentence leakage and was
+  removed.
 - **Canonical-phrase detection only.** No display-name derivation, no
-  trailing-word stripping.
+  trailing-word stripping. `getDetectionPhrases`-style rules are forbidden.
 - **Word-boundary-safe mention matching.** Alphanumerics on either side of
   the phrase defeat a match (so `myCursorHelper` does not match).
 - **Negation lookback is bounded.** Three tokens — far enough for `"not
   bad"` / `"never great"`, tight enough to keep `"it is not the case that
   ... said great"` from flipping.
-- **Comparative anchor is parameterized.** `computeCompetitiveMentions(...,
-  { anchorBrand })` controls which brand is used as the `/(better|worse)
-  \s+than\s+<anchor>/` comparative target. Defaults to `"codex"` to match
-  this dashboard's product.
-- **Null sentiment propagates.** `scoreMentionSentiment` returns
-  `sentiment: null` for evidence-free windows; the per-issue aggregator
-  falls back to the ingest-time `issue.sentiment` as a weak prior only when
-  explicitly asked via `fallbackSentiment`. `computeCompetitiveMentions`
-  opts in to that fallback so UI rows still show a best-effort sentiment
-  tag where possible.
+- **Comparative anchor is parameterized and escaped.**
+  `computeCompetitiveMentions(..., { anchorBrand })` controls which brand
+  is used as the `/(better|worse)\s+than\s+<anchor>/` comparative target.
+  Defaults to `"codex"`. The anchor is run through `escapeRegExp` so it is
+  safe for callers passing arbitrary strings (including regex
+  metacharacters). Regexes are cached per anchor to avoid reconstruction
+  per call.
+- **No ingest-sentiment fallback.** `scoreMentionSentiment` and
+  `aggregateCompetitorSentimentForIssue` return `sentiment: null` for
+  evidence-free windows. `computeCompetitiveMentions` does not thread
+  `issue.sentiment` through — intentionally, to prevent the P0-4
+  side-channel recurrence. If you need to surface "we saw the mention but
+  had no signal," read `scoredMentions === 0` and render "no signal" in
+  the UI.
 
 ### 4.3 `app/api/classify/route.ts`
 

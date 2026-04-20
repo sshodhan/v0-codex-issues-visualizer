@@ -1,12 +1,7 @@
-import type { Category } from "@/lib/types"
-import { evaluateCodexRelevance } from "@/lib/scrapers/relevance"
-import { COMPETITOR_KEYWORDS as ANALYTICS_COMPETITOR_KEYWORDS } from "@/lib/analytics/competitors"
-
-// Re-exported so existing ingest-time consumers keep importing from this
-// module. The source of truth lives in lib/analytics/competitors to avoid the
-// dependency cycle between scrapers and analytics and to keep the competitive
-// module tree-shakable under node --test.
-export const COMPETITOR_KEYWORDS = ANALYTICS_COMPETITOR_KEYWORDS
+import type { Category } from "../types.ts"
+import { evaluateCodexRelevance } from "./relevance.ts"
+import { COMPETITOR_KEYWORDS } from "../analytics/competitors.ts"
+import { NEGATIVE_WORDS, POSITIVE_WORDS } from "../analytics/sentiment-lexicon.ts"
 
 export function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim()
@@ -36,33 +31,31 @@ export function detectCompetitorMentions(text: string): string[] {
   return Array.from(found)
 }
 
+// Ingest-time sentiment classifier. Consumes the canonical polarity lexicon
+// from lib/analytics/sentiment-lexicon so the ingest-side and the
+// mention-level classifier in lib/analytics/competitive share one source of
+// truth. Closes P0-2 (topic-noun contamination) as a side effect — topic
+// nouns like "bug", "error", "issue", "problem", "fail" are absent from the
+// canonical lexicon by construction, so bug-category posts are no longer
+// pre-loaded with negative sentiment regardless of tone.
 export function analyzeSentiment(text: string): {
   sentiment: "positive" | "negative" | "neutral"
   score: number
 } {
-  const positiveWords = [
-    "love", "great", "amazing", "awesome", "excellent", "fantastic",
-    "helpful", "useful", "best", "perfect", "wonderful", "impressive",
-    "revolutionary", "game-changer", "productive", "efficient", "fast",
-    "accurate",
-  ]
-  const negativeWords = [
-    "hate", "terrible", "awful", "bad", "worst", "broken", "useless",
-    "bug", "error", "crash", "slow", "expensive", "frustrating",
-    "annoying", "disappointing", "wrong", "fail", "issue", "problem",
-    "doesn't work", "not working", "regression", "unusable",
-  ]
-
   const lowerText = text.toLowerCase()
+  const tokens = lowerText.match(/[a-z']+/g) ?? []
+
   let positiveCount = 0
   let negativeCount = 0
 
-  positiveWords.forEach((word) => {
-    if (lowerText.includes(word)) positiveCount++
-  })
-  negativeWords.forEach((word) => {
-    if (lowerText.includes(word)) negativeCount++
-  })
+  for (const token of tokens) {
+    if (POSITIVE_WORDS.has(token)) positiveCount++
+    else if (NEGATIVE_WORDS.has(token)) negativeCount++
+  }
+
+  // Multi-word negative phrases the tokenizer cannot see directly.
+  if (/\bdoesn'?t\s+work\b/.test(lowerText)) negativeCount++
+  if (/\bnot\s+working\b/.test(lowerText)) negativeCount++
 
   const total = positiveCount + negativeCount
   if (total === 0) return { sentiment: "neutral", score: 0 }

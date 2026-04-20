@@ -135,16 +135,50 @@ test("mention with no valence tokens returns null sentiment and zero confidence"
   assert.equal(result.confidence, 0)
 })
 
-test("zero-evidence mention falls back to the ingest-time sentiment when provided", () => {
+test("zero-evidence mention is reported as null sentiment, never inheriting issue.sentiment", () => {
+  // Regression for the fallbackSentiment back-channel that would have
+  // re-introduced P0-4: a post dominated by Codex-negative language should
+  // NEVER pollute the competitor bucket when the competitor's own mention
+  // window has no evidence tokens. The per-mention aggregator must return
+  // null sentiment regardless of any issue-level prior.
   const aggregate = aggregateCompetitorSentimentForIssue(
     "Cursor IDE was discussed today.",
     ["cursor ide"],
-    { fallbackSentiment: "positive" },
   )
   assert.ok(aggregate)
-  assert.equal(aggregate?.sentiment, "positive")
+  assert.equal(aggregate?.sentiment, null)
   assert.equal(aggregate?.confidence, 0)
   assert.equal(aggregate?.scoredMentions, 0)
+})
+
+test("P0-4 via fallback channel: negative Codex post that name-drops a competitor does NOT attribute negative to the competitor", () => {
+  // This is the exact failure mode the fallbackSentiment design would have
+  // created. The post is overwhelmingly about Codex and is ingest-scored
+  // negative. The only Cursor mention ("Cursor IDE is also mentioned") has
+  // zero Cursor-specific valence tokens. The competitor bucket must show
+  // zero negatives and zero scored mentions.
+  const issues: CompetitiveIssueInput[] = [
+    {
+      id: "1",
+      title: "Codex regression notes",
+      content:
+        "Codex is terrible, frustrating, and broken after the update. Cursor IDE is also mentioned in passing.",
+      url: null,
+      sentiment: "negative",
+      impact_score: 9,
+      published_at: null,
+    },
+  ]
+
+  const mentions = computeCompetitiveMentions(issues)
+  const cursor = mentions.find((m) => m.competitor === "Cursor")
+
+  assert.ok(cursor)
+  assert.equal(cursor?.negative, 0)
+  assert.equal(cursor?.positive, 0)
+  assert.equal(cursor?.neutral, 0)
+  assert.equal(cursor?.scoredMentions, 0)
+  assert.equal(cursor?.topIssues[0]?.sentiment, null)
 })
 
 test("topIssues preserves nullable sentiment contract for zero-evidence mentions", () => {
@@ -196,4 +230,24 @@ test("strict sentence window does not leak sentiment from neighboring sentences"
   assert.ok(aggregate)
   assert.equal(aggregate?.scoredMentions, 0)
   assert.equal(aggregate?.sentiment, null)
+})
+
+test("unpunctuated long blob is capped at MAX_WINDOW_CHARS per side around the mention", () => {
+  // Filler without any sentence boundaries — if there were no char-budget cap
+  // the entire blob (which contains "great" far from the mention) would be
+  // scored as one window and inflate Cursor. With the cap, "great" is out of
+  // range and the Cursor window scores as neutral/no-signal.
+  const filler = "and some text ".repeat(40) // 560 chars, no punctuation
+  const content = `${filler}cursor ide today${filler}great great great`
+  const aggregate = aggregateCompetitorSentimentForIssue(content, ["cursor ide"])
+  assert.ok(aggregate)
+  assert.equal(aggregate?.scoredMentions, 0)
+})
+
+test("comparative anchor regex is safely escaped for regex metacharacters", () => {
+  // anchorBrand with regex metacharacters must not crash or corrupt the match.
+  const result = scoreMentionSentiment("Cursor is better than .net for refactors", {
+    anchorBrand: ".net",
+  })
+  assert.ok(result.sentiment === "positive")
 })

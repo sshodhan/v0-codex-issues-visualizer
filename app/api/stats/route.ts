@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { computeRealtimeInsights } from "@/lib/analytics/realtime"
-import { computeCompetitiveMentions } from "@/lib/analytics/competitive"
+import {
+  computeCompetitiveMentions,
+  summarizeCompetitiveMentions,
+} from "@/lib/analytics/competitive"
 
 type Sentiment = "positive" | "negative" | "neutral"
 
@@ -133,22 +136,7 @@ export async function GET() {
 
   const realtimeInsights = computeRealtimeInsights(normalizedRecent)
   const competitiveMentions = computeCompetitiveMentions(normalizedRecent)
-
-  // Meta is weighted by mention volume so a competitor with one low-confidence
-  // mention does not drag the dashboard KPI to the same degree as one with
-  // dozens of mentions. Unweighted means were actively misleading.
-  const totalRaw = competitiveMentions.reduce((sum, item) => sum + item.rawMentions, 0)
-  const totalScored = competitiveMentions.reduce((sum, item) => sum + item.scoredMentions, 0)
-  const weightedConfidence = competitiveMentions.reduce(
-    (sum, item) => sum + item.avgConfidence * item.scoredMentions,
-    0,
-  )
-  const competitiveMentionsMeta = {
-    competitorsTracked: competitiveMentions.length,
-    mentionCoverage: Number((totalRaw === 0 ? 0 : totalScored / totalRaw).toFixed(2)),
-    avgConfidence: Number((totalScored === 0 ? 0 : weightedConfidence / totalScored).toFixed(2)),
-    totalScoredMentions: totalScored,
-  }
+  const competitiveMentionsMeta = summarizeCompetitiveMentions(competitiveMentions)
 
   const { data: lastScrape } = await supabase
     .from("scrape_logs")

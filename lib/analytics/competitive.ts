@@ -58,6 +58,15 @@ const NEGATIVE_THRESHOLD = -0.25
 const NEGATION_LOOKBACK_TOKENS = 3
 const COMPARATIVE_BOOST = 1.0
 
+// Hard cap on how far a mention window can stretch when no sentence boundary
+// is found nearby. Without this, an unpunctuated social-media blob ("cursor
+// ide is great love it amazing") is treated as a single sentence and
+// effectively scored at the full-post level — the exact regime the mention-
+// window design was meant to replace.
+const MAX_WINDOW_CHARS = 280
+
+const SENTENCE_BOUNDARIES = [".", "!", "?", "\n"] as const
+
 function classifySentiment(score: number): Sentiment {
   if (score > POSITIVE_THRESHOLD) return "positive"
   if (score < NEGATIVE_THRESHOLD) return "negative"
@@ -72,25 +81,47 @@ function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-// Strict sentence window. Returns the text between the nearest sentence-ending
-// punctuation (or buffer start/end) bracketing the mention, with no padding —
-// padding beyond sentence bounds is what reintroduced cross-sentence pollution
-// in an earlier iteration.
+// Sentence window bounded by sentence-ending punctuation OR by a hard
+// character budget around the mention — whichever is closer. The budget is
+// what makes unpunctuated blobs safe: at most MAX_WINDOW_CHARS characters on
+// each side of the mention are in scope, so a 5k-character rant without
+// periods no longer leaks sentiment across paragraphs.
 function getSentenceWindow(text: string, mentionIndex: number): string {
-  const SENTENCE_BOUNDARIES = [".", "!", "?", "\n"]
+  const leftReachLimit = Math.max(-1, mentionIndex - MAX_WINDOW_CHARS - 1)
+  const rightReachLimit = Math.min(text.length, mentionIndex + MAX_WINDOW_CHARS)
 
-  let leftBound = -1
+  let leftBound = leftReachLimit
   for (const char of SENTENCE_BOUNDARIES) {
-    leftBound = Math.max(leftBound, text.lastIndexOf(char, mentionIndex - 1))
+    const idx = text.lastIndexOf(char, mentionIndex - 1)
+    if (idx > leftBound) leftBound = idx
   }
 
-  let rightBound = text.length
+  let rightBound = rightReachLimit
   for (const char of SENTENCE_BOUNDARIES) {
     const idx = text.indexOf(char, mentionIndex)
     if (idx !== -1 && idx < rightBound) rightBound = idx
   }
 
   return text.slice(leftBound + 1, rightBound)
+}
+
+// Anchor-brand regex factory. Constructing RegExp per mention-per-issue-per-
+// competitor was measurable at scale; caching keyed by anchor lets the common
+// case (one anchor for the whole run) amortize to two lookups per window.
+type AnchorRegexes = { better: RegExp; worse: RegExp }
+const ANCHOR_REGEX_CACHE = new Map<string, AnchorRegexes>()
+
+function getAnchorRegexes(anchorBrand: string): AnchorRegexes {
+  const key = anchorBrand.toLowerCase()
+  const cached = ANCHOR_REGEX_CACHE.get(key)
+  if (cached) return cached
+  const anchor = escapeRegExp(key)
+  const built: AnchorRegexes = {
+    better: new RegExp(`\\bbetter\\s+than\\s+${anchor}\\b`),
+    worse: new RegExp(`\\bworse\\s+than\\s+${anchor}\\b`),
+  }
+  ANCHOR_REGEX_CACHE.set(key, built)
+  return built
 }
 
 function findMentionIndexes(text: string, phrase: string): number[] {
@@ -159,13 +190,13 @@ export function scoreMentionSentiment(
   // Comparative phrasing against the anchor brand is a strong explicit signal.
   // We intentionally count it as one additional valence token rather than two
   // to avoid double-counting with the "better"/"worse" token already scored
-  // above.
-  const anchor = escapeRegExp(anchorBrand.toLowerCase())
-  if (new RegExp(`\\bbetter\\s+than\\s+${anchor}\\b`).test(lower)) {
+  // above. Regexes are cached per anchor (see getAnchorRegexes).
+  const anchorRegexes = getAnchorRegexes(anchorBrand)
+  if (anchorRegexes.better.test(lower)) {
     score += COMPARATIVE_BOOST
     valenceTokens++
   }
-  if (new RegExp(`\\bworse\\s+than\\s+${anchor}\\b`).test(lower)) {
+  if (anchorRegexes.worse.test(lower)) {
     score -= COMPARATIVE_BOOST
     valenceTokens++
   }
@@ -195,18 +226,20 @@ export function scoreMentionSentiment(
 /**
  * Aggregate per-mention sentiment into a single per-issue signal for one
  * competitor. Returns null when the competitor isn't mentioned. Windows with
- * zero evidence are still counted in `mentionCount` (so we can report raw
+ * zero evidence still contribute to `mentionCount` (so we can report raw
  * mention volume) but do not contribute to `avgScore` or `avgConfidence`.
  *
- * When every window was evidence-free, the issue-level sentiment falls back
- * to `fallbackSentiment` (the ingest-time classifier's verdict) if provided —
- * using it only as a weak prior. Without a fallback, the returned sentiment
- * is null to let the dashboard render "no signal" rather than "neutral."
+ * When every window was evidence-free, the returned sentiment is `null` — we
+ * deliberately do NOT fall back to the ingest-time `issue.sentiment`. Doing
+ * so would re-introduce P0-4 through a side channel: a post broadly negative
+ * about Codex that merely name-drops Cursor would inherit the post-level
+ * negative sentiment and attribute it to Cursor even though no Cursor-
+ * specific evidence exists. `null` lets the UI honestly render "no signal."
  */
 export function aggregateCompetitorSentimentForIssue(
   issueText: string,
   competitorPhrases: string[],
-  options: CompetitiveMentionsOptions & { fallbackSentiment?: Sentiment | null } = {}
+  options: CompetitiveMentionsOptions = {},
 ): {
   mentionCount: number
   scoredMentions: number
@@ -214,16 +247,15 @@ export function aggregateCompetitorSentimentForIssue(
   confidence: number
   sentiment: Sentiment | null
 } | null {
-  const { fallbackSentiment = null, ...scoreOptions } = options
   const lower = issueText.toLowerCase()
   const mentionIndexes = competitorPhrases.flatMap((phrase) =>
-    findMentionIndexes(lower, phrase)
+    findMentionIndexes(lower, phrase),
   )
 
   if (mentionIndexes.length === 0) return null
 
   const mentionScores = mentionIndexes.map((idx) =>
-    scoreMentionSentiment(getSentenceWindow(issueText, idx), scoreOptions)
+    scoreMentionSentiment(getSentenceWindow(issueText, idx), options),
   )
   const scored = mentionScores.filter((m) => m.valenceTokens > 0)
   const scoredMentions = scored.length
@@ -234,7 +266,7 @@ export function aggregateCompetitorSentimentForIssue(
       scoredMentions: 0,
       score: 0,
       confidence: 0,
-      sentiment: fallbackSentiment,
+      sentiment: null,
     }
   }
 
@@ -279,10 +311,12 @@ export function computeCompetitiveMentions(
       // Detection phrases come exclusively from the canonical keyword list.
       // Deriving phrases from display names is a proven false-positive source
       // (e.g. "Sourcegraph Cody" → "sourcegraph" matching the company).
-      const issueAggregate = aggregateCompetitorSentimentForIssue(issueText, phrases, {
-        ...options,
-        fallbackSentiment: issue.sentiment,
-      })
+      //
+      // Note: issue.sentiment is NOT passed through here. Using the post-level
+      // ingest sentiment as a fallback would re-introduce P0-4 (a negative
+      // post that name-drops a competitor would attribute negative sentiment
+      // to that competitor without any mention-window evidence).
+      const issueAggregate = aggregateCompetitorSentimentForIssue(issueText, phrases, options)
       if (!issueAggregate) continue
 
       const bucket = buckets.get(competitor) ?? {
@@ -348,4 +382,41 @@ export function computeCompetitiveMentions(
       topIssues: b.samples.sort((x, y) => y.impact_score - x.impact_score).slice(0, 3),
     }))
     .sort((a, b) => b.totalMentions - a.totalMentions)
+}
+
+export interface CompetitiveMentionsMeta {
+  competitorsTracked: number
+  /** Σ scoredMentions / Σ rawMentions, weighted by mention volume. */
+  mentionCoverage: number
+  /** Σ (avgConfidence × scoredMentions) / Σ scoredMentions, weighted. */
+  avgConfidence: number
+  /** Total number of mentions whose window had at least one valence token. */
+  totalScoredMentions: number
+}
+
+/**
+ * Summarize a `computeCompetitiveMentions` result into a dashboard-level meta
+ * card. Weights are by mention volume so a single low-volume competitor does
+ * not drag the KPI the same way a dozens-of-mentions competitor does. This
+ * lives next to the producer so any future change to the per-competitor shape
+ * can keep the aggregation in sync without hunting for inlined consumers.
+ */
+export function summarizeCompetitiveMentions(
+  mentions: CompetitiveMention[],
+): CompetitiveMentionsMeta {
+  const totalRaw = mentions.reduce((sum, m) => sum + m.rawMentions, 0)
+  const totalScored = mentions.reduce((sum, m) => sum + m.scoredMentions, 0)
+  const weightedConfidence = mentions.reduce(
+    (sum, m) => sum + m.avgConfidence * m.scoredMentions,
+    0,
+  )
+
+  return {
+    competitorsTracked: mentions.length,
+    mentionCoverage: Number((totalRaw === 0 ? 0 : totalScored / totalRaw).toFixed(2)),
+    avgConfidence: Number(
+      (totalScored === 0 ? 0 : weightedConfidence / totalScored).toFixed(2),
+    ),
+    totalScoredMentions: totalScored,
+  }
 }
