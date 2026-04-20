@@ -307,28 +307,34 @@ Reference data (seeded once via SQL, required for foreign keys to work):
 - `categories` rows — taxonomy used by the heuristic classifier (`Bug`,
   `Feature Request`, `Performance`, …). Same migration files.
 
-**Not wired into the running app (legacy/orphan):**
-- `codex-analysis/codex_analysis_data*.json` — pre-computed historical
-  snapshots. No `app/`, `lib/`, `components/`, or `hooks/` file imports
-  these. They exist for offline analysis only and are ignored by the
-  dashboard runtime.
-- `codex-analysis/backend/load_data_supabase.py` — one-shot Python loader
-  for those snapshots. Not invoked by any API route or hook.
+**Not wired into the running app, and now removed from the repo entirely:**
+- A previous `codex-analysis/` directory contained pre-computed JSON
+  snapshots (`codex_analysis_data*.json`) and a Python loader
+  (`backend/load_data_supabase.py`) that wrote synthetic monthly timeline
+  rows directly into the `issues` table. None of it was ever imported by
+  `app/`, `lib/`, `components/`, or `hooks/`, but its mere presence meant
+  the loader could be run against a real Supabase and pollute the
+  dashboard with fake data. The entire directory has been deleted so the
+  repo no longer ships any placeholder dataset.
 
 How to verify at any time:
 ```sh
-# 1) No fixtures ship as runtime imports
-grep -R --include='*.ts' --include='*.tsx' \
-  -E 'codex-analysis|fixtures?/|mock(Data|Issues)' app lib components hooks
+# 1) No placeholder dataset, mock module, or fixture folder exists
+test ! -d codex-analysis && \
+  ! grep -R --include='*.ts' --include='*.tsx' \
+    -E 'fixtures?/|mock(Data|Issues)|SAMPLE_ISSUES' app lib components hooks
 
 # 2) Every dashboard surface flows from /api/* via SWR
 grep -R --include='*.ts' --include='*.tsx' 'useSWR' hooks
 
-# 3) Scrapers hit live URLs (not local files)
-grep -R --include='*.ts' -E 'fetch\((`|")(https?://)' lib/scrapers
+# 3) Scrapers hit live HTTPS URLs (not local files)
+grep -R --include='*.ts' -n 'https://' lib/scrapers/providers
+
+# 4) SQL migrations only seed reference taxonomy, never issues
+grep -nE 'INSERT INTO issues' scripts/*.sql   # should print nothing
 ```
-All three should return only the expected runtime call sites — no
-`codex-analysis/*` references, no fixture imports, no `file://` URLs.
+All four should return only the expected runtime call sites — no fixture
+imports, no seeded `issues` rows, no `file://` URLs.
 
 ---
 
