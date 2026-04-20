@@ -21,6 +21,8 @@ export default function DashboardPage() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [filters, setFilters] = useState<{
     sentiment?: string
+    category?: string
+    days?: number
     sortBy?: string
     order?: string
   }>({})
@@ -181,6 +183,11 @@ export default function DashboardPage() {
             <IssuesTable
               issues={issues}
               isLoading={issuesLoading}
+              categories={stats.categoryBreakdown.map(c => ({
+                name: c.name,
+                slug: c.name.toLowerCase().replace(/\s+/g, '-'),
+                color: c.color,
+              }))}
               onFilterChange={handleFilterChange}
             />
           </div>

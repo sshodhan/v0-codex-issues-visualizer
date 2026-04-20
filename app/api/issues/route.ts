@@ -8,6 +8,7 @@ export async function GET(request: NextRequest) {
   const source = searchParams.get("source")
   const category = searchParams.get("category")
   const sentiment = searchParams.get("sentiment")
+  const days = searchParams.get("days") // Time window in days
   const sortBy = searchParams.get("sortBy") || "impact_score"
   const order = searchParams.get("order") || "desc"
   const limit = parseInt(searchParams.get("limit") || "100")
@@ -34,6 +35,11 @@ export async function GET(request: NextRequest) {
   }
   if (sentiment) {
     query = query.eq("sentiment", sentiment)
+  }
+  if (days) {
+    const daysAgo = new Date()
+    daysAgo.setDate(daysAgo.getDate() - parseInt(days))
+    query = query.gte("published_at", daysAgo.toISOString())
   }
 
   const { data, error, count } = await query

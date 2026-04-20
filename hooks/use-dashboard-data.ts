@@ -75,6 +75,7 @@ export function useIssues(filters?: {
   source?: string
   category?: string
   sentiment?: string
+  days?: number
   sortBy?: string
   order?: string
 }) {
@@ -82,6 +83,7 @@ export function useIssues(filters?: {
   if (filters?.source) params.set("source", filters.source)
   if (filters?.category) params.set("category", filters.category)
   if (filters?.sentiment) params.set("sentiment", filters.sentiment)
+  if (filters?.days) params.set("days", filters.days.toString())
   if (filters?.sortBy) params.set("sortBy", filters.sortBy)
   if (filters?.order) params.set("order", filters.order)
 
