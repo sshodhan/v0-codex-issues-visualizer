@@ -54,9 +54,47 @@ def _normalize_rc(row: dict[str, Any]) -> dict[str, Any]:
 async def list_categories() -> list[dict[str, Any]]:
     if _using_db():
         return await db.fetch(
-            "SELECT id, name, slug, color, share_pct FROM issue_categories ORDER BY share_pct DESC"
+            "SELECT id, name, slug, color, tier, share_pct, users_affected_pct, summary, "
+            "cascades_to, action FROM issue_categories ORDER BY tier ASC, share_pct DESC"
         )
-    return list(seed_data.CATEGORIES)
+    return sorted(seed_data.CATEGORIES, key=lambda c: (c["tier"], -c["share_pct"]))
+
+
+async def get_category(slug_or_id: str) -> dict[str, Any] | None:
+    if _using_db():
+        return await db.fetchrow(
+            "SELECT id, name, slug, color, tier, share_pct, users_affected_pct, summary, "
+            "cascades_to, action FROM issue_categories WHERE slug = $1 OR id = $1",
+            slug_or_id,
+        )
+    return seed_data.CATEGORY_BY_SLUG.get(slug_or_id) or seed_data.CATEGORY_BY_ID.get(slug_or_id)
+
+
+async def list_category_timeseries(category_id: str) -> list[dict[str, Any]]:
+    if _using_db():
+        rows = await db.fetch(
+            "SELECT category_id, month, issue_count, sentiment, status "
+            "FROM category_timeseries WHERE category_id = $1 ORDER BY month ASC",
+            category_id,
+        )
+        return [
+            {
+                "month": _parse_date(r["month"]),
+                "issue_count": int(r["issue_count"]),
+                "sentiment": float(r["sentiment"]),
+                "status": r["status"],
+            }
+            for r in rows
+        ]
+    return [
+        {
+            "month": _parse_date(t["month"]),
+            "issue_count": int(t["issue_count"]),
+            "sentiment": float(t["sentiment"]),
+            "status": t["status"],
+        }
+        for t in seed_data.category_timeseries(category_id)
+    ]
 
 
 # --- user segments -----------------------------------------------------------

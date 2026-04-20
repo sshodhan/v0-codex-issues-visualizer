@@ -1,53 +1,90 @@
 {
   "categories": [
     {
-      "id": "cat-code-review",
-      "name": "Code Review Incomplete",
-      "slug": "code-review-incomplete",
-      "color": "#ef4444",
-      "share_pct": 22.0
-    },
-    {
       "id": "cat-session-memory",
       "name": "Session / Memory Management",
       "slug": "session-memory",
-      "color": "#f97316",
-      "share_pct": 19.0
+      "color": "#ef4444",
+      "tier": 1,
+      "share_pct": 29.0,
+      "users_affected_pct": 12.0,
+      "summary": "Recursive context compaction and memory leaks during long sessions.",
+      "cascades_to": [],
+      "action": "Highest priority \u2014 fixes 2+ cascading issues."
     },
     {
       "id": "cat-token-counting",
       "name": "Token Counting Issues",
       "slug": "token-counting",
-      "color": "#f59e0b",
-      "share_pct": 16.0
+      "color": "#f97316",
+      "tier": 1,
+      "share_pct": 27.0,
+      "users_affected_pct": 8.0,
+      "summary": "Off-by-one error in tokenizer.py driving phantom billing and early quota exhaustion.",
+      "cascades_to": [
+        "cat-context-overflow"
+      ],
+      "action": "Fixes Context Overflow cascade (80% of affected users)."
     },
     {
       "id": "cat-context-overflow",
       "name": "Context Overflow",
       "slug": "context-overflow",
       "color": "#eab308",
-      "share_pct": 15.0
+      "tier": 1,
+      "share_pct": 25.0,
+      "users_affected_pct": 9.0,
+      "summary": "Silent tail truncation; symptom of token-counting drift.",
+      "cascades_to": [],
+      "action": "Will largely resolve once Token Counting is fixed."
     },
     {
-      "id": "cat-performance",
-      "name": "Performance / Latency",
-      "slug": "performance-latency",
-      "color": "#3b82f6",
-      "share_pct": 11.0
-    },
-    {
-      "id": "cat-api-integration",
-      "name": "API / Integration",
-      "slug": "api-integration",
+      "id": "cat-code-review",
+      "name": "Code Review Incomplete",
+      "slug": "code-review-incomplete",
       "color": "#8b5cf6",
-      "share_pct": 10.0
+      "tier": 2,
+      "share_pct": 22.0,
+      "users_affected_pct": 7.0,
+      "summary": "Persistent quality issue \u2014 model degradation at v1.8.0 dropping large-diff coverage.",
+      "cascades_to": [],
+      "action": "Pre-dates the crisis; needs dedicated model/eval workstream."
     },
     {
-      "id": "cat-other",
-      "name": "Other",
-      "slug": "other",
+      "id": "cat-regression-quality",
+      "name": "Regression in Output Quality",
+      "slug": "regression-quality",
+      "color": "#ec4899",
+      "tier": 2,
+      "share_pct": 20.0,
+      "users_affected_pct": 6.0,
+      "summary": "Secondary quality degradation surfacing in agent outputs.",
+      "cascades_to": [],
+      "action": "Track against model release cadence; add automated regression evals."
+    },
+    {
+      "id": "cat-unexpected-behavior",
+      "name": "Unexpected Behavior",
+      "slug": "unexpected-behavior",
       "color": "#6b7280",
-      "share_pct": 7.0
+      "tier": 3,
+      "share_pct": 18.0,
+      "users_affected_pct": 4.0,
+      "summary": "Symptom category that masks underlying issues; slowest recovery curve.",
+      "cascades_to": [],
+      "action": "Root-cause triage \u2014 likely resolves alongside TIER 1 fixes."
+    },
+    {
+      "id": "cat-api-rate-limit",
+      "name": "API Rate Limiting",
+      "slug": "api-rate-limiting",
+      "color": "#3b82f6",
+      "tier": 3,
+      "share_pct": 18.0,
+      "users_affected_pct": 3.0,
+      "summary": "Operational/config issue with highest sentiment (38); low user count but drove 92% enterprise cost impact.",
+      "cascades_to": [],
+      "action": "Quick win \u2014 ship retry/backoff fix + quota dashboards."
     }
   ],
   "user_segments": [
@@ -59,7 +96,7 @@
       "developer_count_range": "1000+",
       "crisis_severity_percentage": 78.0,
       "cost_impact_percentage": 92.0,
-      "recovery_speed_percentage": 25.0
+      "recovery_speed_percentage": 45.0
     },
     {
       "id": "seg-professional",
@@ -395,7 +432,7 @@
       "title": "Anyone else seeing Codex retry-loop into a death spiral?",
       "description": "Every 502 from the upstream turns into dozens of retries in milliseconds. Blew our quota in an hour.",
       "url": "https://reddit.com/r/OpenAI/comments/1n7rf2",
-      "category_id": "cat-api-integration",
+      "category_id": "cat-api-rate-limit",
       "severity": "high",
       "sentiment_score": -0.62,
       "engagement_score": 66.0,
@@ -475,7 +512,7 @@
       "title": "Rate-limit backoff is wildly wrong",
       "description": "Reset header is a Unix timestamp but the client treats it as seconds-from-now, so it hammers the API when it should wait.",
       "url": "https://reddit.com/r/programming/comments/1n2abc/c/k9f8d1",
-      "category_id": "cat-api-integration",
+      "category_id": "cat-api-rate-limit",
       "severity": "medium",
       "sentiment_score": -0.35,
       "engagement_score": 37.0,
@@ -534,7 +571,7 @@
       "title": "Worker pool crashes + retry storm in the same incident",
       "description": "Pool OOMs, client retries aggressively, upstream returns 502, client retries more. Classic amplification.",
       "url": "https://github.com/openai/codex/issues/12901",
-      "category_id": "cat-performance",
+      "category_id": "cat-session-memory",
       "severity": "critical",
       "sentiment_score": -0.7,
       "engagement_score": 83.0,
@@ -633,7 +670,7 @@
       "title": "VS Code extension aborts completions after 30s",
       "description": "During latency spikes the extension cancels a request at 30s even though the model is still generating.",
       "url": "https://github.com/microsoft/vscode-codex/issues/552",
-      "category_id": "cat-performance",
+      "category_id": "cat-unexpected-behavior",
       "severity": "medium",
       "sentiment_score": -0.32,
       "engagement_score": 42.0,
@@ -758,6 +795,792 @@
       "issue_freq": 40,
       "status": "recovered",
       "note": "Full recovery"
+    }
+  ],
+  "category_timeseries": [
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-01-01",
+      "issue_count": 1,
+      "sentiment": 70.5,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-02-01",
+      "issue_count": 1,
+      "sentiment": 69.6,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-03-01",
+      "issue_count": 1,
+      "sentiment": 68.2,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-04-01",
+      "issue_count": 2,
+      "sentiment": 66.0,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-05-01",
+      "issue_count": 3,
+      "sentiment": 62.4,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-06-01",
+      "issue_count": 5,
+      "sentiment": 57.9,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-07-01",
+      "issue_count": 9,
+      "sentiment": 52.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-08-01",
+      "issue_count": 12,
+      "sentiment": 47.1,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-09-01",
+      "issue_count": 15,
+      "sentiment": 39.9,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-10-01",
+      "issue_count": 16,
+      "sentiment": 30.0,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-11-01",
+      "issue_count": 12,
+      "sentiment": 39.0,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2025-12-01",
+      "issue_count": 8,
+      "sentiment": 48.9,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2026-01-01",
+      "issue_count": 5,
+      "sentiment": 57.0,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2026-02-01",
+      "issue_count": 3,
+      "sentiment": 65.1,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2026-03-01",
+      "issue_count": 2,
+      "sentiment": 70.5,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-session-memory",
+      "month": "2026-04-01",
+      "issue_count": 4,
+      "sentiment": 82.0,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-01-01",
+      "issue_count": 1,
+      "sentiment": 70.4,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-02-01",
+      "issue_count": 1,
+      "sentiment": 69.5,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-03-01",
+      "issue_count": 1,
+      "sentiment": 68.1,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-04-01",
+      "issue_count": 2,
+      "sentiment": 65.8,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-05-01",
+      "issue_count": 3,
+      "sentiment": 62.1,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-06-01",
+      "issue_count": 5,
+      "sentiment": 57.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-07-01",
+      "issue_count": 8,
+      "sentiment": 52.0,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-08-01",
+      "issue_count": 12,
+      "sentiment": 46.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-09-01",
+      "issue_count": 14,
+      "sentiment": 39.1,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-10-01",
+      "issue_count": 15,
+      "sentiment": 29.0,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-11-01",
+      "issue_count": 11,
+      "sentiment": 38.2,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2025-12-01",
+      "issue_count": 8,
+      "sentiment": 48.3,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2026-01-01",
+      "issue_count": 4,
+      "sentiment": 56.6,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2026-02-01",
+      "issue_count": 3,
+      "sentiment": 64.9,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2026-03-01",
+      "issue_count": 2,
+      "sentiment": 70.4,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-token-counting",
+      "month": "2026-04-01",
+      "issue_count": 3,
+      "sentiment": 80.0,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-01-01",
+      "issue_count": 1,
+      "sentiment": 70.7,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-02-01",
+      "issue_count": 1,
+      "sentiment": 69.8,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-03-01",
+      "issue_count": 1,
+      "sentiment": 68.5,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-04-01",
+      "issue_count": 2,
+      "sentiment": 66.4,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-05-01",
+      "issue_count": 3,
+      "sentiment": 63.0,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-06-01",
+      "issue_count": 5,
+      "sentiment": 58.7,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-07-01",
+      "issue_count": 8,
+      "sentiment": 53.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-08-01",
+      "issue_count": 12,
+      "sentiment": 48.3,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-09-01",
+      "issue_count": 14,
+      "sentiment": 41.5,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-10-01",
+      "issue_count": 15,
+      "sentiment": 32.0,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-11-01",
+      "issue_count": 11,
+      "sentiment": 40.6,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2025-12-01",
+      "issue_count": 8,
+      "sentiment": 50.1,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2026-01-01",
+      "issue_count": 4,
+      "sentiment": 57.8,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2026-02-01",
+      "issue_count": 3,
+      "sentiment": 65.5,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2026-03-01",
+      "issue_count": 2,
+      "sentiment": 70.7,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-context-overflow",
+      "month": "2026-04-01",
+      "issue_count": 3,
+      "sentiment": 83.0,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-01-01",
+      "issue_count": 1,
+      "sentiment": 71.5,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-02-01",
+      "issue_count": 1,
+      "sentiment": 70.8,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-03-01",
+      "issue_count": 1,
+      "sentiment": 69.8,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-04-01",
+      "issue_count": 2,
+      "sentiment": 68.0,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-05-01",
+      "issue_count": 2,
+      "sentiment": 65.2,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-06-01",
+      "issue_count": 4,
+      "sentiment": 61.7,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-07-01",
+      "issue_count": 7,
+      "sentiment": 57.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-08-01",
+      "issue_count": 9,
+      "sentiment": 53.3,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-09-01",
+      "issue_count": 11,
+      "sentiment": 47.7,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-10-01",
+      "issue_count": 12,
+      "sentiment": 40.0,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-11-01",
+      "issue_count": 9,
+      "sentiment": 47.0,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2025-12-01",
+      "issue_count": 6,
+      "sentiment": 54.7,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2026-01-01",
+      "issue_count": 4,
+      "sentiment": 61.0,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2026-02-01",
+      "issue_count": 2,
+      "sentiment": 67.3,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2026-03-01",
+      "issue_count": 2,
+      "sentiment": 71.5,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-code-review",
+      "month": "2026-04-01",
+      "issue_count": 3,
+      "sentiment": 78.0,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-01-01",
+      "issue_count": 1,
+      "sentiment": 71.7,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-02-01",
+      "issue_count": 1,
+      "sentiment": 71.0,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-03-01",
+      "issue_count": 1,
+      "sentiment": 70.0,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-04-01",
+      "issue_count": 1,
+      "sentiment": 68.4,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-05-01",
+      "issue_count": 2,
+      "sentiment": 65.8,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-06-01",
+      "issue_count": 3,
+      "sentiment": 62.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-07-01",
+      "issue_count": 6,
+      "sentiment": 58.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-08-01",
+      "issue_count": 8,
+      "sentiment": 54.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-09-01",
+      "issue_count": 9,
+      "sentiment": 49.3,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-10-01",
+      "issue_count": 10,
+      "sentiment": 42.0,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-11-01",
+      "issue_count": 8,
+      "sentiment": 48.6,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2025-12-01",
+      "issue_count": 5,
+      "sentiment": 55.9,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2026-01-01",
+      "issue_count": 3,
+      "sentiment": 61.8,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2026-02-01",
+      "issue_count": 2,
+      "sentiment": 67.7,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2026-03-01",
+      "issue_count": 1,
+      "sentiment": 71.7,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-regression-quality",
+      "month": "2026-04-01",
+      "issue_count": 2,
+      "sentiment": 79.0,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-01-01",
+      "issue_count": 1,
+      "sentiment": 72.0,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-02-01",
+      "issue_count": 1,
+      "sentiment": 71.4,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-03-01",
+      "issue_count": 1,
+      "sentiment": 70.5,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-04-01",
+      "issue_count": 1,
+      "sentiment": 69.0,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-05-01",
+      "issue_count": 2,
+      "sentiment": 66.6,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-06-01",
+      "issue_count": 3,
+      "sentiment": 63.6,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-07-01",
+      "issue_count": 5,
+      "sentiment": 60.0,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-08-01",
+      "issue_count": 7,
+      "sentiment": 56.4,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-09-01",
+      "issue_count": 8,
+      "sentiment": 51.6,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-10-01",
+      "issue_count": 9,
+      "sentiment": 45.0,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-11-01",
+      "issue_count": 7,
+      "sentiment": 51.0,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2025-12-01",
+      "issue_count": 4,
+      "sentiment": 57.6,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2026-01-01",
+      "issue_count": 3,
+      "sentiment": 63.0,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2026-02-01",
+      "issue_count": 2,
+      "sentiment": 68.4,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2026-03-01",
+      "issue_count": 1,
+      "sentiment": 72.0,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-unexpected-behavior",
+      "month": "2026-04-01",
+      "issue_count": 3,
+      "sentiment": 68.0,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-01-01",
+      "issue_count": 1,
+      "sentiment": 71.3,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-02-01",
+      "issue_count": 1,
+      "sentiment": 70.6,
+      "status": "baseline"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-03-01",
+      "issue_count": 1,
+      "sentiment": 69.5,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-04-01",
+      "issue_count": 1,
+      "sentiment": 67.6,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-05-01",
+      "issue_count": 2,
+      "sentiment": 64.6,
+      "status": "emerging"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-06-01",
+      "issue_count": 3,
+      "sentiment": 60.9,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-07-01",
+      "issue_count": 4,
+      "sentiment": 56.5,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-08-01",
+      "issue_count": 6,
+      "sentiment": 52.1,
+      "status": "crisis"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-09-01",
+      "issue_count": 7,
+      "sentiment": 46.1,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-10-01",
+      "issue_count": 8,
+      "sentiment": 38.0,
+      "status": "peak_crisis"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-11-01",
+      "issue_count": 6,
+      "sentiment": 45.4,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2025-12-01",
+      "issue_count": 4,
+      "sentiment": 53.5,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2026-01-01",
+      "issue_count": 2,
+      "sentiment": 60.2,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2026-02-01",
+      "issue_count": 2,
+      "sentiment": 66.9,
+      "status": "recovery"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2026-03-01",
+      "issue_count": 1,
+      "sentiment": 71.3,
+      "status": "recovered"
+    },
+    {
+      "category_id": "cat-api-rate-limit",
+      "month": "2026-04-01",
+      "issue_count": 1,
+      "sentiment": 86.0,
+      "status": "recovered"
     }
   ]
 }

@@ -50,6 +50,7 @@ DROP TABLE IF EXISTS categories CASCADE;
 DROP TABLE IF EXISTS sources CASCADE;
 
 -- Drop new-schema tables if re-running
+DROP TABLE IF EXISTS category_timeseries CASCADE;
 DROP TABLE IF EXISTS issue_timeseries CASCADE;
 DROP TABLE IF EXISTS competitive_data CASCADE;
 DROP TABLE IF EXISTS segment_impact CASCADE;
@@ -67,9 +68,15 @@ CREATE TABLE issue_categories (
   name TEXT NOT NULL,
   slug TEXT NOT NULL UNIQUE,
   color TEXT NOT NULL DEFAULT '#6b7280',
+  tier INTEGER NOT NULL CHECK (tier BETWEEN 1 AND 3),
   share_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+  users_affected_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+  summary TEXT,
+  cascades_to TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+  action TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_categories_tier ON issue_categories(tier);
 
 CREATE TABLE user_segments (
   id TEXT PRIMARY KEY,
@@ -153,6 +160,17 @@ CREATE TABLE issue_timeseries (
 
 CREATE INDEX idx_timeseries_status ON issue_timeseries(status);
 
+CREATE TABLE category_timeseries (
+  category_id TEXT NOT NULL REFERENCES issue_categories(id) ON DELETE CASCADE,
+  month DATE NOT NULL,
+  issue_count INTEGER NOT NULL,
+  sentiment NUMERIC(5,2) NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('baseline','emerging','crisis','peak_crisis','recovery','recovered')),
+  PRIMARY KEY (category_id, month)
+);
+
+CREATE INDEX idx_category_timeseries_month ON category_timeseries(month);
+
 CREATE TABLE segment_impact (
   id SERIAL PRIMARY KEY,
   issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
@@ -170,6 +188,7 @@ ALTER TABLE root_causes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE competitive_data ENABLE ROW LEVEL SECURITY;
 ALTER TABLE issues ENABLE ROW LEVEL SECURITY;
 ALTER TABLE issue_timeseries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE category_timeseries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE segment_impact ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY public_read_categories ON issue_categories FOR SELECT TO anon, authenticated USING (true);
@@ -178,6 +197,7 @@ CREATE POLICY public_read_root_causes ON root_causes FOR SELECT TO anon, authent
 CREATE POLICY public_read_competitive ON competitive_data FOR SELECT TO anon, authenticated USING (true);
 CREATE POLICY public_read_issues ON issues FOR SELECT TO anon, authenticated USING (true);
 CREATE POLICY public_read_timeseries ON issue_timeseries FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY public_read_category_timeseries ON category_timeseries FOR SELECT TO anon, authenticated USING (true);
 CREATE POLICY public_read_segment_impact ON segment_impact FOR SELECT TO anon, authenticated USING (true);
 
 CREATE POLICY service_write_categories ON issue_categories FOR ALL TO service_role USING (true) WITH CHECK (true);
@@ -186,6 +206,7 @@ CREATE POLICY service_write_root_causes ON root_causes FOR ALL TO service_role U
 CREATE POLICY service_write_competitive ON competitive_data FOR ALL TO service_role USING (true) WITH CHECK (true);
 CREATE POLICY service_write_issues ON issues FOR ALL TO service_role USING (true) WITH CHECK (true);
 CREATE POLICY service_write_timeseries ON issue_timeseries FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY service_write_category_timeseries ON category_timeseries FOR ALL TO service_role USING (true) WITH CHECK (true);
 CREATE POLICY service_write_segment_impact ON segment_impact FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 -- ---------------------------------------------------------------------------
@@ -198,10 +219,28 @@ def gen_categories() -> str:
     rows = []
     for c in seed_data.CATEGORIES:
         rows.append(
-            f"  ({esc(c['id'])}, {esc(c['name'])}, {esc(c['slug'])}, {esc(c['color'])}, {c['share_pct']})"
+            f"  ({esc(c['id'])}, {esc(c['name'])}, {esc(c['slug'])}, {esc(c['color'])}, "
+            f"{c['tier']}, {c['share_pct']}, {c['users_affected_pct']}, "
+            f"{esc(c.get('summary'))}, {array_lit(c.get('cascades_to', []))}, "
+            f"{esc(c.get('action'))})"
         )
     return (
-        "INSERT INTO issue_categories (id, name, slug, color, share_pct) VALUES\n"
+        "INSERT INTO issue_categories (id, name, slug, color, tier, share_pct, "
+        "users_affected_pct, summary, cascades_to, action) VALUES\n"
+        + ",\n".join(rows)
+        + ";\n\n"
+    )
+
+
+def gen_category_timeseries() -> str:
+    rows = []
+    for t in seed_data.CATEGORY_TIMESERIES:
+        rows.append(
+            f"  ({esc(t['category_id'])}, {esc(t['month'])}::date, {t['issue_count']}, "
+            f"{t['sentiment']}, {esc(t['status'])})"
+        )
+    return (
+        "INSERT INTO category_timeseries (category_id, month, issue_count, sentiment, status) VALUES\n"
         + ",\n".join(rows)
         + ";\n\n"
     )
@@ -313,6 +352,7 @@ def main() -> None:
         + gen_competitive()
         + gen_issues()
         + gen_timeline()
+        + gen_category_timeseries()
     )
     path = Path(__file__).resolve().parents[2] / "scripts" / "003_create_analysis_schema.sql"
     path.write_text(out)

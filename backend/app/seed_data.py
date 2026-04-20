@@ -13,14 +13,95 @@ from __future__ import annotations
 from typing import Any
 
 
+# Categories with TIER classification per the brief. `share_pct` is the
+# share of issues touching this category (multi-label; sums >100). Tier
+# drives prioritization: TIER 1 = critical cascading issues, TIER 2 =
+# persistent quality problems, TIER 3 = symptomatic / operational.
 CATEGORIES: list[dict[str, Any]] = [
-    {"id": "cat-code-review", "name": "Code Review Incomplete", "slug": "code-review-incomplete", "color": "#ef4444", "share_pct": 22.0},
-    {"id": "cat-session-memory", "name": "Session / Memory Management", "slug": "session-memory", "color": "#f97316", "share_pct": 19.0},
-    {"id": "cat-token-counting", "name": "Token Counting Issues", "slug": "token-counting", "color": "#f59e0b", "share_pct": 16.0},
-    {"id": "cat-context-overflow", "name": "Context Overflow", "slug": "context-overflow", "color": "#eab308", "share_pct": 15.0},
-    {"id": "cat-performance", "name": "Performance / Latency", "slug": "performance-latency", "color": "#3b82f6", "share_pct": 11.0},
-    {"id": "cat-api-integration", "name": "API / Integration", "slug": "api-integration", "color": "#8b5cf6", "share_pct": 10.0},
-    {"id": "cat-other", "name": "Other", "slug": "other", "color": "#6b7280", "share_pct": 7.0},
+    {
+        "id": "cat-session-memory",
+        "name": "Session / Memory Management",
+        "slug": "session-memory",
+        "color": "#ef4444",
+        "tier": 1,
+        "share_pct": 29.0,
+        "users_affected_pct": 12.0,
+        "summary": "Recursive context compaction and memory leaks during long sessions.",
+        "cascades_to": [],
+        "action": "Highest priority — fixes 2+ cascading issues.",
+    },
+    {
+        "id": "cat-token-counting",
+        "name": "Token Counting Issues",
+        "slug": "token-counting",
+        "color": "#f97316",
+        "tier": 1,
+        "share_pct": 27.0,
+        "users_affected_pct": 8.0,
+        "summary": "Off-by-one error in tokenizer.py driving phantom billing and early quota exhaustion.",
+        "cascades_to": ["cat-context-overflow"],
+        "action": "Fixes Context Overflow cascade (80% of affected users).",
+    },
+    {
+        "id": "cat-context-overflow",
+        "name": "Context Overflow",
+        "slug": "context-overflow",
+        "color": "#eab308",
+        "tier": 1,
+        "share_pct": 25.0,
+        "users_affected_pct": 9.0,
+        "summary": "Silent tail truncation; symptom of token-counting drift.",
+        "cascades_to": [],
+        "action": "Will largely resolve once Token Counting is fixed.",
+    },
+    {
+        "id": "cat-code-review",
+        "name": "Code Review Incomplete",
+        "slug": "code-review-incomplete",
+        "color": "#8b5cf6",
+        "tier": 2,
+        "share_pct": 22.0,
+        "users_affected_pct": 7.0,
+        "summary": "Persistent quality issue — model degradation at v1.8.0 dropping large-diff coverage.",
+        "cascades_to": [],
+        "action": "Pre-dates the crisis; needs dedicated model/eval workstream.",
+    },
+    {
+        "id": "cat-regression-quality",
+        "name": "Regression in Output Quality",
+        "slug": "regression-quality",
+        "color": "#ec4899",
+        "tier": 2,
+        "share_pct": 20.0,
+        "users_affected_pct": 6.0,
+        "summary": "Secondary quality degradation surfacing in agent outputs.",
+        "cascades_to": [],
+        "action": "Track against model release cadence; add automated regression evals.",
+    },
+    {
+        "id": "cat-unexpected-behavior",
+        "name": "Unexpected Behavior",
+        "slug": "unexpected-behavior",
+        "color": "#6b7280",
+        "tier": 3,
+        "share_pct": 18.0,
+        "users_affected_pct": 4.0,
+        "summary": "Symptom category that masks underlying issues; slowest recovery curve.",
+        "cascades_to": [],
+        "action": "Root-cause triage — likely resolves alongside TIER 1 fixes.",
+    },
+    {
+        "id": "cat-api-rate-limit",
+        "name": "API Rate Limiting",
+        "slug": "api-rate-limiting",
+        "color": "#3b82f6",
+        "tier": 3,
+        "share_pct": 18.0,
+        "users_affected_pct": 3.0,
+        "summary": "Operational/config issue with highest sentiment (38); low user count but drove 92% enterprise cost impact.",
+        "cascades_to": [],
+        "action": "Quick win — ship retry/backoff fix + quota dashboards.",
+    },
 ]
 
 
@@ -33,7 +114,7 @@ USER_SEGMENTS: list[dict[str, Any]] = [
         "developer_count_range": "1000+",
         "crisis_severity_percentage": 78.0,
         "cost_impact_percentage": 92.0,
-        "recovery_speed_percentage": 25.0,
+        "recovery_speed_percentage": 45.0,
     },
     {
         "id": "seg-professional",
@@ -337,7 +418,7 @@ ISSUES: list[dict[str, Any]] = [
         "title": "Anyone else seeing Codex retry-loop into a death spiral?",
         "description": "Every 502 from the upstream turns into dozens of retries in milliseconds. Blew our quota in an hour.",
         "url": "https://reddit.com/r/OpenAI/comments/1n7rf2",
-        "category_id": "cat-api-integration",
+        "category_id": "cat-api-rate-limit",
         "severity": "high",
         "sentiment_score": -0.62,
         "engagement_score": 66.0,
@@ -405,7 +486,7 @@ ISSUES: list[dict[str, Any]] = [
         "title": "Rate-limit backoff is wildly wrong",
         "description": "Reset header is a Unix timestamp but the client treats it as seconds-from-now, so it hammers the API when it should wait.",
         "url": "https://reddit.com/r/programming/comments/1n2abc/c/k9f8d1",
-        "category_id": "cat-api-integration",
+        "category_id": "cat-api-rate-limit",
         "severity": "medium",
         "sentiment_score": -0.35,
         "engagement_score": 37.0,
@@ -456,7 +537,7 @@ ISSUES: list[dict[str, Any]] = [
         "title": "Worker pool crashes + retry storm in the same incident",
         "description": "Pool OOMs, client retries aggressively, upstream returns 502, client retries more. Classic amplification.",
         "url": "https://github.com/openai/codex/issues/12901",
-        "category_id": "cat-performance",
+        "category_id": "cat-session-memory",
         "severity": "critical",
         "sentiment_score": -0.70,
         "engagement_score": 83.0,
@@ -541,7 +622,7 @@ ISSUES: list[dict[str, Any]] = [
         "title": "VS Code extension aborts completions after 30s",
         "description": "During latency spikes the extension cancels a request at 30s even though the model is still generating.",
         "url": "https://github.com/microsoft/vscode-codex/issues/552",
-        "category_id": "cat-performance",
+        "category_id": "cat-unexpected-behavior",
         "severity": "medium",
         "sentiment_score": -0.32,
         "engagement_score": 42.0,
@@ -577,8 +658,66 @@ TIMELINE: list[dict[str, Any]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Per-category monthly timeseries (7 categories × 16 months = 112 rows).
+# Anchored to the brief's stated peak-month (Oct 2025) and recovery-month
+# (Apr 2026) numbers; intermediate months follow the same shape as the
+# overall TIMELINE scaled to each category's peak/recovery counts.
+# ---------------------------------------------------------------------------
+
+# (peak_issues, peak_sentiment, recovery_issues, recovery_sentiment)
+_CATEGORY_ANCHORS: dict[str, tuple[int, float, int, float]] = {
+    "cat-session-memory": (16, 30.0, 4, 82.0),
+    "cat-token-counting": (15, 29.0, 3, 80.0),
+    "cat-context-overflow": (15, 32.0, 3, 83.0),
+    "cat-code-review": (12, 40.0, 3, 78.0),
+    "cat-regression-quality": (10, 42.0, 2, 79.0),
+    "cat-unexpected-behavior": (9, 45.0, 3, 68.0),       # slowest recovery
+    "cat-api-rate-limit": (8, 38.0, 1, 86.0),            # highest peak sentiment
+}
+
+# Normalized monthly shape (relative to peak at Oct 2025 = 1.0).
+_ISSUE_SHAPE = [0.04, 0.06, 0.09, 0.13, 0.20, 0.32, 0.55, 0.78, 0.93, 1.00,
+                0.75, 0.50, 0.30, 0.20, 0.13, None]  # last slot = recovery anchor
+
+# Sentiment shape baseline→trough→recovery (0 at trough, 1 at recovery baseline).
+_SENTIMENT_SHAPE = [0.90, 0.88, 0.85, 0.80, 0.72, 0.62, 0.50, 0.38, 0.22, 0.00,
+                    0.20, 0.42, 0.60, 0.78, 0.90, None]  # last slot = recovery anchor
+
+
+def _category_timeline(cat_id: str) -> list[dict[str, Any]]:
+    peak_issues, trough_sent, rec_issues, rec_sent = _CATEGORY_ANCHORS[cat_id]
+    baseline_sent = 75.0  # pre-crisis baseline for every category
+    months = [t["month"] for t in TIMELINE]
+    statuses = [t["status"] for t in TIMELINE]
+    out: list[dict[str, Any]] = []
+    for i, month in enumerate(months):
+        if i == len(months) - 1:
+            issues = rec_issues
+            sentiment = rec_sent
+        else:
+            issues = max(1, round(peak_issues * _ISSUE_SHAPE[i]))
+            # Interpolate sentiment between baseline and trough using shape.
+            shape = _SENTIMENT_SHAPE[i]
+            sentiment = round(trough_sent + (baseline_sent - trough_sent) * shape, 1)
+        out.append({
+            "category_id": cat_id,
+            "month": month,
+            "issue_count": issues,
+            "sentiment": sentiment,
+            "status": statuses[i],
+        })
+    return out
+
+
+CATEGORY_TIMESERIES: list[dict[str, Any]] = [
+    row for cat in CATEGORIES for row in _category_timeline(cat["id"])
+]
+
+
 # Quick lookups
 CATEGORY_BY_ID = {c["id"]: c for c in CATEGORIES}
+CATEGORY_BY_SLUG = {c["slug"]: c for c in CATEGORIES}
 SEGMENT_BY_ID = {s["id"]: s for s in USER_SEGMENTS}
 SEGMENT_BY_SLUG = {s["slug"]: s for s in USER_SEGMENTS}
 ROOT_CAUSE_BY_ID = {r["id"]: r for r in ROOT_CAUSES}
@@ -591,6 +730,14 @@ def issues_for_root_cause(root_cause_id: str) -> list[dict[str, Any]]:
 
 def issues_for_segment(segment_slug: str) -> list[dict[str, Any]]:
     return [i for i in ISSUES if segment_slug in i["affected_segments"]]
+
+
+def issues_for_category(category_id: str) -> list[dict[str, Any]]:
+    return [i for i in ISSUES if i["category_id"] == category_id]
+
+
+def category_timeseries(category_id: str) -> list[dict[str, Any]]:
+    return [t for t in CATEGORY_TIMESERIES if t["category_id"] == category_id]
 
 
 def crisis_peak() -> dict[str, Any]:

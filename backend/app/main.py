@@ -15,7 +15,15 @@ from slowapi.util import get_remote_address
 
 from . import cache, db
 from .config import get_settings
-from .routes import analytics, health, issues, root_causes, timeline, user_segments
+from .routes import (
+    analytics,
+    categories,
+    health,
+    issues,
+    root_causes,
+    timeline,
+    user_segments,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
@@ -68,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(timeline.router)
     app.include_router(root_causes.router)
     app.include_router(user_segments.router)
+    app.include_router(categories.router)
     app.include_router(analytics.router)
 
     return app

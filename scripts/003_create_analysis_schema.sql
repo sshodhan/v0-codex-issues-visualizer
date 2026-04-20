@@ -12,6 +12,7 @@ DROP TABLE IF EXISTS categories CASCADE;
 DROP TABLE IF EXISTS sources CASCADE;
 
 -- Drop new-schema tables if re-running
+DROP TABLE IF EXISTS category_timeseries CASCADE;
 DROP TABLE IF EXISTS issue_timeseries CASCADE;
 DROP TABLE IF EXISTS competitive_data CASCADE;
 DROP TABLE IF EXISTS segment_impact CASCADE;
@@ -29,9 +30,15 @@ CREATE TABLE issue_categories (
   name TEXT NOT NULL,
   slug TEXT NOT NULL UNIQUE,
   color TEXT NOT NULL DEFAULT '#6b7280',
+  tier INTEGER NOT NULL CHECK (tier BETWEEN 1 AND 3),
   share_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+  users_affected_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+  summary TEXT,
+  cascades_to TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+  action TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_categories_tier ON issue_categories(tier);
 
 CREATE TABLE user_segments (
   id TEXT PRIMARY KEY,
@@ -115,6 +122,17 @@ CREATE TABLE issue_timeseries (
 
 CREATE INDEX idx_timeseries_status ON issue_timeseries(status);
 
+CREATE TABLE category_timeseries (
+  category_id TEXT NOT NULL REFERENCES issue_categories(id) ON DELETE CASCADE,
+  month DATE NOT NULL,
+  issue_count INTEGER NOT NULL,
+  sentiment NUMERIC(5,2) NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('baseline','emerging','crisis','peak_crisis','recovery','recovered')),
+  PRIMARY KEY (category_id, month)
+);
+
+CREATE INDEX idx_category_timeseries_month ON category_timeseries(month);
+
 CREATE TABLE segment_impact (
   id SERIAL PRIMARY KEY,
   issue_id TEXT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
@@ -132,6 +150,7 @@ ALTER TABLE root_causes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE competitive_data ENABLE ROW LEVEL SECURITY;
 ALTER TABLE issues ENABLE ROW LEVEL SECURITY;
 ALTER TABLE issue_timeseries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE category_timeseries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE segment_impact ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY public_read_categories ON issue_categories FOR SELECT TO anon, authenticated USING (true);
@@ -140,6 +159,7 @@ CREATE POLICY public_read_root_causes ON root_causes FOR SELECT TO anon, authent
 CREATE POLICY public_read_competitive ON competitive_data FOR SELECT TO anon, authenticated USING (true);
 CREATE POLICY public_read_issues ON issues FOR SELECT TO anon, authenticated USING (true);
 CREATE POLICY public_read_timeseries ON issue_timeseries FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY public_read_category_timeseries ON category_timeseries FOR SELECT TO anon, authenticated USING (true);
 CREATE POLICY public_read_segment_impact ON segment_impact FOR SELECT TO anon, authenticated USING (true);
 
 CREATE POLICY service_write_categories ON issue_categories FOR ALL TO service_role USING (true) WITH CHECK (true);
@@ -148,22 +168,23 @@ CREATE POLICY service_write_root_causes ON root_causes FOR ALL TO service_role U
 CREATE POLICY service_write_competitive ON competitive_data FOR ALL TO service_role USING (true) WITH CHECK (true);
 CREATE POLICY service_write_issues ON issues FOR ALL TO service_role USING (true) WITH CHECK (true);
 CREATE POLICY service_write_timeseries ON issue_timeseries FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY service_write_category_timeseries ON category_timeseries FOR ALL TO service_role USING (true) WITH CHECK (true);
 CREATE POLICY service_write_segment_impact ON segment_impact FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 -- ---------------------------------------------------------------------------
 -- Seed data
 -- ---------------------------------------------------------------------------
-INSERT INTO issue_categories (id, name, slug, color, share_pct) VALUES
-  ('cat-code-review', 'Code Review Incomplete', 'code-review-incomplete', '#ef4444', 22.0),
-  ('cat-session-memory', 'Session / Memory Management', 'session-memory', '#f97316', 19.0),
-  ('cat-token-counting', 'Token Counting Issues', 'token-counting', '#f59e0b', 16.0),
-  ('cat-context-overflow', 'Context Overflow', 'context-overflow', '#eab308', 15.0),
-  ('cat-performance', 'Performance / Latency', 'performance-latency', '#3b82f6', 11.0),
-  ('cat-api-integration', 'API / Integration', 'api-integration', '#8b5cf6', 10.0),
-  ('cat-other', 'Other', 'other', '#6b7280', 7.0);
+INSERT INTO issue_categories (id, name, slug, color, tier, share_pct, users_affected_pct, summary, cascades_to, action) VALUES
+  ('cat-session-memory', 'Session / Memory Management', 'session-memory', '#ef4444', 1, 29.0, 12.0, 'Recursive context compaction and memory leaks during long sessions.', ARRAY[]::text[], 'Highest priority — fixes 2+ cascading issues.'),
+  ('cat-token-counting', 'Token Counting Issues', 'token-counting', '#f97316', 1, 27.0, 8.0, 'Off-by-one error in tokenizer.py driving phantom billing and early quota exhaustion.', ARRAY['cat-context-overflow'], 'Fixes Context Overflow cascade (80% of affected users).'),
+  ('cat-context-overflow', 'Context Overflow', 'context-overflow', '#eab308', 1, 25.0, 9.0, 'Silent tail truncation; symptom of token-counting drift.', ARRAY[]::text[], 'Will largely resolve once Token Counting is fixed.'),
+  ('cat-code-review', 'Code Review Incomplete', 'code-review-incomplete', '#8b5cf6', 2, 22.0, 7.0, 'Persistent quality issue — model degradation at v1.8.0 dropping large-diff coverage.', ARRAY[]::text[], 'Pre-dates the crisis; needs dedicated model/eval workstream.'),
+  ('cat-regression-quality', 'Regression in Output Quality', 'regression-quality', '#ec4899', 2, 20.0, 6.0, 'Secondary quality degradation surfacing in agent outputs.', ARRAY[]::text[], 'Track against model release cadence; add automated regression evals.'),
+  ('cat-unexpected-behavior', 'Unexpected Behavior', 'unexpected-behavior', '#6b7280', 3, 18.0, 4.0, 'Symptom category that masks underlying issues; slowest recovery curve.', ARRAY[]::text[], 'Root-cause triage — likely resolves alongside TIER 1 fixes.'),
+  ('cat-api-rate-limit', 'API Rate Limiting', 'api-rate-limiting', '#3b82f6', 3, 18.0, 3.0, 'Operational/config issue with highest sentiment (38); low user count but drove 92% enterprise cost impact.', ARRAY[]::text[], 'Quick win — ship retry/backoff fix + quota dashboards.');
 
 INSERT INTO user_segments (id, name, slug, description, developer_count_range, crisis_severity_percentage, cost_impact_percentage, recovery_speed_percentage) VALUES
-  ('seg-enterprise', 'Enterprise', 'enterprise', 'Organizations with 1000+ developers using Codex at scale.', '1000+', 78.0, 92.0, 25.0),
+  ('seg-enterprise', 'Enterprise', 'enterprise', 'Organizations with 1000+ developers using Codex at scale.', '1000+', 78.0, 92.0, 45.0),
   ('seg-professional', 'Professional Teams', 'professional', 'Mid-market engineering orgs (50–999 developers).', '50-999', 65.0, 78.0, 45.0),
   ('seg-smb', 'SMB', 'smb', 'Small businesses and startups (5–49 developers).', '5-49', 42.0, 55.0, 60.0),
   ('seg-ai-ml', 'AI / ML Teams', 'ai-ml', 'Research and ML engineering teams across org sizes.', 'varied', 55.0, 68.0, 50.0),
@@ -190,19 +211,19 @@ INSERT INTO issues (id, source, source_id, product, title, description, url, cat
   ('iss-001', 'github_issue', 'openai/codex/12345', 'codex', 'Codex is rapidly degrading — tasks failing 66% of the time', 'Over the last 2 weeks my tasks have been failing. Large prompts silently truncate and the agent re-enters compaction until it gives up.', 'https://github.com/openai/codex/issues/12345', 'cat-context-overflow', 'critical', -0.75, 92.0, 47, ARRAY['enterprise', 'professional', 'ai-ml'], 'rc-compact-rs', '2025-09-28T14:23:00Z'::timestamptz),
   ('iss-002', 'github_issue', 'openai/codex/12488', 'codex', 'OOM kills under concurrent agents on larger contexts', 'Running >40 parallel sessions reliably crashes the worker pool without surfacing an error to the client.', 'https://github.com/openai/codex/issues/12488', 'cat-session-memory', 'critical', -0.68, 78.0, 22, ARRAY['enterprise', 'ai-ml'], 'rc-memory-alloc', '2025-09-10T09:02:00Z'::timestamptz),
   ('iss-003', 'stackoverflow_question', 'so/79012345', 'codex', 'Why is my Codex token count double what the API returned?', 'The billing dashboard shows 2x the tokens my test harness counted using the SDK tokenizer.', 'https://stackoverflow.com/q/79012345', 'cat-token-counting', 'high', -0.45, 54.0, 18, ARRAY['professional', 'smb', 'indie'], 'rc-token-count', '2025-08-14T12:40:00Z'::timestamptz),
-  ('iss-004', 'reddit_post', 'reddit/1n7rf2', 'codex', 'Anyone else seeing Codex retry-loop into a death spiral?', 'Every 502 from the upstream turns into dozens of retries in milliseconds. Blew our quota in an hour.', 'https://reddit.com/r/OpenAI/comments/1n7rf2', 'cat-api-integration', 'high', -0.62, 66.0, 14, ARRAY['professional', 'smb'], 'rc-retry-storm', '2025-09-22T17:15:00Z'::timestamptz),
+  ('iss-004', 'reddit_post', 'reddit/1n7rf2', 'codex', 'Anyone else seeing Codex retry-loop into a death spiral?', 'Every 502 from the upstream turns into dozens of retries in milliseconds. Blew our quota in an hour.', 'https://reddit.com/r/OpenAI/comments/1n7rf2', 'cat-api-rate-limit', 'high', -0.62, 66.0, 14, ARRAY['professional', 'smb'], 'rc-retry-storm', '2025-09-22T17:15:00Z'::timestamptz),
   ('iss-005', 'github_issue', 'openai/codex/12612', 'codex', 'Review output cuts off halfway through long PRs', 'On PRs with >2k changed lines, Codex returns a review for the first few hunks and silently stops.', 'https://github.com/openai/codex/issues/12612', 'cat-code-review', 'high', -0.55, 71.0, 31, ARRAY['enterprise', 'professional'], 'rc-code-review-truncate', '2025-07-02T10:18:00Z'::timestamptz),
   ('iss-006', 'github_discussion', 'openai/codex/disc/884', 'codex', 'Session history out-of-order after transient disconnect', 'After a reconnect the tool-call transcript replays events in the wrong order, so follow-ups operate on stale state.', 'https://github.com/openai/codex/discussions/884', 'cat-session-memory', 'high', -0.5, 48.0, 9, ARRAY['enterprise', 'ai-ml'], 'rc-session-reconnect', '2025-08-08T07:55:00Z'::timestamptz),
   ('iss-007', 'hackernews', 'hn/41234567', 'codex', 'Codex silently drops the system prompt on long inputs', 'We traced a pattern where the model ignored the instruction footer once the prompt exceeded the context window — tail truncation with no warning.', 'https://news.ycombinator.com/item?id=41234567', 'cat-context-overflow', 'medium', -0.42, 59.0, 12, ARRAY['professional', 'ai-ml'], 'rc-context-overflow', '2025-08-19T21:00:00Z'::timestamptz),
-  ('iss-008', 'reddit_comment', 'reddit/c/k9f8d1', 'codex', 'Rate-limit backoff is wildly wrong', 'Reset header is a Unix timestamp but the client treats it as seconds-from-now, so it hammers the API when it should wait.', 'https://reddit.com/r/programming/comments/1n2abc/c/k9f8d1', 'cat-api-integration', 'medium', -0.35, 37.0, 6, ARRAY['smb', 'indie'], 'rc-rate-limit-parse', '2025-09-05T13:44:00Z'::timestamptz),
+  ('iss-008', 'reddit_comment', 'reddit/c/k9f8d1', 'codex', 'Rate-limit backoff is wildly wrong', 'Reset header is a Unix timestamp but the client treats it as seconds-from-now, so it hammers the API when it should wait.', 'https://reddit.com/r/programming/comments/1n2abc/c/k9f8d1', 'cat-api-rate-limit', 'medium', -0.35, 37.0, 6, ARRAY['smb', 'indie'], 'rc-rate-limit-parse', '2025-09-05T13:44:00Z'::timestamptz),
   ('iss-009', 'github_issue', 'openai/codex/12777', 'codex', 'Compaction recurses indefinitely on our internal monorepo', 'Summarizer re-enters compaction during its own output, and the agent eventually times out without producing a plan.', 'https://github.com/openai/codex/issues/12777', 'cat-context-overflow', 'critical', -0.72, 88.0, 26, ARRAY['enterprise'], 'rc-compact-rs', '2025-10-08T11:30:00Z'::timestamptz),
   ('iss-010', 'stackoverflow_question', 'so/79022222', 'codex', 'Quota exhausted with phantom tokens', 'The billing page says I''ve used 3x the tokens I actually sent. Support confirmed a tokenizer mismatch.', 'https://stackoverflow.com/q/79022222', 'cat-token-counting', 'high', -0.48, 44.0, 11, ARRAY['smb', 'indie'], 'rc-token-count', '2025-09-01T16:10:00Z'::timestamptz),
-  ('iss-011', 'github_issue', 'openai/codex/12901', 'codex', 'Worker pool crashes + retry storm in the same incident', 'Pool OOMs, client retries aggressively, upstream returns 502, client retries more. Classic amplification.', 'https://github.com/openai/codex/issues/12901', 'cat-performance', 'critical', -0.7, 83.0, 19, ARRAY['enterprise', 'professional'], 'rc-memory-alloc', '2025-10-25T08:05:00Z'::timestamptz),
+  ('iss-011', 'github_issue', 'openai/codex/12901', 'codex', 'Worker pool crashes + retry storm in the same incident', 'Pool OOMs, client retries aggressively, upstream returns 502, client retries more. Classic amplification.', 'https://github.com/openai/codex/issues/12901', 'cat-session-memory', 'critical', -0.7, 83.0, 19, ARRAY['enterprise', 'professional'], 'rc-memory-alloc', '2025-10-25T08:05:00Z'::timestamptz),
   ('iss-012', 'reddit_post', 'reddit/1pbq22', 'codex', 'My Codex session forgot what tools it had after a reconnect', 'After a 10-second blip the agent re-initialized the tool list out of order and started calling the wrong endpoints.', 'https://reddit.com/r/OpenAI/comments/1pbq22', 'cat-session-memory', 'high', -0.52, 41.0, 8, ARRAY['ai-ml', 'professional'], 'rc-session-reconnect', '2025-08-28T19:20:00Z'::timestamptz),
   ('iss-013', 'github_discussion', 'openai/codex/disc/912', 'codex', 'Compaction eats my prompt before the task runs', 'If my repo context is large, compaction triggers immediately and deletes the user instructions.', 'https://github.com/openai/codex/discussions/912', 'cat-context-overflow', 'critical', -0.67, 75.0, 17, ARRAY['enterprise', 'professional'], 'rc-compact-rs', '2025-10-14T15:50:00Z'::timestamptz),
   ('iss-014', 'github_issue', 'openai/codex/13044', 'codex', 'Review skips files that changed most', 'Codex consistently omits the largest changed files from its review output — exactly the ones we need reviewed.', 'https://github.com/openai/codex/issues/13044', 'cat-code-review', 'high', -0.58, 64.0, 13, ARRAY['enterprise'], 'rc-code-review-truncate', '2025-11-03T12:12:00Z'::timestamptz),
   ('iss-015', 'hackernews', 'hn/41999888', 'codex', 'Silent truncation is the worst kind of bug', 'Found through pain that Codex was dropping the end of our prompt past ~180k tokens with no signal.', 'https://news.ycombinator.com/item?id=41999888', 'cat-context-overflow', 'medium', -0.4, 56.0, 10, ARRAY['professional', 'ai-ml'], 'rc-context-overflow', '2025-10-21T22:37:00Z'::timestamptz),
-  ('iss-016', 'github_issue', 'microsoft/vscode-codex/552', 'codex', 'VS Code extension aborts completions after 30s', 'During latency spikes the extension cancels a request at 30s even though the model is still generating.', 'https://github.com/microsoft/vscode-codex/issues/552', 'cat-performance', 'medium', -0.32, 42.0, 7, ARRAY['indie', 'smb'], 'rc-ide-timeout', '2025-10-30T05:48:00Z'::timestamptz);
+  ('iss-016', 'github_issue', 'microsoft/vscode-codex/552', 'codex', 'VS Code extension aborts completions after 30s', 'During latency spikes the extension cancels a request at 30s even though the model is still generating.', 'https://github.com/microsoft/vscode-codex/issues/552', 'cat-unexpected-behavior', 'medium', -0.32, 42.0, 7, ARRAY['indie', 'smb'], 'rc-ide-timeout', '2025-10-30T05:48:00Z'::timestamptz);
 
 INSERT INTO segment_impact (issue_id, segment_slug) VALUES
   ('iss-001', 'enterprise'),
@@ -255,3 +276,117 @@ INSERT INTO issue_timeseries (month, sentiment, issue_freq, status, note) VALUES
   ('2026-02-01'::date, 70.0, 75, 'recovery', NULL),
   ('2026-03-01'::date, 76.0, 55, 'recovered', NULL),
   ('2026-04-01'::date, 82.0, 40, 'recovered', 'Full recovery');
+INSERT INTO category_timeseries (category_id, month, issue_count, sentiment, status) VALUES
+  ('cat-session-memory', '2025-01-01'::date, 1, 70.5, 'baseline'),
+  ('cat-session-memory', '2025-02-01'::date, 1, 69.6, 'baseline'),
+  ('cat-session-memory', '2025-03-01'::date, 1, 68.2, 'emerging'),
+  ('cat-session-memory', '2025-04-01'::date, 2, 66.0, 'emerging'),
+  ('cat-session-memory', '2025-05-01'::date, 3, 62.4, 'emerging'),
+  ('cat-session-memory', '2025-06-01'::date, 5, 57.9, 'crisis'),
+  ('cat-session-memory', '2025-07-01'::date, 9, 52.5, 'crisis'),
+  ('cat-session-memory', '2025-08-01'::date, 12, 47.1, 'crisis'),
+  ('cat-session-memory', '2025-09-01'::date, 15, 39.9, 'peak_crisis'),
+  ('cat-session-memory', '2025-10-01'::date, 16, 30.0, 'peak_crisis'),
+  ('cat-session-memory', '2025-11-01'::date, 12, 39.0, 'recovery'),
+  ('cat-session-memory', '2025-12-01'::date, 8, 48.9, 'recovery'),
+  ('cat-session-memory', '2026-01-01'::date, 5, 57.0, 'recovery'),
+  ('cat-session-memory', '2026-02-01'::date, 3, 65.1, 'recovery'),
+  ('cat-session-memory', '2026-03-01'::date, 2, 70.5, 'recovered'),
+  ('cat-session-memory', '2026-04-01'::date, 4, 82.0, 'recovered'),
+  ('cat-token-counting', '2025-01-01'::date, 1, 70.4, 'baseline'),
+  ('cat-token-counting', '2025-02-01'::date, 1, 69.5, 'baseline'),
+  ('cat-token-counting', '2025-03-01'::date, 1, 68.1, 'emerging'),
+  ('cat-token-counting', '2025-04-01'::date, 2, 65.8, 'emerging'),
+  ('cat-token-counting', '2025-05-01'::date, 3, 62.1, 'emerging'),
+  ('cat-token-counting', '2025-06-01'::date, 5, 57.5, 'crisis'),
+  ('cat-token-counting', '2025-07-01'::date, 8, 52.0, 'crisis'),
+  ('cat-token-counting', '2025-08-01'::date, 12, 46.5, 'crisis'),
+  ('cat-token-counting', '2025-09-01'::date, 14, 39.1, 'peak_crisis'),
+  ('cat-token-counting', '2025-10-01'::date, 15, 29.0, 'peak_crisis'),
+  ('cat-token-counting', '2025-11-01'::date, 11, 38.2, 'recovery'),
+  ('cat-token-counting', '2025-12-01'::date, 8, 48.3, 'recovery'),
+  ('cat-token-counting', '2026-01-01'::date, 4, 56.6, 'recovery'),
+  ('cat-token-counting', '2026-02-01'::date, 3, 64.9, 'recovery'),
+  ('cat-token-counting', '2026-03-01'::date, 2, 70.4, 'recovered'),
+  ('cat-token-counting', '2026-04-01'::date, 3, 80.0, 'recovered'),
+  ('cat-context-overflow', '2025-01-01'::date, 1, 70.7, 'baseline'),
+  ('cat-context-overflow', '2025-02-01'::date, 1, 69.8, 'baseline'),
+  ('cat-context-overflow', '2025-03-01'::date, 1, 68.5, 'emerging'),
+  ('cat-context-overflow', '2025-04-01'::date, 2, 66.4, 'emerging'),
+  ('cat-context-overflow', '2025-05-01'::date, 3, 63.0, 'emerging'),
+  ('cat-context-overflow', '2025-06-01'::date, 5, 58.7, 'crisis'),
+  ('cat-context-overflow', '2025-07-01'::date, 8, 53.5, 'crisis'),
+  ('cat-context-overflow', '2025-08-01'::date, 12, 48.3, 'crisis'),
+  ('cat-context-overflow', '2025-09-01'::date, 14, 41.5, 'peak_crisis'),
+  ('cat-context-overflow', '2025-10-01'::date, 15, 32.0, 'peak_crisis'),
+  ('cat-context-overflow', '2025-11-01'::date, 11, 40.6, 'recovery'),
+  ('cat-context-overflow', '2025-12-01'::date, 8, 50.1, 'recovery'),
+  ('cat-context-overflow', '2026-01-01'::date, 4, 57.8, 'recovery'),
+  ('cat-context-overflow', '2026-02-01'::date, 3, 65.5, 'recovery'),
+  ('cat-context-overflow', '2026-03-01'::date, 2, 70.7, 'recovered'),
+  ('cat-context-overflow', '2026-04-01'::date, 3, 83.0, 'recovered'),
+  ('cat-code-review', '2025-01-01'::date, 1, 71.5, 'baseline'),
+  ('cat-code-review', '2025-02-01'::date, 1, 70.8, 'baseline'),
+  ('cat-code-review', '2025-03-01'::date, 1, 69.8, 'emerging'),
+  ('cat-code-review', '2025-04-01'::date, 2, 68.0, 'emerging'),
+  ('cat-code-review', '2025-05-01'::date, 2, 65.2, 'emerging'),
+  ('cat-code-review', '2025-06-01'::date, 4, 61.7, 'crisis'),
+  ('cat-code-review', '2025-07-01'::date, 7, 57.5, 'crisis'),
+  ('cat-code-review', '2025-08-01'::date, 9, 53.3, 'crisis'),
+  ('cat-code-review', '2025-09-01'::date, 11, 47.7, 'peak_crisis'),
+  ('cat-code-review', '2025-10-01'::date, 12, 40.0, 'peak_crisis'),
+  ('cat-code-review', '2025-11-01'::date, 9, 47.0, 'recovery'),
+  ('cat-code-review', '2025-12-01'::date, 6, 54.7, 'recovery'),
+  ('cat-code-review', '2026-01-01'::date, 4, 61.0, 'recovery'),
+  ('cat-code-review', '2026-02-01'::date, 2, 67.3, 'recovery'),
+  ('cat-code-review', '2026-03-01'::date, 2, 71.5, 'recovered'),
+  ('cat-code-review', '2026-04-01'::date, 3, 78.0, 'recovered'),
+  ('cat-regression-quality', '2025-01-01'::date, 1, 71.7, 'baseline'),
+  ('cat-regression-quality', '2025-02-01'::date, 1, 71.0, 'baseline'),
+  ('cat-regression-quality', '2025-03-01'::date, 1, 70.0, 'emerging'),
+  ('cat-regression-quality', '2025-04-01'::date, 1, 68.4, 'emerging'),
+  ('cat-regression-quality', '2025-05-01'::date, 2, 65.8, 'emerging'),
+  ('cat-regression-quality', '2025-06-01'::date, 3, 62.5, 'crisis'),
+  ('cat-regression-quality', '2025-07-01'::date, 6, 58.5, 'crisis'),
+  ('cat-regression-quality', '2025-08-01'::date, 8, 54.5, 'crisis'),
+  ('cat-regression-quality', '2025-09-01'::date, 9, 49.3, 'peak_crisis'),
+  ('cat-regression-quality', '2025-10-01'::date, 10, 42.0, 'peak_crisis'),
+  ('cat-regression-quality', '2025-11-01'::date, 8, 48.6, 'recovery'),
+  ('cat-regression-quality', '2025-12-01'::date, 5, 55.9, 'recovery'),
+  ('cat-regression-quality', '2026-01-01'::date, 3, 61.8, 'recovery'),
+  ('cat-regression-quality', '2026-02-01'::date, 2, 67.7, 'recovery'),
+  ('cat-regression-quality', '2026-03-01'::date, 1, 71.7, 'recovered'),
+  ('cat-regression-quality', '2026-04-01'::date, 2, 79.0, 'recovered'),
+  ('cat-unexpected-behavior', '2025-01-01'::date, 1, 72.0, 'baseline'),
+  ('cat-unexpected-behavior', '2025-02-01'::date, 1, 71.4, 'baseline'),
+  ('cat-unexpected-behavior', '2025-03-01'::date, 1, 70.5, 'emerging'),
+  ('cat-unexpected-behavior', '2025-04-01'::date, 1, 69.0, 'emerging'),
+  ('cat-unexpected-behavior', '2025-05-01'::date, 2, 66.6, 'emerging'),
+  ('cat-unexpected-behavior', '2025-06-01'::date, 3, 63.6, 'crisis'),
+  ('cat-unexpected-behavior', '2025-07-01'::date, 5, 60.0, 'crisis'),
+  ('cat-unexpected-behavior', '2025-08-01'::date, 7, 56.4, 'crisis'),
+  ('cat-unexpected-behavior', '2025-09-01'::date, 8, 51.6, 'peak_crisis'),
+  ('cat-unexpected-behavior', '2025-10-01'::date, 9, 45.0, 'peak_crisis'),
+  ('cat-unexpected-behavior', '2025-11-01'::date, 7, 51.0, 'recovery'),
+  ('cat-unexpected-behavior', '2025-12-01'::date, 4, 57.6, 'recovery'),
+  ('cat-unexpected-behavior', '2026-01-01'::date, 3, 63.0, 'recovery'),
+  ('cat-unexpected-behavior', '2026-02-01'::date, 2, 68.4, 'recovery'),
+  ('cat-unexpected-behavior', '2026-03-01'::date, 1, 72.0, 'recovered'),
+  ('cat-unexpected-behavior', '2026-04-01'::date, 3, 68.0, 'recovered'),
+  ('cat-api-rate-limit', '2025-01-01'::date, 1, 71.3, 'baseline'),
+  ('cat-api-rate-limit', '2025-02-01'::date, 1, 70.6, 'baseline'),
+  ('cat-api-rate-limit', '2025-03-01'::date, 1, 69.5, 'emerging'),
+  ('cat-api-rate-limit', '2025-04-01'::date, 1, 67.6, 'emerging'),
+  ('cat-api-rate-limit', '2025-05-01'::date, 2, 64.6, 'emerging'),
+  ('cat-api-rate-limit', '2025-06-01'::date, 3, 60.9, 'crisis'),
+  ('cat-api-rate-limit', '2025-07-01'::date, 4, 56.5, 'crisis'),
+  ('cat-api-rate-limit', '2025-08-01'::date, 6, 52.1, 'crisis'),
+  ('cat-api-rate-limit', '2025-09-01'::date, 7, 46.1, 'peak_crisis'),
+  ('cat-api-rate-limit', '2025-10-01'::date, 8, 38.0, 'peak_crisis'),
+  ('cat-api-rate-limit', '2025-11-01'::date, 6, 45.4, 'recovery'),
+  ('cat-api-rate-limit', '2025-12-01'::date, 4, 53.5, 'recovery'),
+  ('cat-api-rate-limit', '2026-01-01'::date, 2, 60.2, 'recovery'),
+  ('cat-api-rate-limit', '2026-02-01'::date, 2, 66.9, 'recovery'),
+  ('cat-api-rate-limit', '2026-03-01'::date, 1, 71.3, 'recovered'),
+  ('cat-api-rate-limit', '2026-04-01'::date, 1, 86.0, 'recovered');
+

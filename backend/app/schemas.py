@@ -17,7 +17,44 @@ class Category(BaseModel):
     name: str
     slug: str
     color: str
+    tier: int = Field(ge=1, le=3, description="1 = critical cascading, 2 = persistent quality, 3 = symptomatic/ops")
     share_pct: float
+    users_affected_pct: float
+    summary: str | None = None
+    cascades_to: list[str] = Field(default_factory=list)
+    action: str | None = None
+
+
+class CategoryTimeseriesPoint(BaseModel):
+    month: date
+    issue_count: int
+    sentiment: float
+    status: "TimelineStatus"
+
+
+class CategoryTimeseriesResponse(BaseModel):
+    category: Category
+    points: list[CategoryTimeseriesPoint]
+    peak: CategoryTimeseriesPoint
+    recovery: CategoryTimeseriesPoint
+
+
+class TierBreakdown(BaseModel):
+    tier: int
+    category_count: int
+    total_share_pct: float
+    total_users_affected_pct: float
+    categories: list[Category]
+
+
+class PainPoint(BaseModel):
+    category: Category
+    issue_count: int
+    avg_sentiment: float
+    critical_count: int
+    high_count: int
+    pain_score: float
+    rank: int
 
 
 class UserSegment(BaseModel):

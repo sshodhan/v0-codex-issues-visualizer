@@ -55,6 +55,61 @@ export interface RootCause {
   affected_issue_count: number
 }
 
+export interface Category {
+  id: string
+  name: string
+  slug: string
+  color: string
+  tier: 1 | 2 | 3
+  share_pct: number
+  users_affected_pct: number
+  summary: string | null
+  cascades_to: string[]
+  action: string | null
+}
+
+export interface TierBreakdown {
+  tier: 1 | 2 | 3
+  category_count: number
+  total_share_pct: number
+  total_users_affected_pct: number
+  categories: Category[]
+}
+
+export interface PainPoint {
+  category: Category
+  issue_count: number
+  avg_sentiment: number
+  critical_count: number
+  high_count: number
+  pain_score: number
+  rank: number
+}
+
+export interface SentimentBucket {
+  bucket: string
+  count: number
+}
+
+export interface SentimentAnalytics {
+  distribution: SentimentBucket[]
+  trend: TimelinePoint[]
+  stats: {
+    count: number
+    mean: number
+    stddev: number
+    min: number
+    max: number
+  }
+}
+
+export interface CategoryTimeseriesPoint {
+  month: string
+  issue_count: number
+  sentiment: number
+  status: TimelineStatus
+}
+
 export interface CompetitiveRow {
   id: string
   product: string
@@ -86,4 +141,16 @@ export const analysisApi = {
   segments: () => request<UserSegment[]>("/api/v1/user-segments"),
   rootCauses: () => request<RootCause[]>("/api/v1/root-causes"),
   competitive: () => request<CompetitiveRow[]>("/api/v1/analytics/competitive"),
+  categories: () => request<Category[]>("/api/v1/categories"),
+  categoryTimeseries: (slug: string) =>
+    request<{
+      category: Category
+      points: CategoryTimeseriesPoint[]
+      peak: CategoryTimeseriesPoint
+      recovery: CategoryTimeseriesPoint
+    }>(`/api/v1/categories/${slug}/timeseries`),
+  tiers: () => request<TierBreakdown[]>("/api/v1/analytics/tiers"),
+  painPoints: (limit = 5) =>
+    request<PainPoint[]>(`/api/v1/analytics/pain-points?limit=${limit}`),
+  sentiment: () => request<SentimentAnalytics>("/api/v1/analytics/sentiment"),
 }

@@ -22,6 +22,7 @@ def main() -> None:
         "competitive_data": seed_data.COMPETITIVE_DATA,
         "issues": seed_data.ISSUES,
         "timeline": seed_data.TIMELINE,
+        "category_timeseries": seed_data.CATEGORY_TIMESERIES,
     }
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
     print(f"wrote {out_path}")

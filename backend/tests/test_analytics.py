@@ -38,3 +38,9 @@ async def test_categories_analytics(client):
     slugs = {row["category"]["slug"] for row in body["by_category"]}
     assert "code-review-incomplete" in slugs
     assert "context-overflow" in slugs
+    assert "regression-quality" in slugs
+    assert "unexpected-behavior" in slugs
+    assert "api-rate-limiting" in slugs
+    # Tier field is now surfaced on every category.
+    for row in body["by_category"]:
+        assert row["category"]["tier"] in (1, 2, 3)
