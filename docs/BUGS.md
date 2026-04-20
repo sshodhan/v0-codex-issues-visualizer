@@ -1,12 +1,34 @@
 # Bug & Issues Backlog
 
 _Generated: 2026-04-20 from two independent senior-engineer end-to-end reviews._
-_Branch: `claude/audit-data-collection-dPDcG`_
+_Source branch: `claude/audit-data-collection-dPDcG`_
+_Last updated: 2026-04-20 — status tracking + PR cross-references added._
 
-Each entry includes priority, a one-sentence description, the exact file:line
-reference, and a minimal fix sketch. Priorities follow the standard
+Each entry includes priority, status, a one-sentence description, the exact
+`file:line` reference, and a minimal fix sketch. Priorities follow the standard
 P0 (data-corrupt / silent wrong answer) → P1 (significant quality loss) →
 P2 (polish / UX gap) scale.
+
+## How to use this document
+
+- Treat this as a living backlog, not a one-shot audit. When a PR lands that
+  addresses an entry, update its **Status** and **Addressed by** lines and
+  update the status column in the summary table at the bottom.
+- When opening a PR that resolves an item, reference the ID (e.g. `P0-1`) in
+  the PR description so the link is bi-directional.
+- Do not delete resolved entries — they are useful context for future
+  regressions. Instead, mark them `Resolved` with the PR link.
+- If a review discovers a new issue, append it with the next free ID in the
+  same priority band and add a row to the summary table.
+
+### Status legend
+
+| Status        | Meaning                                                                    |
+|---------------|----------------------------------------------------------------------------|
+| `Open`        | Reported, not yet being worked on.                                         |
+| `In progress` | A PR is open that proposes a fix; verify the linked PR before duplicating. |
+| `Resolved`    | Fix has landed on `main`. Entry kept for historical context.               |
+| `Wontfix`     | Deliberately deferred; rationale captured in the entry body.               |
 
 ---
 
@@ -14,6 +36,8 @@ P2 (polish / UX gap) scale.
 
 ### P0-1: Reddit query matches all Microsoft Copilot products, not just Codex-adjacent ones
 
+**Status:** In progress
+**Addressed by:** [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8)
 **File:** `lib/scrapers/providers/reddit.ts:27`
 
 **Problem:** The bare term `copilot` in the OR query matches posts about
@@ -24,17 +48,24 @@ client-side filter runs. Posts about unrelated Copilot products consume budget
 and inflate issue counts.
 
 ```ts
-// current
+// current (main)
 '(codex OR copilot OR "openai codex" OR "codex cli")'
 
-// fix — require "github copilot" or "copilot chat" at the query level
-'(codex OR "github copilot" OR "copilot chat" OR "openai codex" OR "codex cli")'
+// proposed in PR #8 — scope query terms to Codex-adjacent phrases and add
+// explicit exclusion patterns in the new relevance evaluator.
+// See lib/scrapers/relevance.ts::REDDIT_SCOPED_QUERY_TERMS
+'("openai codex" OR "chatgpt codex" OR "codex cli" OR "openai/codex" OR "codex terminal")'
 ```
+
+Verify on merge: the new relevance evaluator must also reject the captured
+false-positive samples in `lib/scrapers/relevance.test.ts` (Microsoft Copilot
+for Sales, Power Platform Copilot, Copilot for M365, etc.).
 
 ---
 
 ### P0-2: Sentiment signal conflates functional words with emotional words
 
+**Status:** Open
 **File:** `lib/scrapers/shared.ts:79-84`
 
 **Problem:** `negativeWords` includes `"bug"`, `"error"`, `"issue"`,
@@ -55,6 +86,7 @@ regardless of tone. This cascades into `calculateImpactScore` (1.5× multiplier,
 
 ### P0-3: Negative-sentiment bias is double-counted in urgency score
 
+**Status:** Open
 **File:** `lib/scrapers/shared.ts:251-256` and `lib/analytics/realtime.ts:119-127`
 
 **Problem:** `calculateImpactScore` already applies a 1.5× multiplier for
@@ -72,6 +104,7 @@ formula own the full sentiment weighting.
 
 ### P0-4: Competitive sentiment is attributed to *all* co-mentioned competitors
 
+**Status:** Open
 **File:** `lib/analytics/competitive.ts:55-80`
 
 **Problem:** If one post mentions both `cursor` and `windsurf`, the inner loop
@@ -89,6 +122,7 @@ matched (conservative).
 
 ### P0-5: `frequency_count` is never aggregated — always shows 1
 
+**Status:** Open
 **File:** `scripts/002_create_issues_schema_v2.sql:46` and
 `lib/scrapers/index.ts:65-70`
 
@@ -118,6 +152,7 @@ mergeColumns: ["title","content","sentiment","impact_score","upvotes",
 
 ### P0-6: `/api/stats` performs 5–6 un-cached full-table scans per request
 
+**Status:** Open
 **File:** `app/api/stats/route.ts:27-138`
 
 **Problem:** Every dashboard load (and every SWR 60-second refresh) fires
@@ -141,6 +176,7 @@ compute quotas are exhausted quickly.
 
 ### P1-1: Error state, empty state, and "no env vars" all render identically
 
+**Status:** Open
 **File:** `app/page.tsx:111`
 
 ```tsx
@@ -161,6 +197,7 @@ HTTP status or message.
 
 ### P1-2: KPI cards show all-time totals with no time-window or delta
 
+**Status:** Open
 **File:** `app/page.tsx:142-175`
 
 **Problem:** "Total Issues", "Negative Issues", "Feature Requests", "Bug
@@ -177,6 +214,7 @@ all) that filters all four counts.
 
 ### P1-3: Category KPI cards use fragile hardcoded display-name string match
 
+**Status:** Open
 **File:** `app/page.tsx:156,166`
 
 ```tsx
@@ -200,6 +238,7 @@ stats.categoryBreakdown.find((c) => c.slug === "bug")?.count || 0
 
 ### P1-4: Full-text search param `q` is wired in the hook but unreachable from UI
 
+**Status:** Open
 **File:** `hooks/use-dashboard-data.ts:122` and `app/page.tsx` (absent)
 
 **Problem:** `useIssues` accepts a `q` parameter and passes it to
@@ -215,6 +254,7 @@ surfaced.
 
 ### P1-5: Ingestion upsert is a per-row loop — N sequential round-trips per scrape
 
+**Status:** Open
 **File:** `lib/scrapers/index.ts:65-70` and `lib/scrapers/index.ts:157-162`
 
 **Problem:** Both `runAllScrapers` and `runScraper` iterate individual issues
@@ -234,6 +274,7 @@ await supabase
 
 ### P1-6: GitHub scraper only indexes `is:issue`, missing Discussions entirely
 
+**Status:** Open
 **File:** `lib/scrapers/providers/github.ts:14,39`
 
 **Problem:** GitHub Discussions (the primary channel for openai/codex user
@@ -249,6 +290,7 @@ minimum document the gap in the scraper comment.
 
 ### P1-7: Classifier triage queue is never auto-populated from the scraper loop
 
+**Status:** Open
 **File:** `lib/scrapers/index.ts` (absent) and `app/api/classify/route.ts`
 
 **Problem:** The `/api/classify` endpoint exists and stores rows in
@@ -264,18 +306,31 @@ them.
 
 ---
 
-### P1-8: Hacker News query uses boolean AND, not OR — too few results
+### P1-8: Hacker News query scope — too broad, and OR-semantics must stay intact
 
-**File:** `lib/scrapers/providers/hackernews.ts` (query string)
+**Status:** In progress
+**Addressed by:** [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8)
+**File:** `lib/scrapers/providers/hackernews.ts:15-16`
 
-**Problem:** The Algolia HN search API treats space-separated terms as AND.
-A query like `codex copilot "codex cli"` only matches posts that contain *all*
-terms simultaneously. The fix from the last sprint (optionalWords) may or may
-not have landed — verify the current query uses `OR`/`optionalWords` correctly,
-or switch to multiple single-keyword requests merged client-side.
+**Problem (original):** The Algolia HN search API treats space-separated terms
+as AND. A query like `codex copilot "codex cli"` only matches posts that
+contain *all* terms simultaneously.
 
-**Fix sketch:** Issue one request per keyword (`codex`, `copilot`) and merge
-results, deduplicating on `objectID`.
+**Current state (main):** OR semantics are correct — `optionalWords` is passed
+and `QUERY` is empty, so the keyword set matches disjunctively. However the
+keyword set (`codex`, `copilot`, `openai`, `codex cli`, `openai codex`) is far
+too broad: bare `codex` matches historical/manuscript posts and bare `copilot`
+matches every Microsoft Copilot SKU.
+
+**Proposed (PR #8):** Narrow the required query to `"openai codex"` and keep a
+scoped `optionalWords` set (`chatgpt codex`, `codex cli`, `openai/codex`,
+`codex terminal`). Post-filter through the new relevance evaluator to capture
+a `relevance_reason` for each accepted hit.
+
+Verify on merge: confirm HN still returns a reasonable volume of stories —
+the tightened required term changes recall characteristics. If recall is
+poor, fall back to an empty `QUERY` with the scoped list moved entirely into
+`optionalWords`.
 
 ---
 
@@ -283,6 +338,7 @@ results, deduplicating on `objectID`.
 
 ### P2-1: Sortable table headers are not keyboard-accessible
 
+**Status:** Open
 **File:** `components/dashboard/issues-table.tsx:247-267`
 
 **Problem:** Column sort headers are implemented as `<div onClick>` or similar
@@ -297,6 +353,7 @@ technology cannot activate column sorting (no `tabIndex`, no `onKeyDown`, no
 
 ### P2-2: Time-window slider has no accessible label
 
+**Status:** Open
 **File:** `components/dashboard/issues-table.tsx:207-222`
 
 **Problem:** The days-range slider control is rendered without an `aria-label`
@@ -317,6 +374,7 @@ range input.
 
 ### P2-3: Dashboard footer still lists only "Reddit, Hacker News, GitHub" — Stack Overflow missing
 
+**Status:** Open
 **File:** `app/page.tsx:224`
 
 ```tsx
@@ -334,22 +392,30 @@ and more".
 
 ## Summary table
 
-| ID     | Priority | Area           | File                                      | One-liner                                      |
-|--------|----------|----------------|-------------------------------------------|------------------------------------------------|
-| P0-1   | P0       | Data quality   | `lib/scrapers/providers/reddit.ts:27`     | Bare `copilot` query matches unrelated products |
-| P0-2   | P0       | Sentiment      | `lib/scrapers/shared.ts:79-84`            | Topic nouns inflate negative-sentiment count   |
-| P0-3   | P0       | Analytics      | `shared.ts:255` + `realtime.ts:124`       | Negative bias double-counted in urgency score  |
-| P0-4   | P0       | Analytics      | `lib/analytics/competitive.ts:55-80`      | Co-mentioned competitors share same sentiment  |
-| P0-5   | P0       | Data model     | `index.ts:65` + `sql:46`                  | `frequency_count` never increments, always 1  |
-| P0-6   | P0       | Performance    | `app/api/stats/route.ts:27-138`           | 6 un-cached full-table scans per page load     |
-| P1-1   | P1       | UX / errors    | `app/page.tsx:111`                        | Error and empty state look identical           |
-| P1-2   | P1       | UX / signal    | `app/page.tsx:142-175`                    | KPIs are all-time totals, no delta / window    |
-| P1-3   | P1       | Data quality   | `app/page.tsx:156,166`                    | Category KPI uses fragile display-name match   |
-| P1-4   | P1       | UX             | `hooks/use-dashboard-data.ts:122`         | Full-text search wired but unreachable from UI |
-| P1-5   | P1       | Performance    | `lib/scrapers/index.ts:65-70`             | Per-row upsert loop, N round-trips per scrape  |
-| P1-6   | P1       | Coverage       | `lib/scrapers/providers/github.ts:14`     | GitHub Discussions not scraped                 |
-| P1-7   | P1       | Feature        | `lib/scrapers/index.ts` (absent)          | Classifier never auto-fed from scraper output  |
-| P1-8   | P1       | Coverage       | `lib/scrapers/providers/hackernews.ts`    | HN query too restrictive (possible AND issue)  |
-| P2-1   | P2       | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
-| P2-2   | P2       | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
-| P2-3   | P2       | Copy           | `app/page.tsx:224`                        | Footer omits Stack Overflow from source list   |
+| ID   | Priority | Status       | Area          | File                                        | One-liner                                       | Addressed by |
+|------|----------|--------------|---------------|---------------------------------------------|-------------------------------------------------|--------------|
+| P0-1 | P0       | In progress  | Data quality  | `lib/scrapers/providers/reddit.ts:27`       | Bare `copilot` query matches unrelated products | [#8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8) |
+| P0-2 | P0       | Open         | Sentiment     | `lib/scrapers/shared.ts:79-84`              | Topic nouns inflate negative-sentiment count    | —            |
+| P0-3 | P0       | Open         | Analytics     | `shared.ts:255` + `realtime.ts:124`         | Negative bias double-counted in urgency score   | —            |
+| P0-4 | P0       | Open         | Analytics     | `lib/analytics/competitive.ts:55-80`        | Co-mentioned competitors share same sentiment   | —            |
+| P0-5 | P0       | Open         | Data model    | `index.ts:65` + `sql:46`                    | `frequency_count` never increments, always 1    | —            |
+| P0-6 | P0       | Open         | Performance   | `app/api/stats/route.ts:27-138`             | 6 un-cached full-table scans per page load      | —            |
+| P1-1 | P1       | Open         | UX / errors   | `app/page.tsx:111`                          | Error and empty state look identical            | —            |
+| P1-2 | P1       | Open         | UX / signal   | `app/page.tsx:142-175`                      | KPIs are all-time totals, no delta / window     | —            |
+| P1-3 | P1       | Open         | Data quality  | `app/page.tsx:156,166`                      | Category KPI uses fragile display-name match    | —            |
+| P1-4 | P1       | Open         | UX            | `hooks/use-dashboard-data.ts:122`           | Full-text search wired but unreachable from UI  | —            |
+| P1-5 | P1       | Open         | Performance   | `lib/scrapers/index.ts:65-70`               | Per-row upsert loop, N round-trips per scrape   | —            |
+| P1-6 | P1       | Open         | Coverage      | `lib/scrapers/providers/github.ts:14`       | GitHub Discussions not scraped                  | —            |
+| P1-7 | P1       | Open         | Feature       | `lib/scrapers/index.ts` (absent)            | Classifier never auto-fed from scraper output   | —            |
+| P1-8 | P1       | In progress  | Coverage      | `lib/scrapers/providers/hackernews.ts:15`   | HN keyword set too broad; OR semantics OK       | [#8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8) |
+| P2-1 | P2       | Open         | Accessibility | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible            | —            |
+| P2-2 | P2       | Open         | Accessibility | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                        | —            |
+| P2-3 | P2       | Open         | Copy          | `app/page.tsx:224`                          | Footer omits Stack Overflow from source list    | —            |
+
+## Change log
+
+- **2026-04-20** — Added status tracking, PR cross-references, a legend, and
+  a "How to use" section. Linked P0-1 and P1-8 to
+  [PR #8](https://github.com/sshodhan/v0-codex-issues-visualizer/pull/8).
+  Clarified P1-8: OR semantics on `main` are already correct via
+  `optionalWords`; the live concern is keyword scope, not boolean mode.
