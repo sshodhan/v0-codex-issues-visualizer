@@ -18,10 +18,6 @@ export function isLikelyCodexIssue(text: string): boolean {
   return evaluateCodexRelevance(text).passed
 }
 
-export function getCodexRelevanceReason(text: string): string | null {
-  return evaluateCodexRelevance(text).relevanceReason
-}
-
 export function isLowValueIssue(title: string, content: string): boolean {
   const normalizedTitle = normalizeWhitespace(title.toLowerCase())
   const normalizedContent = normalizeWhitespace(content.toLowerCase())

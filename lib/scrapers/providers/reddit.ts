@@ -4,11 +4,13 @@ import {
   calculateImpactScore,
   categorizeIssue,
   fetchWithRetry,
-  getCodexRelevanceReason,
   isLowValueIssue,
   normalizeWhitespace,
 } from "@/lib/scrapers/shared"
-import { REDDIT_SCOPED_QUERY_TERMS } from "@/lib/scrapers/relevance"
+import {
+  REDDIT_SCOPED_QUERY_TERMS,
+  evaluateCodexRelevance,
+} from "@/lib/scrapers/relevance"
 
 const SUBREDDITS = [
   "OpenAI",
@@ -18,6 +20,8 @@ const SUBREDDITS = [
   "ChatGPTCoding",
   "ArtificialInteligence",
 ]
+
+const RELEVANCE_DEBUG = process.env.RELEVANCE_DEBUG === "1"
 
 export async function scrapeReddit(
   source: Source,
@@ -43,8 +47,13 @@ export async function scrapeReddit(
         const normalizedContent = normalizeWhitespace(selftext || "")
         const content = `${normalizedTitle} ${normalizedContent}`
 
-        const relevanceReason = getCodexRelevanceReason(content)
-        if (!relevanceReason) continue
+        const relevance = evaluateCodexRelevance(content)
+        if (!relevance.passed) {
+          if (RELEVANCE_DEBUG) {
+            console.debug(`[relevance] reddit/${subreddit} rejected: ${relevance.decision}`)
+          }
+          continue
+        }
         if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
         const { sentiment, score: sentimentScore } = analyzeSentiment(content)
@@ -63,7 +72,7 @@ export async function scrapeReddit(
           upvotes: score,
           comments_count: num_comments,
           published_at: new Date(created_utc * 1000).toISOString(),
-          relevance_reason: relevanceReason,
+          relevance_reason: relevance.relevanceReason,
         })
       }
     } catch (error) {
