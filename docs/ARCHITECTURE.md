@@ -205,6 +205,33 @@ Extension guidance:
 
 ### 6.1 Heuristic insight scoring (issues table)
 
+
+- `sources`: source registry.
+- `categories`: canonical heuristic categories.
+- `issues`: normalized issue facts from public sources.
+- `scrape_logs`: ingestion run metadata and failures.
+
+### 5.2 New triage table
+
+- `bug_report_classifications`:
+  - LLM output fields (`category`, `severity`, `confidence`, etc.),
+  - raw payload (`raw_json`),
+  - reviewer workflow fields (`status`, `reviewed_by`, `reviewed_at`, `reviewer_notes`),
+  - traceability fields (`source_issue_id`, `source_issue_url`, `source_issue_title`, `source_issue_sentiment`),
+  - model metadata (`model_used`, `retried_with_large_model`).
+
+### 5.3 Key indexes and constraints
+
+- Existing unique key for issues: `(source_id, external_id)`.
+- Triage index: `(category, severity, needs_human_review, created_at DESC)`.
+- Traceability index: `(source_issue_id, created_at DESC)`.
+
+---
+
+## 6) Analytics and triage quality model
+
+### 6.1 Heuristic insight scoring (issues table)
+
 Urgency score currently blends:
 - recent volume,
 - positive momentum vs prior 72h,
