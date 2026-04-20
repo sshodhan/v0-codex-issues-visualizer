@@ -88,12 +88,12 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
                 dataKey="x"
                 name="Frequency"
                 domain={[0, "auto"]}
-                stroke="hsl(var(--muted-foreground))"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                stroke="#9ca3af"
+                tick={{ fill: "#e5e7eb", fontSize: 12 }}
                 label={{
                   value: "Frequency",
                   position: "bottom",
-                  fill: "hsl(var(--muted-foreground))",
+                  fill: "#e5e7eb",
                   fontSize: 12,
                 }}
               />
@@ -102,25 +102,25 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
                 dataKey="y"
                 name="Impact"
                 domain={[0, 10]}
-                stroke="hsl(var(--muted-foreground))"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                stroke="#9ca3af"
+                tick={{ fill: "#e5e7eb", fontSize: 12 }}
                 label={{
                   value: "Impact Score",
                   angle: -90,
                   position: "insideLeft",
-                  fill: "hsl(var(--muted-foreground))",
+                  fill: "#e5e7eb",
                   fontSize: 12,
                 }}
               />
               <ZAxis type="number" dataKey="z" range={[50, 200]} />
               <ReferenceLine
                 y={avgImpact}
-                stroke="hsl(var(--border))"
+                stroke="#6b7280"
                 strokeDasharray="3 3"
               />
               <ReferenceLine
                 x={avgFrequency}
-                stroke="hsl(var(--border))"
+                stroke="#6b7280"
                 strokeDasharray="3 3"
               />
               <Tooltip

@@ -58,12 +58,12 @@ export function TrendChart({ data }: TrendChartProps) {
               </defs>
               <XAxis
                 dataKey="dateLabel"
-                stroke="hsl(var(--muted-foreground))"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                stroke="#9ca3af"
+                tick={{ fill: "#e5e7eb", fontSize: 12 }}
               />
               <YAxis
-                stroke="hsl(var(--muted-foreground))"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                stroke="#9ca3af"
+                tick={{ fill: "#e5e7eb", fontSize: 12 }}
               />
               <Tooltip
                 contentStyle={{
@@ -77,7 +77,7 @@ export function TrendChart({ data }: TrendChartProps) {
                 verticalAlign="top"
                 height={36}
                 formatter={(value) => (
-                  <span className="text-sm text-muted-foreground capitalize">
+                  <span style={{ color: "#e5e7eb", fontSize: "14px", textTransform: "capitalize" }}>
                     {value}
                   </span>
                 )}

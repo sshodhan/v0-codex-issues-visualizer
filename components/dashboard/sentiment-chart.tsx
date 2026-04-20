@@ -45,10 +45,25 @@ export function SentimentChart({ data }: SentimentChartProps) {
                 outerRadius={90}
                 paddingAngle={2}
                 dataKey="value"
-                label={({ name, percent }) =>
-                  `${name} ${(percent * 100).toFixed(0)}%`
-                }
-                labelLine={false}
+                label={({ cx, cy, midAngle, outerRadius, name, percent }) => {
+                  const RADIAN = Math.PI / 180
+                  const radius = outerRadius + 25
+                  const x = cx + radius * Math.cos(-midAngle * RADIAN)
+                  const y = cy + radius * Math.sin(-midAngle * RADIAN)
+                  return (
+                    <text
+                      x={x}
+                      y={y}
+                      fill="#e5e7eb"
+                      textAnchor={x > cx ? "start" : "end"}
+                      dominantBaseline="central"
+                      fontSize={12}
+                    >
+                      {`${name} ${(percent * 100).toFixed(0)}%`}
+                    </text>
+                  )
+                }}
+                labelLine={{ stroke: "#9ca3af", strokeWidth: 1 }}
               >
                 {chartData.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={entry.fill} />

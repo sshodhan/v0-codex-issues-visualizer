@@ -42,13 +42,17 @@ export function SourceChart({ data }: SourceChartProps) {
               layout="vertical"
               margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
             >
-              <XAxis type="number" stroke="hsl(var(--muted-foreground))" />
+              <XAxis 
+                type="number" 
+                stroke="#9ca3af" 
+                tick={{ fill: "#e5e7eb", fontSize: 12 }}
+              />
               <YAxis
                 type="category"
                 dataKey="name"
                 width={100}
-                stroke="hsl(var(--muted-foreground))"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                stroke="#9ca3af"
+                tick={{ fill: "#e5e7eb", fontSize: 12 }}
               />
               <Tooltip
                 contentStyle={{
