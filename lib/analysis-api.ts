@@ -1,8 +1,17 @@
-// Typed client for the FastAPI analysis backend.
-// Configure NEXT_PUBLIC_ANALYSIS_API_URL (default: http://localhost:8000).
+// Typed client for the analysis API.
+//
+// Default: same-origin Next.js API routes (/api/analysis/*) backed by the
+// canonical codex-analysis JSON — works out of the box on Vercel.
+// Override: set NEXT_PUBLIC_ANALYSIS_API_URL to hit the FastAPI backend
+// instead (useful for local development or a separately deployed service).
 
-export const ANALYSIS_API_URL =
-  process.env.NEXT_PUBLIC_ANALYSIS_API_URL ?? "http://localhost:8000"
+const FASTAPI_OVERRIDE = process.env.NEXT_PUBLIC_ANALYSIS_API_URL
+
+export const ANALYSIS_API_URL = FASTAPI_OVERRIDE ?? ""
+
+// When talking to FastAPI we use /api/v1/* paths (legacy).
+// When using same-origin Next.js routes we use /api/analysis/* paths.
+const USE_FASTAPI = Boolean(FASTAPI_OVERRIDE)
 
 export type Severity = "critical" | "high" | "medium" | "low"
 
@@ -136,21 +145,46 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T
 }
 
+// Endpoint routing per mode. Keeps this the single place that knows about
+// the shape difference between FastAPI and the Next.js routes.
+const PATHS = USE_FASTAPI
+  ? {
+      timeline: "/api/v1/timeline",
+      segments: "/api/v1/user-segments",
+      rootCauses: "/api/v1/root-causes",
+      competitive: "/api/v1/analytics/competitive",
+      categories: "/api/v1/categories",
+      catTimeseries: (slug: string) => `/api/v1/categories/${slug}/timeseries`,
+      tiers: "/api/v1/analytics/tiers",
+      painPoints: (limit: number) => `/api/v1/analytics/pain-points?limit=${limit}`,
+      sentiment: "/api/v1/analytics/sentiment",
+    }
+  : {
+      timeline: "/api/analysis/timeline",
+      segments: "/api/analysis/user-segments",
+      rootCauses: "/api/analysis/root-causes",
+      competitive: "/api/analysis/competitive",
+      categories: "/api/analysis/categories",
+      catTimeseries: (slug: string) => `/api/analysis/categories/${slug}/timeseries`,
+      tiers: "/api/analysis/tiers",
+      painPoints: (limit: number) => `/api/analysis/pain-points?limit=${limit}`,
+      sentiment: "/api/analysis/sentiment",
+    }
+
 export const analysisApi = {
-  timeline: () => request<TimelineResponse>("/api/v1/timeline"),
-  segments: () => request<UserSegment[]>("/api/v1/user-segments"),
-  rootCauses: () => request<RootCause[]>("/api/v1/root-causes"),
-  competitive: () => request<CompetitiveRow[]>("/api/v1/analytics/competitive"),
-  categories: () => request<Category[]>("/api/v1/categories"),
+  timeline: () => request<TimelineResponse>(PATHS.timeline),
+  segments: () => request<UserSegment[]>(PATHS.segments),
+  rootCauses: () => request<RootCause[]>(PATHS.rootCauses),
+  competitive: () => request<CompetitiveRow[]>(PATHS.competitive),
+  categories: () => request<Category[]>(PATHS.categories),
   categoryTimeseries: (slug: string) =>
     request<{
       category: Category
       points: CategoryTimeseriesPoint[]
       peak: CategoryTimeseriesPoint
       recovery: CategoryTimeseriesPoint
-    }>(`/api/v1/categories/${slug}/timeseries`),
-  tiers: () => request<TierBreakdown[]>("/api/v1/analytics/tiers"),
-  painPoints: (limit = 5) =>
-    request<PainPoint[]>(`/api/v1/analytics/pain-points?limit=${limit}`),
-  sentiment: () => request<SentimentAnalytics>("/api/v1/analytics/sentiment"),
+    }>(PATHS.catTimeseries(slug)),
+  tiers: () => request<TierBreakdown[]>(PATHS.tiers),
+  painPoints: (limit = 5) => request<PainPoint[]>(PATHS.painPoints(limit)),
+  sentiment: () => request<SentimentAnalytics>(PATHS.sentiment),
 }
