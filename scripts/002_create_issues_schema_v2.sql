@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS issues (
   comments_count INTEGER DEFAULT 0,
   published_at TIMESTAMPTZ,
   scraped_at TIMESTAMPTZ DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ DEFAULT NOW(),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(source_id, external_id)

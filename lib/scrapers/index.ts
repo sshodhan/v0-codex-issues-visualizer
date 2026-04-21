@@ -38,6 +38,35 @@ interface RunSummary {
   bySource: Array<{ source: string; found: number; added: number; status: "success" | "error"; error?: string }>
 }
 
+async function upsertIssueObservation(
+  supabase: ReturnType<typeof createAdminClient>,
+  issue: Partial<Issue>
+): Promise<boolean> {
+  const observation = {
+    ...issue,
+    scraped_at: issue.scraped_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    last_seen_at: new Date().toISOString(),
+  }
+
+  const { error } = await supabase.rpc("upsert_issue_observation", {
+    issue_payload: observation,
+  })
+
+  if (!error) return true
+
+  // Backward compatibility for environments where migration 006 has not run yet.
+  const missingRpc = error.code === "PGRST202" || /upsert_issue_observation/i.test(error.message)
+  if (!missingRpc) return false
+
+  const { error: fallbackError } = await supabase.from("issues").upsert(observation, {
+    onConflict: "source_id,external_id",
+    ignoreDuplicates: false,
+  })
+
+  return !fallbackError
+}
+
 export async function runAllScrapers(): Promise<RunSummary> {
   const supabase = createAdminClient()
   const errors: string[] = []
@@ -74,11 +103,8 @@ export async function runAllScrapers(): Promise<RunSummary> {
         let added = 0
 
         for (const issue of issues) {
-          const { error } = await supabase.from("issues").upsert(issue, {
-            onConflict: "source_id,external_id",
-            ignoreDuplicates: false,
-          })
-          if (!error) added++
+          const success = await upsertIssueObservation(supabase, issue)
+          if (success) added++
         }
 
         if (log) {
@@ -166,11 +192,8 @@ export async function runScraper(slug: string): Promise<RunSummary> {
   const issues = dedupeIssues(await scraper(source, categories))
   let added = 0
   for (const issue of issues) {
-    const { error } = await supabase.from("issues").upsert(issue, {
-      onConflict: "source_id,external_id",
-      ignoreDuplicates: false,
-    })
-    if (!error) added++
+    const success = await upsertIssueObservation(supabase, issue)
+    if (success) added++
   }
 
   return {
