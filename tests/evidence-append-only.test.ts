@@ -9,6 +9,11 @@ import { dirname, join } from "node:path"
 // against any evidence table. Writes to evidence flow exclusively through
 // SECURITY DEFINER RPCs in scripts/007_three_layer_split.sql.
 //
+// Belt-and-braces: scripts/008_revoke_service_role_dml.sql revokes direct
+// INSERT/UPDATE/DELETE from service_role at the DB layer, so even a
+// compromised or misconfigured client cannot mutate evidence rows. The
+// third test below asserts the 008 migration contains those REVOKEs.
+//
 // See docs/ARCHITECTURE.md v10 §§5.1, 5.6, 6.5.
 
 const EVIDENCE_TABLES = [
@@ -93,4 +98,38 @@ test("lib/storage/evidence.ts is the sole module that touches evidence RPCs", as
       }
     }
   }
+})
+
+test("migration 008 revokes service_role DML on every append-only table", () => {
+  const migrationPath = join(repoRoot, "scripts/008_revoke_service_role_dml.sql")
+  const sql = readFileSync(migrationPath, "utf8").toLowerCase()
+
+  const appendOnlyTables = [
+    "observations",
+    "observation_revisions",
+    "engagement_snapshots",
+    "ingestion_artifacts",
+    "sentiment_scores",
+    "category_assignments",
+    "impact_scores",
+    "competitor_mentions",
+    "classifications",
+    "classification_reviews",
+  ]
+
+  // Collapse whitespace so multi-line REVOKE lists match regardless of
+  // formatting.
+  const collapsed = sql.replace(/\s+/g, " ")
+
+  for (const t of appendOnlyTables) {
+    assert.ok(
+      collapsed.includes(t),
+      `008 migration must reference ${t}`,
+    )
+  }
+
+  // Each of INSERT / UPDATE / DELETE must appear in a REVOKE clause.
+  assert.match(collapsed, /revoke[^;]*\binsert\b[^;]*from service_role/, "REVOKE INSERT missing")
+  assert.match(collapsed, /revoke[^;]*\bupdate\b[^;]*from service_role/, "REVOKE UPDATE missing")
+  assert.match(collapsed, /revoke[^;]*\bdelete\b[^;]*from service_role/, "REVOKE DELETE missing")
 })
