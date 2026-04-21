@@ -61,7 +61,7 @@ export function RealtimeInsights({ insights }: RealtimeInsightsProps) {
                   <Badge
                     variant="outline"
                     className={cn(
-                      isRising ? "text-emerald-600" : "text-rose-600"
+                      isRising ? "text-[var(--negative)]" : "text-[var(--positive)]"
                     )}
                   >
                     {isRising ? (

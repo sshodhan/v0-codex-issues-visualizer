@@ -12,9 +12,9 @@ interface SentimentChartProps {
 }
 
 const COLORS = {
-  positive: "#22c55e",
-  negative: "#ef4444",
-  neutral: "#6b7280",
+  positive: "var(--positive)",
+  negative: "var(--negative)",
+  neutral: "var(--neutral)",
 }
 
 export function SentimentChart({ data }: SentimentChartProps) {
@@ -27,7 +27,7 @@ export function SentimentChart({ data }: SentimentChartProps) {
   const total = data.positive + data.negative + data.neutral
 
   return (
-    <Card className="bg-card border-border">
+    <Card className="bg-card border-border shadow-sm">
       <CardHeader className="pb-2">
         <CardTitle className="text-lg font-semibold text-foreground">
           Sentiment Analysis
@@ -54,10 +54,10 @@ export function SentimentChart({ data }: SentimentChartProps) {
                 </Pie>
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: "#1f2937",
-                    border: "1px solid #374151",
+                    backgroundColor: "hsl(var(--card))",
+                    border: "1px solid hsl(var(--border))",
                     borderRadius: "8px",
-                    color: "#f3f4f6",
+                    color: "hsl(var(--foreground))",
                   }}
                   formatter={(value: number) => [
                     `${value} issues (${((value / total) * 100).toFixed(1)}%)`,
@@ -76,10 +76,10 @@ export function SentimentChart({ data }: SentimentChartProps) {
                   style={{ backgroundColor: item.fill }}
                 />
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium text-gray-200">
+                  <span className="text-sm font-medium text-foreground">
                     {item.name}
                   </span>
-                  <span className="text-xs text-gray-400">
+                  <span className="text-xs text-muted-foreground">
                     {item.value} issues ({((item.value / total) * 100).toFixed(0)}%)
                   </span>
                 </div>
@@ -89,9 +89,9 @@ export function SentimentChart({ data }: SentimentChartProps) {
         </div>
 
         {/* Total at bottom */}
-        <div className="mt-4 pt-4 border-t border-gray-700">
-          <p className="text-sm text-gray-400">
-            Total: <span className="text-gray-200 font-medium">{total} issues</span>
+        <div className="mt-4 pt-4 border-t border-border">
+          <p className="text-sm text-muted-foreground">
+            Total: <span className="text-foreground font-medium">{total} issues</span>
           </p>
         </div>
       </CardContent>

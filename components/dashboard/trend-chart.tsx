@@ -29,7 +29,7 @@ export function TrendChart({ data }: TrendChartProps) {
   }))
 
   return (
-    <Card className="bg-card border-border col-span-full">
+    <Card className="bg-card border-border shadow-sm col-span-full">
       <CardHeader className="pb-2">
         <CardTitle className="text-lg font-semibold text-foreground">
           Issue Trends (Last 30 Days)
@@ -44,26 +44,26 @@ export function TrendChart({ data }: TrendChartProps) {
             >
               <defs>
                 <linearGradient id="colorPositive" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#22c55e" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#22c55e" stopOpacity={0.05} />
+                  <stop offset="5%" stopColor="var(--positive)" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="var(--positive)" stopOpacity={0.05} />
                 </linearGradient>
                 <linearGradient id="colorNegative" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#ef4444" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#ef4444" stopOpacity={0.05} />
+                  <stop offset="5%" stopColor="var(--negative)" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="var(--negative)" stopOpacity={0.05} />
                 </linearGradient>
                 <linearGradient id="colorNeutral" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#6b7280" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#6b7280" stopOpacity={0.05} />
+                  <stop offset="5%" stopColor="var(--neutral)" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="var(--neutral)" stopOpacity={0.05} />
                 </linearGradient>
               </defs>
               <XAxis
                 dataKey="dateLabel"
-                stroke="#9ca3af"
-                tick={{ fill: "#e5e7eb", fontSize: 12 }}
+                stroke="hsl(var(--muted-foreground))"
+                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
               />
               <YAxis
-                stroke="#9ca3af"
-                tick={{ fill: "#e5e7eb", fontSize: 12 }}
+                stroke="hsl(var(--muted-foreground))"
+                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
               />
               <Tooltip
                 contentStyle={{
@@ -77,7 +77,7 @@ export function TrendChart({ data }: TrendChartProps) {
                 verticalAlign="top"
                 height={36}
                 formatter={(value) => (
-                  <span style={{ color: "#e5e7eb", fontSize: "14px", textTransform: "capitalize" }}>
+                  <span style={{ color: "hsl(var(--foreground))", fontSize: "14px", textTransform: "capitalize" }}>
                     {value}
                   </span>
                 )}
@@ -86,21 +86,21 @@ export function TrendChart({ data }: TrendChartProps) {
                 type="monotone"
                 dataKey="negative"
                 stackId="1"
-                stroke="#ef4444"
+                stroke="var(--negative)"
                 fill="url(#colorNegative)"
               />
               <Area
                 type="monotone"
                 dataKey="neutral"
                 stackId="1"
-                stroke="#6b7280"
+                stroke="var(--neutral)"
                 fill="url(#colorNeutral)"
               />
               <Area
                 type="monotone"
                 dataKey="positive"
                 stackId="1"
-                stroke="#22c55e"
+                stroke="var(--positive)"
                 fill="url(#colorPositive)"
               />
             </AreaChart>

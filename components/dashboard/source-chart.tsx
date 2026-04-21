@@ -16,20 +16,21 @@ interface SourceChartProps {
   data: Array<{ name: string; count: number }>
 }
 
+// Chart colors using CSS variables for theme awareness
 const COLORS = [
-  "#3b82f6", // Blue
-  "#06b6d4", // Cyan
-  "#8b5cf6", // Purple
-  "#f97316", // Orange
-  "#22c55e", // Green
-  "#ec4899", // Pink
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--primary)",
 ]
 
 export function SourceChart({ data }: SourceChartProps) {
   const sortedData = [...data].sort((a, b) => b.count - a.count)
 
   return (
-    <Card className="bg-card border-border">
+    <Card className="bg-card border-border shadow-sm">
       <CardHeader className="pb-2">
         <CardTitle className="text-lg font-semibold text-foreground">
           Issues by Source
@@ -45,22 +46,22 @@ export function SourceChart({ data }: SourceChartProps) {
             >
               <XAxis 
                 type="number" 
-                stroke="#9ca3af" 
-                tick={{ fill: "#e5e7eb", fontSize: 12 }}
+                stroke="hsl(var(--muted-foreground))" 
+                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
               />
               <YAxis
                 type="category"
                 dataKey="name"
                 width={100}
-                stroke="#9ca3af"
-                tick={{ fill: "#e5e7eb", fontSize: 12 }}
+                stroke="hsl(var(--muted-foreground))"
+                tick={{ fill: "hsl(var(--foreground))", fontSize: 12 }}
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "#1f2937",
-                  border: "1px solid #374151",
+                  backgroundColor: "hsl(var(--card))",
+                  border: "1px solid hsl(var(--border))",
                   borderRadius: "8px",
-                  color: "#f3f4f6",
+                  color: "hsl(var(--foreground))",
                 }}
                 formatter={(value: number) => [`${value} issues`]}
               />
@@ -74,7 +75,7 @@ export function SourceChart({ data }: SourceChartProps) {
                 <LabelList 
                   dataKey="count" 
                   position="right" 
-                  fill="#e5e7eb"
+                  fill="hsl(var(--foreground))"
                   fontSize={12}
                   fontWeight={500}
                 />
