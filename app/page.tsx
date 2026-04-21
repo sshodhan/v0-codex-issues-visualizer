@@ -72,6 +72,57 @@ export default function DashboardPage() {
 
   const globalTimeLabel = globalDays === 0 ? "All time" : `Last ${globalDays} days`
   const globalCategoryLabel = categoryOptions.find((option) => option.value === globalCategory)?.label || "All categories"
+  const kpiSummary = useMemo(() => {
+    const grouped = new Map<
+      string,
+      { total: number; negative: number; urgencyProxy: number; impactTotal: number }
+    >()
+
+    for (const item of stats?.priorityMatrix || []) {
+      const categoryName = item.category?.name || "Uncategorized"
+      const sentimentWeight =
+        item.sentiment === "negative" ? 1.35 : item.sentiment === "neutral" ? 1 : 0.7
+      const urgencyScore = item.impact_score * item.frequency_count * sentimentWeight
+
+      const current = grouped.get(categoryName) || {
+        total: 0,
+        negative: 0,
+        urgencyProxy: 0,
+        impactTotal: 0,
+      }
+
+      current.total += 1
+      if (item.sentiment === "negative") current.negative += 1
+      current.urgencyProxy += urgencyScore
+      current.impactTotal += item.impact_score
+      grouped.set(categoryName, current)
+    }
+
+    const categories = Array.from(grouped.entries()).map(([name, values]) => ({
+      name,
+      ...values,
+      avgImpact: values.total > 0 ? values.impactTotal / values.total : 0,
+      negativeShare: values.total > 0 ? values.negative / values.total : 0,
+    }))
+
+    const topRiskCategory = categories.reduce<(typeof categories)[number] | null>(
+      (best, candidate) =>
+        !best || candidate.urgencyProxy > best.urgencyProxy ? candidate : best,
+      null
+    )
+
+    const minVolumeForTheme = Math.max(2, Math.ceil((stats?.totalIssues || 0) * 0.05))
+    const impactfulPool = categories.filter((category) => category.total >= minVolumeForTheme)
+    const mostImpactfulTheme = (impactfulPool.length ? impactfulPool : categories).reduce<
+      (typeof categories)[number] | null
+    >((best, candidate) => (!best || candidate.avgImpact > best.avgImpact ? candidate : best), null)
+
+    return {
+      topRiskCategory,
+      mostImpactfulTheme,
+      topRiskNegativeShare: topRiskCategory?.negativeShare || 0,
+    }
+  }, [stats])
 
   const lastScrapeTime = stats?.lastScrape?.completed_at
     ? formatDistanceToNow(new Date(stats.lastScrape.completed_at), {
@@ -156,37 +207,54 @@ export default function DashboardPage() {
         ) : (
           <div className="flex flex-col gap-8">
             {/* Stats Cards */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <StatCard
-                title="Total Issues"
+                title="Total Reports"
                 value={stats.totalIssues}
-                subtitle="Across all sources"
+                subtitle="Orientation metric"
+                contextText="Use this as baseline volume, not priority."
                 icon={<BarChart3 className="h-5 w-5" />}
               />
               <StatCard
-                title="Negative Issues"
-                value={stats.sentimentBreakdown.negative}
-                subtitle="Requires attention"
+                title="Top Risk Category"
+                value={kpiSummary.topRiskCategory?.name || "N/A"}
+                subtitle={
+                  kpiSummary.topRiskCategory
+                    ? `${kpiSummary.topRiskCategory.total} signals weighted by impact, frequency, and sentiment`
+                    : "No categorized signals yet"
+                }
+                contextText={
+                  kpiSummary.topRiskCategory
+                    ? `${kpiSummary.topRiskCategory.name} has the highest urgency proxy right now.`
+                    : undefined
+                }
                 className="border-l-4 border-l-[hsl(var(--chart-4))]"
               />
               <StatCard
-                title="Feature Requests"
-                value={
-                  stats.categoryBreakdown.find(
-                    (c) => c.name === "Feature Request"
-                  )?.count || 0
+                title="Negative Share in Top Category"
+                value={`${Math.round(kpiSummary.topRiskNegativeShare * 100)}%`}
+                subtitle="Sentiment concentration in highest-risk theme"
+                contextText={
+                  kpiSummary.topRiskCategory
+                    ? `${kpiSummary.topRiskCategory.negative}/${kpiSummary.topRiskCategory.total} reports are negative in ${kpiSummary.topRiskCategory.name}.`
+                    : "Needs a top risk category to calculate."
                 }
-                subtitle="User suggestions"
-                className="border-l-4 border-l-[hsl(var(--chart-5))]"
+                className="border-l-4 border-l-[hsl(var(--chart-3))]"
               />
               <StatCard
-                title="Bug Reports"
-                value={
-                  stats.categoryBreakdown.find((c) => c.name === "Bug")
-                    ?.count || 0
+                title="Most Impactful Theme"
+                value={kpiSummary.mostImpactfulTheme?.name || "N/A"}
+                subtitle={
+                  kpiSummary.mostImpactfulTheme
+                    ? `Avg impact ${kpiSummary.mostImpactfulTheme.avgImpact.toFixed(2)} with enough volume`
+                    : "No category has enough signal yet"
                 }
-                subtitle="Issues to fix"
-                className="border-l-4 border-l-[hsl(var(--chart-3))]"
+                contextText={
+                  kpiSummary.mostImpactfulTheme
+                    ? `${kpiSummary.mostImpactfulTheme.name} combines sustained volume with high user pain.`
+                    : undefined
+                }
+                className="border-l-4 border-l-[hsl(var(--chart-5))]"
               />
             </div>
 

@@ -7,6 +7,7 @@ interface StatCardProps {
   title: string
   value: string | number
   subtitle?: string
+  contextText?: string
   icon?: React.ReactNode
   trend?: {
     value: number
@@ -19,6 +20,7 @@ export function StatCard({
   title,
   value,
   subtitle,
+  contextText,
   icon,
   trend,
   className,
@@ -32,6 +34,9 @@ export function StatCard({
             <p className="text-3xl font-bold text-foreground">{value}</p>
             {subtitle && (
               <p className="text-sm text-muted-foreground">{subtitle}</p>
+            )}
+            {contextText && (
+              <p className="text-xs text-muted-foreground/90">{contextText}</p>
             )}
             {trend && (
               <p
