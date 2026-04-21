@@ -18,3 +18,5 @@ node_modules
 # TypeScript build cache
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+# Generated migration dry-run artifacts
+scripts/tmp/
