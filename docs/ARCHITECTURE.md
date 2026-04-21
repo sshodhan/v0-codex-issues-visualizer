@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-21 (v9 — issue-clustering / canonical-frequency data model documented, edge cases captured (PR #12); v8 — integrates with PR #11 urgency rework (sentiment weight in impact, not urgency) + `keyword_presence` signal; fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-21 (v10 — three-layer data model: evidence (append-only) + derivation (versioned, immutable) + aggregation (clusters + materialized views). Full schema rewrite: `issues` and `bug_report_classifications` tables removed in favor of `observations`/`observation_revisions`/`engagement_snapshots`/`ingestion_artifacts` + `sentiment_scores`/`category_assignments`/`impact_scores`/`competitor_mentions`/`classifications`/`classification_reviews` + `clusters`/`cluster_members`. Past dashboard readings are reproducible via derivation `computed_at <= T` filters. See `scripts/007_three_layer_split.sql` and `lib/storage/`. Supersedes PR #12 clustering edge cases (P1-9 through P1-12). v9 — issue-clustering / canonical-frequency data model documented, edge cases captured (PR #12); v8 — integrates with PR #11 urgency rework (sentiment weight in impact, not urgency) + `keyword_presence` signal; fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -44,12 +44,31 @@ Orchestrator (lib/scrapers/index.ts)
   └─ runScraper(slug) for single-source runs
          │
          ▼
-Supabase (Postgres)
-  ├─ issues
-  ├─ categories
-  ├─ sources
-  ├─ scrape_logs
-  └─ bug_report_classifications   <-- new LLM triage store
+Supabase (Postgres) — three-layer data model
+  │
+  ├─ Evidence layer (append-only, never UPDATE)
+  │   ├─ observations             (per-source first sighting; fields frozen at capture)
+  │   ├─ observation_revisions    (append on title/content change at rescrape)
+  │   ├─ engagement_snapshots     (upvotes/comments time series)
+  │   └─ ingestion_artifacts      (raw upstream JSON for replay)
+  │
+  ├─ Derivation layer (versioned per algorithm_version, immutable)
+  │   ├─ sentiment_scores
+  │   ├─ category_assignments
+  │   ├─ impact_scores
+  │   ├─ competitor_mentions      (materialized at enrich time, not query time)
+  │   ├─ classifications          (LLM baseline; retries link via prior_classification_id)
+  │   └─ classification_reviews   (append-only reviewer decisions)
+  │
+  ├─ Aggregation layer
+  │   ├─ clusters                 (canonical_observation_id lives here, not on evidence)
+  │   ├─ cluster_members          (detached_at IS NULL = active membership)
+  │   └─ materialized views       (mv_observation_current, mv_dashboard_stats, mv_trend_daily)
+  │                                (refreshed on cron end via refresh_materialized_views())
+  │
+  └─ Reference tables (unchanged)
+      ├─ sources, categories
+      └─ scrape_logs
          │
          ├─ API: analytics/query layer
          │   ├─ /api/issues          (query/filter; supports q, days, source, category)
@@ -89,19 +108,62 @@ Dashboard UI (app/page.tsx)
 
 ### 3.1 Ingestion + enrichment flow
 
+A scrape run is structured as three sequential passes over the captured records. Each pass writes to one layer only. The passes are independently replayable: re-running enrichment against existing evidence produces a new derivation row (stamped with a newer `algorithm_version`), never a mutation.
+
+#### 3.1a Ingest (writes to evidence layer only)
+
 1. A scrape is triggered manually (`/api/scrape`) or by cron route.
-2. Source adapters fetch raw records.
+2. Source adapters fetch raw records; the full upstream response is captured in `ingestion_artifacts` keyed by `(source_id, external_id, fetched_at)`.
 3. Candidates are cleaned and filtered (normalize whitespace, relevance, low-value exclusions).
-4. Remaining records are enriched with sentiment, heuristic category, and impact score.
-5. Records are deduped and passed to `persistIssueWithClustering` (`lib/scrapers/index.ts`), which derives a deterministic `cluster_key` from the normalized title and either (a) updates the existing `(source_id, external_id)` row, (b) links the new row to an existing canonical and increments the canonical's `frequency_count`, or (c) inserts a new canonical row for a fresh cluster. Raw-report traceability is preserved via `canonical_issue_id`.
+4. Every surviving record is inserted into `observations` via `lib/storage/evidence.ts` → `recordObservation()` if unseen, else:
+   - On title/content change vs. the current observation row → `recordRevision()` appends to `observation_revisions`.
+   - On engagement change (upvotes, comments_count) → `recordEngagementSnapshot()` appends to `engagement_snapshots`.
+5. `observations` rows themselves are never UPDATEd. OP edits, upvote changes, and deletion-at-upstream all land as new append-only rows; the original capture is preserved as evidence.
 6. Run metadata is written to `scrape_logs`.
 
-#### 3.1.1 Clustering invariants (target state)
+#### 3.1b Enrich (writes to derivation layer only)
 
-- **Exactly one canonical per `cluster_key`.** Enforced today only by in-process read-then-write; should be tightened to a partial unique index (`CREATE UNIQUE INDEX … ON issues(cluster_key) WHERE is_canonical = true`) with the persist path wrapped in a Postgres function or atomic `INSERT … ON CONFLICT` so concurrent scrapers cannot create rival canonicals.
-- **Non-canonical rows point to their canonical** (`canonical_issue_id`) and keep their own raw content for traceability.
-- **`frequency_count` lives only on the canonical row**; members stay at 1. Incrementing should be atomic (SQL-side `frequency_count = frequency_count + 1`), not a JS read-modify-write.
-- **`cluster_key` normalization must be identical in TS and SQL.** The TS path (`buildIssueClusterKey` in `lib/scrapers/shared.ts`) and any backfill SQL must use the same algorithm and hash or the backfill will not merge with scraped rows. Today they diverge (see `docs/BUGS.md`); both must settle on one hash (MD5 matches Postgres' built-in) and identical regex semantics under `standard_conforming_strings = on`.
+1. For each observation touched in the ingest pass, the orchestrator computes the full set of derivations.
+2. `analyzeSentiment` (`lib/scrapers/shared.ts`) → `lib/storage/derivations.ts` → `recordSentiment()` — writes one row to `sentiment_scores` stamped with the current sentiment algorithm version.
+3. `categorizeIssue` → `recordCategory()` — writes to `category_assignments`.
+4. `calculateImpactScore` → `recordImpact()` — writes to `impact_scores`, preserving the inputs (upvotes, comments, sentiment label) in `inputs_jsonb` so the score can be recomputed from the same captured evidence.
+5. `scoreMentionSentiment` per competitor phrase (`lib/analytics/competitive.ts`) → `recordCompetitorMention()` — one row per mention window in `competitor_mentions`, stamped with `lexicon_version` + `algorithm_version`. This replaces the query-time recomputation that previously lived in `/api/stats`.
+6. Rescoring the entire corpus against a new algorithm is a normal insert job (insert derivation rows at version N+1); the old rows stay for reproducibility.
+
+#### 3.1c Cluster (writes to aggregation layer only)
+
+1. For each observation in this run, compute `cluster_key` from the normalized title via `lib/storage/clusters.ts` → `attachToCluster()`.
+2. If no cluster exists for that key, insert one into `clusters` (with this observation as `canonical_observation_id`) and add the membership row.
+3. If a cluster exists, append a `cluster_members` row (`attached_at = now()`, `detached_at = NULL`).
+4. On a title revision that shifts `cluster_key`, the same function updates the membership: stamp `detached_at` on the old row, insert a new one for the new cluster, and re-select a canonical if needed. Because clusters are their own table, rebalancing never touches evidence.
+5. At the end of the scrape run, `/api/cron/scrape` calls the `refresh_materialized_views` RPC, which rebuilds `mv_observation_current`, `mv_dashboard_stats`, and `mv_trend_daily`. All dashboard reads pick up the new scrape after this step.
+
+#### 3.1.1 Clustering invariants
+
+- **Clusters are stored separately from evidence.** Deleting or revising an observation never mutates cluster shape; the orchestrator explicitly detaches/reattaches via `cluster_members`.
+- **Exactly one active canonical per cluster.** Enforced by `UNIQUE INDEX ON clusters(cluster_key)` plus a `canonical_observation_id` NOT NULL constraint. Canonical selection is a cluster property, not a flag on an observation.
+- **Cluster membership is append-only per attach/detach event.** `detached_at IS NULL` is the active set; history is preserved.
+- **`cluster_key` normalization lives in TypeScript only.** Since SQL never writes to `clusters`/`cluster_members` directly (only via the storage module), the former TS-vs-SQL hash parity requirement is obsolete.
+
+### 3.2 LLM classification flow
+
+1. Client/backend posts report payload to `/api/classify`.
+2. Server builds bounded context (`report_text`, env, repro, transcript/tool/log tails).
+3. OpenAI Responses API is called with strict JSON-schema response format (`temperature: 0.2`).
+4. If `confidence < 0.7`, route retries once on the larger model. Each retry inserts its own row into `classifications` with `prior_classification_id` pointing at the previous attempt — every LLM call is preserved as evidence of classifier drift and retry behavior.
+5. Boundary validation runs:
+   - enum validation,
+   - `evidence_quotes` substring validation against request payload,
+   - hard review rules (critical/safety/low confidence/sensitive mentions).
+6. Output is returned and stored in `classifications` as normalized fields + raw JSON via `lib/storage/derivations.ts` → `recordClassification()`. Rows in `classifications` are immutable after insert.
+
+### 3.3 Reviewer flow
+
+1. Dashboard fetches queue rows from `GET /api/classifications`. The endpoint returns the classification baseline joined to the most recent matching `classification_reviews` row so the queue shows effective state (post-review).
+2. Dashboard fetches queue KPIs from `GET /api/classifications/stats` aggregated over the same join.
+3. Reviewer selects a row, checks source-link traceability, and updates status/category/severity/notes.
+4. Dashboard sends patch to `PATCH /api/classifications/:id`.
+5. The endpoint **inserts** a new row into `classification_reviews` (via `recordClassificationReview()`) — it never UPDATEs the classification. The LLM baseline stays immutable; every reviewer decision appends, preserving the full audit trail. A reviewer who changes their mind produces a second review row; the first is retained.
 
 ### 3.2 LLM classification flow (new)
 
@@ -123,14 +185,17 @@ Dashboard UI (app/page.tsx)
 4. Dashboard sends patch to `PATCH /api/classifications/:id`.
 5. Record is updated with reviewer metadata (`reviewed_by`, `reviewed_at`, `reviewer_notes`).
 
-### 3.4 Insight traceability flow (new)
+### 3.4 Insight traceability flow
 
-From any triage row, the analyst can verify:
-- **Classification context** (`summary`, `category`, `severity`, confidence),
-- **Sentiment linkage** (`source_issue_sentiment`),
-- **Primary evidence path** (source issue title + URL back to external feedback).
+For any dashboard number, the analyst can walk the chain backwards:
 
-This enables end-to-end provenance from dashboard insight → classifier decision → original web feedback.
+1. **Dashboard widget** → the materialized view row it was sourced from (`mv_dashboard_stats`, `mv_trend_daily`, `mv_observation_current`).
+2. **Materialized view** → the derivation rows it aggregates, each stamped with `algorithm_version` and `computed_at`.
+3. **Derivation row** → the `observations` row it was computed against, plus (for classifications) the `classification_reviews` that modified effective state.
+4. **Observation** → the full capture chain: the first-sighting row, any `observation_revisions` entries (OP edits), `engagement_snapshots` over time, and the raw upstream payload in `ingestion_artifacts`.
+5. **Upstream evidence** → the `url` field on the observation links back to the original Reddit / HN / GitHub / Stack Overflow / OpenAI Community post.
+
+Past readings are reproducible: re-running any aggregate with `computed_at <= T` over the derivation layer yields exactly the numbers the dashboard showed at time T, regardless of later algorithm changes or reviewer overrides.
 
 ---
 
@@ -140,28 +205,33 @@ This enables end-to-end provenance from dashboard insight → classifier decisio
 
 Layout:
 - `lib/scrapers/index.ts` — orchestrator. `runAllScrapers()` (parallel) and
-  `runScraper(slug)` (single-source). Owns scrape_logs lifecycle and writes
-  rows via `persistIssueWithClustering`, which derives a `cluster_key` per
-  issue and manages canonical/non-canonical linkage + `frequency_count`.
-- `lib/scrapers/shared.ts` — relevance filter (delegates to `relevance.ts`),
-  ingest-time sentiment classifier (`analyzeSentiment`, consumes the
-  canonical lexicon in `lib/analytics/sentiment-lexicon.ts`), topic-noun
-  presence counter (`calculateKeywordPresence`, drawn from
-  `NEGATIVE_KEYWORD_PATTERNS`), category scoring, impact scoring,
-  competitor keyword detection, retry/backoff fetch helper, dedupe, and the
-  deterministic `buildIssueClusterKey` + `normalizeTitleForCluster` helpers
-  that drive clustering. The SQL counterpart in
-  `scripts/005_add_issue_clustering_and_frequency_backfill.sql` must be kept
-  byte-for-byte equivalent (same normalization, same hash algorithm). **Does
-  not own polarity word lists or competitor phrases** — those are imported
-  from the analytics-layer canonical modules. `analyzeSentiment` returns
-  `{ sentiment, score, keyword_presence }`; providers today destructure only
-  the first two. See `docs/SCORING.md` for the current signal contract.
+  `runScraper(slug)` (single-source). Owns `scrape_logs` lifecycle and runs the
+  three-pass ingest/enrich/cluster flow, delegating every write to
+  `lib/storage/{evidence,derivations,clusters}.ts`. Does not touch the database
+  directly.
+- `lib/scrapers/shared.ts` — pure functions consumed by the enrich pass:
+  relevance filter (delegates to `relevance.ts`), sentiment classifier
+  (`analyzeSentiment` → returns `{ sentiment, score, keyword_presence }` which
+  is now fully consumed by `recordSentiment()`), category scoring
+  (`categorizeIssue`), impact scoring (`calculateImpactScore`), competitor
+  keyword detection. All word lists come from `lib/analytics/sentiment-lexicon.ts`
+  and `lib/analytics/competitors.ts`. `buildIssueClusterKey` +
+  `normalizeTitleForCluster` have moved to `lib/storage/clusters.ts` (see §4.7).
+  See `docs/SCORING.md` for the current signal contract.
 - `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts` —
-  one provider per file. Each owns its source-specific query and the
-  mapping into a `Partial<Issue>`. `github-discussions` and `openai-community`
-  cover the high-signal channels (GitHub Discussions, community.openai.com)
-  that the REST `github` scraper and the news/Q&A providers miss.
+  one provider per file. Each owns its source-specific query and mapping into
+  a `CapturedRecord` shape (evidence-layer fields only). `github-discussions`
+  and `openai-community` cover the high-signal channels that the REST `github`
+  scraper and the news/Q&A providers miss.
+
+### 4.7 `lib/storage/`
+
+The only module allowed to write to the database. Enforces the three-layer boundary at the module level; complements the DB-level RLS grants described in §5.6.
+
+- `evidence.ts` — `recordObservation(record)`, `recordRevision(observationId, changes)`, `recordEngagementSnapshot(observationId, upvotes, comments)`, `recordIngestionArtifact(key, payload)`. All calls go through `SECURITY DEFINER` RPCs; no direct table writes.
+- `derivations.ts` — `recordSentiment(observationId, result)`, `recordCategory`, `recordImpact`, `recordCompetitorMention`, `recordClassification(payload, priorId?)`, `recordClassificationReview(classificationId, review)`. Each pulls the current `algorithm_version` from `algorithm-versions.ts` and stamps the row.
+- `clusters.ts` — `attachToCluster(observationId, title)`, `detachFromCluster(observationId)`, `promoteCanonical(clusterId)`. Owns `buildClusterKey` + `normalizeTitleForCluster` (migrated from `lib/scrapers/shared.ts`). Since SQL no longer writes to clusters, the old TS↔SQL hash-parity requirement is obsolete.
+- `algorithm-versions.ts` — central `CURRENT_VERSIONS = { sentiment: "v1", category: "v1", impact: "v1", competitor_mention: "v1", classification: "v1" }`. Bumping here is the only way to trigger a new derivation row shape.
 
 Extension guidance:
 - Add a new provider by creating `providers/<slug>.ts` and registering it in
@@ -338,47 +408,79 @@ Extension guidance:
 
 ## 5) Data model summary
 
-### 5.1 Existing operational tables
+The schema is organized in three layers with strict write direction: scrapers write to evidence only, enrichment writes to derivation only, clustering and materialized views write to aggregation only. All read paths for the dashboard go through the aggregation layer.
 
-- `sources`: source registry.
-- `categories`: canonical heuristic categories.
-- `issues`: normalized issue facts from public sources, now with clustering
-  metadata:
-  - `cluster_key TEXT` — deterministic title-based grouping key
-    (`title:<16-char hash>`). **Should be `NOT NULL`** with a default of
-    `'title:empty'`; today nullable.
-  - `canonical_issue_id UUID REFERENCES issues(id) ON DELETE SET NULL` —
-    non-canonical rows point to their cluster's canonical. `ON DELETE SET
-    NULL` leaves members orphaned when a canonical is deleted; a trigger
-    should promote the oldest remaining member instead.
-  - `is_canonical BOOLEAN DEFAULT TRUE` — marks the representative row for
-    a cluster. Default is `TRUE` for ergonomic inserts; the persist path
-    writes the flag explicitly.
-  - `frequency_count INTEGER DEFAULT 1` — aggregated report count, kept on
-    the canonical row only. Increments should be atomic (SQL-side) and, for
-    repeat observations of already-known external posts, should bump the
-    canonical's count past the first-sighting insert.
-- `scrape_logs`: ingestion run metadata and failures.
+### 5.1 Evidence layer (append-only, never UPDATE)
 
-### 5.2 New triage table
+The only layer that captures raw upstream data. Every row is immutable after insert. The append-only invariant is enforced at the DB layer by withholding UPDATE grants from the service_role and routing all writes through `record_*` RPCs.
 
-- `bug_report_classifications`:
-  - LLM output fields (`category`, `severity`, `confidence`, etc.),
-  - raw payload (`raw_json`),
-  - reviewer workflow fields (`status`, `reviewed_by`, `reviewed_at`, `reviewer_notes`),
-  - traceability fields (`source_issue_id`, `source_issue_url`, `source_issue_title`, `source_issue_sentiment`),
-  - model metadata (`model_used`, `retried_with_large_model`).
+- `observations`: first-sighting capture of a post from a public source.
+  - `id UUID PK`, `source_id UUID`, `external_id TEXT NOT NULL`, `title TEXT`, `content TEXT`, `url TEXT`, `author TEXT`, `published_at TIMESTAMPTZ`, `captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`.
+  - UNIQUE `(source_id, external_id)`.
+  - No sentiment/impact/category columns — those live in the derivation layer, keyed by `observation_id`.
+- `observation_revisions`: append-only log of title/content/author changes detected at rescrape.
+  - `(observation_id, revision_number, title, content, author, seen_at)`.
+  - The original `observations.title`/`content` are never overwritten; revisions accumulate here.
+- `engagement_snapshots`: append-only time series of `upvotes` and `comments_count`.
+  - `(observation_id, upvotes, comments_count, captured_at)`.
+  - Dashboards read the latest snapshot; trend analyses read the series.
+- `ingestion_artifacts`: raw upstream API response stored as `jsonb` (or `bytea` gzipped for large payloads), keyed by `(source_id, external_id, fetched_at)`. Enables full replay of enrichment and clustering against captured evidence without re-hitting upstream APIs.
 
-### 5.3 Key indexes and constraints
+### 5.2 Derivation layer (versioned, immutable)
 
-- Existing unique key for issues: `(source_id, external_id)`.
-- Clustering lookup indexes: `idx_issues_cluster_key` on `cluster_key`,
-  `idx_issues_canonical` on `is_canonical`.
-- **Target (not yet in place):** partial unique index
-  `ON issues(cluster_key) WHERE is_canonical = true` to prevent concurrent
-  scrapers from inserting rival canonicals for the same cluster.
-- Triage index: `(category, severity, needs_human_review, created_at DESC)`.
-- Traceability index: `(source_issue_id, created_at DESC)`.
+Every derived signal is a row stamped with `algorithm_version` and `computed_at`. Algorithm changes insert new rows at version N+1; old rows stay for reproducibility. Rescore migrations become normal insert jobs, not table rewrites.
+
+- `sentiment_scores (observation_id, algorithm_version, score NUMERIC(4,3), label TEXT, keyword_presence INT, computed_at)`.
+- `category_assignments (observation_id, algorithm_version, category_id, confidence NUMERIC(3,2), computed_at)`.
+- `impact_scores (observation_id, algorithm_version, score INT, inputs_jsonb JSONB, computed_at)` — `inputs_jsonb` records the engagement inputs at compute time so the score is verifiable from captured evidence alone.
+- `competitor_mentions (observation_id, competitor TEXT, sentence_window TEXT, sentiment_score NUMERIC(4,3), confidence NUMERIC(3,2), lexicon_version TEXT, algorithm_version TEXT, computed_at)` — one row per mention window. Replaces the query-time recomputation in `lib/analytics/competitive.ts`.
+- `classifications`: LLM classifier baseline, immutable after insert.
+  - All existing fields (`category`, `severity`, `confidence`, `summary`, `evidence_quotes`, `raw_json`, etc.).
+  - `prior_classification_id UUID NULL REFERENCES classifications(id)` — when small-model confidence < 0.7 triggers a retry, the large-model row references the small-model attempt. Both are retained.
+  - `observation_id UUID REFERENCES observations(id)` — replaces `source_issue_id` for cleaner traceability naming.
+- `classification_reviews`: append-only reviewer decisions.
+  - `(id, classification_id, status, category, severity, needs_human_review, reviewer_notes, reviewed_by, reviewed_at)`.
+  - A reviewer who revises their decision inserts a second row; the first remains for audit.
+  - Effective state for a classification is the most recent review (subquery `ORDER BY reviewed_at DESC LIMIT 1`).
+
+### 5.3 Aggregation layer
+
+The only layer consumed by the dashboard API routes. Every row can be rebuilt from derivation + evidence.
+
+- `clusters (id UUID PK, cluster_key TEXT NOT NULL UNIQUE, canonical_observation_id UUID NOT NULL, status TEXT, created_at TIMESTAMPTZ)`.
+- `cluster_members (cluster_id, observation_id, attached_at, detached_at)` with a partial unique index `(cluster_id, observation_id) WHERE detached_at IS NULL` so an observation can belong to at most one active cluster.
+- Materialized views (refreshed by `refresh_materialized_views()` at `/api/cron/scrape` run end):
+  - `mv_observation_current` — one row per active cluster-canonical observation joined to the latest derivation rows and the latest engagement snapshot. Backs `/api/issues` and the Priority Matrix.
+  - `mv_dashboard_stats` — pre-aggregated totals for `/api/stats` (sentiment breakdown, source breakdown, category breakdown, total). Replaces the six sequential full-table scans.
+  - `mv_trend_daily` — date-bucketed sentiment counts for the trend chart.
+- `frequency_count` is no longer a column; it is a view:
+  ```sql
+  CREATE VIEW cluster_frequency AS
+  SELECT cluster_id, COUNT(*) AS frequency_count
+  FROM cluster_members WHERE detached_at IS NULL GROUP BY cluster_id;
+  ```
+
+### 5.4 Reference tables (unchanged)
+
+- `sources`, `categories` — lookup tables, seeded once.
+- `scrape_logs` — ingestion run metadata and failures.
+
+### 5.5 Key indexes and constraints
+
+- `observations (source_id, external_id)` UNIQUE — first-sighting dedup.
+- `observations (published_at DESC)` — trend / 6-day window queries via MVs.
+- `engagement_snapshots (observation_id, captured_at DESC)` — latest-snapshot lookups.
+- `sentiment_scores (observation_id, algorithm_version, computed_at DESC)` — latest-version lookups; same shape for `category_assignments`, `impact_scores`.
+- `competitor_mentions (competitor, computed_at DESC)` — per-competitor rollups.
+- `clusters (cluster_key)` UNIQUE — one cluster per normalized title key.
+- `cluster_members (cluster_id, observation_id) WHERE detached_at IS NULL` UNIQUE — one active membership per observation.
+- `classifications (observation_id, created_at DESC)` — per-observation LLM history.
+- `classification_reviews (classification_id, reviewed_at DESC)` — effective-state lookup.
+- `classifications (category, severity, needs_human_review, created_at DESC)` — triage queue filter.
+
+### 5.6 Append-only enforcement
+
+The RLS policy for `service_role` grants INSERT but NOT UPDATE/DELETE on `observations`, `observation_revisions`, `engagement_snapshots`, `ingestion_artifacts`, `classifications`, `classification_reviews`. Writes flow through `record_*` RPCs defined with `SECURITY DEFINER` — these are the only way to land a row and they validate shape before insert. Attempts to UPDATE evidence fail at the DB, not at the application, so a buggy scraper cannot corrupt the evidence layer.
 
 ---
 
@@ -454,24 +556,26 @@ running app renders is either a live API response or a Supabase read of rows
 that scrapers/classifiers populated from real public sources.
 
 Real data (live, never seeded):
-- `issues` rows — written by `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts`,
-  each of which calls a real public API:
+- Evidence-layer rows (`observations`, `observation_revisions`, `engagement_snapshots`, `ingestion_artifacts`) — written by `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts` via `lib/storage/evidence.ts`, each of which calls a real public API:
   - Reddit JSON search (`reddit.com/r/<sub>/search.json`)
   - Hacker News Algolia search (`hn.algolia.com/api/v1/search`)
   - GitHub Issues Search — REST (`api.github.com/search/issues`)
   - GitHub Discussions Search — GraphQL (`api.github.com/graphql`, `search(type: DISCUSSION)`; requires `GITHUB_TOKEN`, degrades to a no-op when absent)
   - Stack Exchange (`api.stackexchange.com/2.3/questions`)
   - OpenAI Community — Discourse (`community.openai.com/search.json`)
+- Derivation-layer rows (`sentiment_scores`, `category_assignments`, `impact_scores`, `competitor_mentions`) — written by the enrich pass (`lib/storage/derivations.ts`) against captured evidence. Every row is version-stamped.
+- `classifications` and `classification_reviews` rows — written by `app/api/classify/route.ts` and `app/api/classifications/[id]/route.ts` from the OpenAI Responses API and reviewer actions respectively.
+- Aggregation-layer rows (`clusters`, `cluster_members`) — written by `lib/storage/clusters.ts`.
+- Materialized views (`mv_observation_current`, `mv_dashboard_stats`, `mv_trend_daily`) — rebuilt at the end of each cron run from derivation + aggregation rows.
 - `scrape_logs` rows — written by `lib/scrapers/index.ts` per run.
-- `bug_report_classifications` rows — written by `app/api/classify/route.ts`
-  from the OpenAI Responses API.
 
 Reference data (seeded once via SQL, required for foreign keys to work):
 - `sources` rows — one per provider (`reddit`, `hackernews`, `github`,
   `github-discussions`, `stackoverflow`, `openai-community`). See
-  `scripts/001_*.sql`, `002_*.sql`, `003_*.sql`, `005_*.sql`.
+  `scripts/007_three_layer_split.sql`.
 - `categories` rows — taxonomy used by the heuristic classifier (`Bug`,
-  `Feature Request`, `Performance`, …). Same migration files.
+  `Feature Request`, `Performance`, …). Same migration file.
+- `algorithm_versions` — lookup of the current-effective version per derivation type (sentiment, category, impact, competitor-mention, classification). Seeded at v1.
 
 **Not wired into the running app, and now removed from the repo entirely:**
 - A previous `codex-analysis/` directory contained pre-computed JSON
@@ -496,11 +600,15 @@ grep -R --include='*.ts' --include='*.tsx' 'useSWR' hooks
 # 3) Scrapers hit live HTTPS URLs (not local files)
 grep -R --include='*.ts' -n 'https://' lib/scrapers/providers
 
-# 4) SQL migrations only seed reference taxonomy, never issues
-grep -nE 'INSERT INTO issues' scripts/*.sql   # should print nothing
+# 4) SQL migrations only seed reference taxonomy, never evidence rows
+grep -nE 'INSERT INTO (observations|observation_revisions|engagement_snapshots|ingestion_artifacts)' scripts/*.sql   # should print nothing
+
+# 5) Evidence layer is append-only — no code path outside lib/storage/evidence.ts
+#    may issue UPDATE/DELETE against evidence tables
+grep -REn '\.from\("(observations|observation_revisions|engagement_snapshots|ingestion_artifacts)"\)\.(update|delete)' lib app
+# expected: zero matches
 ```
-All four should return only the expected runtime call sites — no fixture
-imports, no seeded `issues` rows, no `file://` URLs.
+All five should return only the expected runtime call sites — no fixture imports, no seeded evidence rows, no mutations of the evidence layer from outside `lib/storage/evidence.ts`.
 
 ---
 
@@ -517,10 +625,10 @@ Checklist:
 ### 7.2 When traceability coverage drops
 
 Checklist:
-1. Monitor `% rows with source_issue_url`.
-2. Validate mapping from ingest `issues` rows into classify requests.
-3. Backfill `source_issue_*` fields for legacy rows where possible.
-4. Block “authoritative” status transitions without source URL in strict mode.
+1. Monitor `% classifications with a non-null observation_id`.
+2. Validate mapping from ingest `observations` rows into classify requests.
+3. Backfill `observation_id` on legacy classification rows by matching `source_issue_url` → `observations.url`.
+4. Block "authoritative" reviewer status transitions without a linked observation in strict mode.
 
 ### 7.3 Core health metrics
 
@@ -530,8 +638,21 @@ Checklist:
 - classifier confidence distribution,
 - reviewer override rate by category/severity,
 - median time from `new` → `triaged`,
-- traceability coverage (`source_issue_url` present),
+- traceability coverage (`classifications.observation_id` present),
 - % reviewed rows with reviewer notes.
+
+### 7.4 Replaying a past dashboard reading
+
+The evidence-is-immutable + derivation-is-versioned invariants make any past dashboard number reproducible from the database alone. To reconstruct what the dashboard showed on date `T`:
+
+1. Pin the cutoff: `SET LOCAL app.as_of = '<T>';` (or pass `as_of=T` to the API route that supports it).
+2. Restrict every derivation read to rows with `computed_at <= T`, picking the max `algorithm_version` that has a row at or before `T`. A `latest_as_of(T)` SQL helper handles the row-number window.
+3. Restrict cluster membership to rows with `attached_at <= T AND (detached_at IS NULL OR detached_at > T)`.
+4. Restrict engagement snapshots to the latest row per observation with `captured_at <= T`.
+5. Rebuild `mv_observation_current` / `mv_dashboard_stats` / `mv_trend_daily` against those time-bounded views (one-shot materialization into a scratch schema; the production MVs are not disturbed).
+6. Compare the scratch-schema aggregates to any captured dashboard screenshot or exported KPI — they must match byte-for-byte if nothing upstream was deleted (and upstream deletions don't apply, per the append-only evidence policy).
+
+This is the primary justification for the three-layer split: scoring-algorithm drift (N-6), lexicon updates, competitor-phrase expansions, and reviewer revisions can all happen freely because the derivation layer preserves the full history.
 
 ---
 
@@ -564,9 +685,9 @@ Checklist:
 2. **Human authority over model output**: AI suggests; reviewer decides.
 3. **Boundary validation is non-negotiable**: reject malformed/unsafe model outputs.
 4. **Schema evolution with replayability**: keep raw records and model metadata.
-5. **Actionability over vanity metrics**: optimize for triage decisions, not chart volume; interpret dashboard priority copy with the [Dashboard interpretation contract](./SCORING.md#8-dashboard-interpretation-contract).
-6. **Actionability over vanity metrics**: prioritize category risk narratives over raw counts; any "top issue" claim must include sentiment composition (negative/neutral/positive mix), and surfaced priorities must include at least one representative issue title/link for evidence.
-7. **Comparative context over absolute volume**: rising category risk and worsening negative-share trend are stronger action signals than high total issue count alone.
+5. **Actionability over vanity metrics**: optimize for triage decisions, not chart volume; prioritize category risk narratives over raw counts. Any "top issue" claim must include sentiment composition (negative/neutral/positive mix) and at least one representative issue title/link for evidence. Interpret dashboard priority copy with the [Dashboard interpretation contract](./SCORING.md#8-dashboard-interpretation-contract).
+6. **Comparative context over absolute volume**: rising category risk and worsening negative-share trend are stronger action signals than high total issue count alone.
+7. **Raw evidence is append-only**: scrapers insert into the evidence layer and never UPDATE it. Every derived signal (sentiment, category, impact, competitor mention, LLM classification) is a versioned row stamped with `algorithm_version` in the derivation layer. Aggregations (clusters, dashboard materialized views) layer on top and are rebuilt, never mutated in place. This is what makes past dashboard readings reproducible.
 
 ### Dashboard UX doctrine
 
@@ -596,6 +717,11 @@ lib/
       github-discussions.ts
       stackoverflow.ts
       openai-community.ts
+  storage/                    # three-layer write boundary
+    evidence.ts               # recordObservation, recordRevision, recordEngagementSnapshot, recordIngestionArtifact
+    derivations.ts            # recordSentiment, recordCategory, recordImpact, recordCompetitorMention, recordClassification, recordClassificationReview
+    clusters.ts               # attachToCluster, detachFromCluster, promoteCanonical + cluster_key normalization
+    algorithm-versions.ts     # central registry of current-effective versions per derivation type
 
 app/api/
   classify/

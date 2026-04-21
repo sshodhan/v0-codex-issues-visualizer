@@ -376,10 +376,7 @@ compute quotas are exhausted quickly.
    query using `GROUP BY`.
 3. Consider a nightly materialized view for the trend sparkline data.
 
-**Status:** _still-open_. `app/api/stats/route.ts` still issues six
-independent `from("issues").select(...)` calls per request (total, sentiment,
-source join, category join, 30-day trend, priority matrix, 6-day window,
-last scrape). No `Cache-Control` headers are set. Fix sketch still applies.
+**Status:** _superseded-by-three-layer-split_ (2026-04-21). The three-layer refactor (`docs/ARCHITECTURE.md` v10 §§3.1c, 5.3) replaces the six sequential `from("issues").select(...)` calls with a single read from `mv_dashboard_stats`, plus `mv_trend_daily` for the 30-day trend and `mv_observation_current` for the Priority Matrix. All three are rebuilt at the end of each `/api/cron/scrape` run via the `refresh_materialized_views()` RPC — the route becomes one-select-one-response. `Cache-Control: s-maxage=60, stale-while-revalidate=120` is still worth adding as defense-in-depth but is no longer the primary performance win.
 
 ---
 
@@ -568,7 +565,7 @@ Matrix communicates on its X-axis.
   sensible "re-observation" signal fires (e.g. `updated_at` / `scraped_at`
   day has advanced since last seen).
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _superseded-by-three-layer-split_ (2026-04-21). `frequency_count` is removed as a column in `scripts/007_three_layer_split.sql`; cluster volume is derived from `cluster_members WHERE detached_at IS NULL`. Rescrapes append `engagement_snapshots` and, on cross-source duplicates of the same `cluster_key`, append `cluster_members` rows. The "never re-increments" semantics no longer apply — membership is first-class and append-only. See `docs/ARCHITECTURE.md` v10 §§3.1c, 5.3.
 
 ---
 
@@ -591,7 +588,7 @@ promote a new canonical if this row was the head) and reattach via the
 same path a fresh insert uses. Cleanest as a `BEFORE UPDATE OF title`
 trigger.
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _superseded-by-three-layer-split_ (2026-04-21). Evidence rows are append-only — title edits land in `observation_revisions`, never overwrite `observations.title`. The cluster rebalance is now an explicit `lib/storage/clusters.ts` → `detachFromCluster` + `attachToCluster` call that operates on aggregation tables alone; the evidence row is untouched. See `docs/ARCHITECTURE.md` v10 §3.1c.
 
 ---
 
@@ -611,7 +608,7 @@ backfill's tie-breaker, `ORDER BY created_at ASC, id ASC`).
 Alternatively, use `ON DELETE CASCADE` if canonicals should not be deleted
 without dropping the cluster.
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _superseded-by-three-layer-split_ (2026-04-21). `canonical_issue_id` as a self-FK on `issues` is gone. Canonical is now a `canonical_observation_id` column on `clusters`; deleting an observation never implicitly orphans a cluster, and cluster lifecycle (detach/reattach/promote) is explicit via `lib/storage/clusters.ts`. The `ON DELETE SET NULL` failure mode no longer exists. See `docs/ARCHITECTURE.md` v10 §5.3.
 
 ---
 
@@ -639,7 +636,7 @@ title
 The SQL backfill needs the equivalent change so the two paths stay in
 sync.
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _superseded-by-three-layer-split_ (2026-04-21). Clustering no longer has an SQL counterpart — `lib/storage/clusters.ts` is the sole writer to `clusters`/`cluster_members`. The Unicode-aware normalization in the fix sketch can be applied in TypeScript alone without needing a byte-equivalent SQL path. Addressing the actual Unicode collapse in normalization is now a straightforward follow-up on `lib/storage/clusters.ts` (tracked as a new item after the split lands). See `docs/ARCHITECTURE.md` v10 §4.7.
 
 ---
 
@@ -814,7 +811,7 @@ count-only leaderboard.
 | P0-3   | P0       | addressed           | Analytics      | `shared.ts` + `realtime.ts`               | Double-count removed; impact now owns sentiment |
 | P0-4   | P0       | addressed           | Analytics      | `lib/analytics/competitive.ts`            | Mention-window sentiment + null propagation (no fallback channel) |
 | P0-5   | P0       | addressed-in-PR-#12 | Data model     | `index.ts` + `002_*.sql:46`               | `frequency_count` now bumped atomically via RPC; canonical-filtered aggregates |
-| P0-6   | P0       | still-open          | Performance    | `app/api/stats/route.ts`                  | 6 un-cached full-table scans per page load     |
+| P0-6   | P0       | superseded-by-three-layer-split | Performance | `app/api/stats/route.ts`             | Replaced by `mv_dashboard_stats` + `mv_trend_daily` + `mv_observation_current` reads |
 | P0-7   | P0       | addressed-in-PR-#12 | Analytics      | `app/api/stats/route.ts:27-90`            | All stats aggregates + default issues list now canonical-filtered |
 | P0-8   | P0       | addressed-in-PR-#12 | Data integrity | `shared.ts:311` + `scripts/005_*.sql:16`  | TS now uses MD5 to match SQL backfill — cluster keys converge |
 | P0-9   | P0       | addressed-in-PR-#12 | Data integrity | `scripts/005_*.sql:19,21`                 | Backfill regex now uses single-backslash `\s+` and matches whitespace |
@@ -827,10 +824,10 @@ count-only leaderboard.
 | P1-6   | P1       | addressed           | Coverage       | `lib/scrapers/providers/github-discussions.ts` | GitHub Discussions + OpenAI Community scrapers |
 | P1-7   | P1       | still-open          | Feature        | `lib/scrapers/index.ts` (absent)          | Classifier never auto-fed from scraper output  |
 | P1-8   | P1       | addressed           | Coverage       | `lib/scrapers/providers/hackernews.ts:15-27` | HN query now uses `optionalWords` (OR)       |
-| P1-9   | P1       | still-open (PR #12) | Data model     | `lib/scrapers/index.ts:45-54`             | Re-scrape of existing cluster member never re-increments canonical |
-| P1-10  | P1       | still-open (PR #12) | Data model     | `lib/scrapers/index.ts:45-54`             | Title edits don't rebalance cluster / frequency / canonical linkage |
-| P1-11  | P1       | still-open (PR #12) | Data integrity | `scripts/002_*.sql:48`                    | `ON DELETE SET NULL` orphans whole cluster on canonical deletion |
-| P1-12  | P1       | still-open (PR #12) | Data quality   | `lib/scrapers/shared.ts:317`              | Unicode titles collapse to one `title:empty` bucket |
+| P1-9   | P1       | superseded-by-three-layer-split | Data model | `lib/scrapers/index.ts:45-54`         | `frequency_count` replaced by `cluster_members` append-only membership |
+| P1-10  | P1       | superseded-by-three-layer-split | Data model | `lib/scrapers/index.ts:45-54`         | Evidence is append-only; rebalance is explicit `lib/storage/clusters.ts` call |
+| P1-11  | P1       | superseded-by-three-layer-split | Data integrity | `scripts/002_*.sql:48`               | `canonical_observation_id` lives on `clusters`, not self-FK on evidence |
+| P1-12  | P1       | superseded-by-three-layer-split | Data quality | `lib/scrapers/shared.ts:317`          | Clustering no longer has SQL counterpart — Unicode fix is TS-only, tracked as follow-up |
 | P1-13  | P1       | addressed-in-PR-#12 | Schema         | `scripts/002_*.sql:47`                    | `cluster_key` is now NOT NULL + partial unique index on canonical rows |
 | P2-1   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
 | P2-2   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
