@@ -222,8 +222,12 @@ regex mismatch), P0-10 (concurrency races), P1-9 through P1-13 (re-scrape
 does not re-increment, title-edit rebalance, canonical deletion, Unicode
 collapse, nullable cluster_key).
 
-**Status:** _partial_ (PR #12 is the in-flight attempt; merging as-is would
-leave the P0-7–P1-13 follow-ups unresolved).
+**Status:** _addressed-in-PR-#12_ (commit `5f4b1ff` on
+`codex/implement-duplicate-grouping-and-aggregation`). Priority Matrix reads
+canonical rows only and `frequency_count` is now bumped SQL-side via the
+`increment_canonical_frequency` RPC on every duplicate observation. Title-edit
+rebalance and re-observation bumping of already-known externals remain as
+P1-9/P1-10 follow-ups.
 
 ---
 
@@ -250,7 +254,11 @@ issues list:
 2. Keep all rows but weight by the canonical's `frequency_count` for a
    "true report volume" framing.
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _addressed-in-PR-#12_ (commit `5f4b1ff`). Option 1 landed:
+`app/api/stats/route.ts` adds `.eq("is_canonical", true)` to the totals,
+sentiment, source, category, trend, realtime, and competitive queries;
+`app/api/issues/route.ts` defaults the table to canonical rows and drops
+the filter only when a `clusterKey` drilldown is requested.
 
 ---
 
@@ -270,7 +278,10 @@ silently fails forever for any row created before the backfill runs.
 **Fix sketch:** Pick one algorithm in both places (MD5 is fine for this
 non-security use and matches Postgres' built-in) and re-run the backfill.
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _addressed-in-PR-#12_ (commit `5f4b1ff`).
+`lib/scrapers/shared.ts` now calls `createHash("md5")`, matching the SQL
+backfill. Identical titles produce identical `cluster_key`s across the two
+paths.
 
 ---
 
@@ -292,7 +303,11 @@ and runtime keys never line up.
 runs the same titles through both the TS normalizer and the SQL
 `regexp_replace` chain and asserts identical keys.
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _addressed-in-PR-#12_ (commit `5f4b1ff`). Backfill now uses
+single-backslash patterns (`'[^a-z0-9\s]+'`, `'\s+'`), so the regex engine
+matches the `\s` whitespace class correctly under the default
+`standard_conforming_strings`. Fixture-driven test (TS↔SQL key parity)
+remains a recommended follow-up.
 
 ---
 
@@ -324,12 +339,21 @@ so the sequence is transactional, and replace the frequency read-modify-
 write with a SQL-side increment. Restore the `onConflict` upsert behavior
 on (source_id, external_id) for the "update existing row" path.
 
-**Status:** _still-open_ (new in PR #12; current `main` still has the
-pre-PR #12 `upsert(issue, { onConflict, ignoreDuplicates: false })` at
-`lib/scrapers/index.ts:76-82` with no `frequency_count` handling, so
-Priority Matrix is still a vertical line at x=1 on main — PR #12 is the
-in-flight attempt, and this entry covers the races its persist path
-introduces).
+**Status:** _addressed-in-PR-#12_ (commit `5f4b1ff`). Three tightenings
+landed together:
+  1. New migration `scripts/006_clustering_invariants_and_rpc.sql` adds a
+     partial unique index `idx_issues_unique_canonical_per_cluster` on
+     `(cluster_key) WHERE is_canonical = true`, pins `cluster_key NOT
+     NULL DEFAULT 'title:empty'`, and defines the
+     `increment_canonical_frequency(canonical_id UUID)` RPC. Same
+     invariants are baked into `scripts/002_create_issues_schema_v2.sql`
+     for fresh installs.
+  2. `persistIssueWithClustering` now calls the RPC for every canonical
+     bump (atomic SQL-side increment, no read-modify-write drift).
+  3. When two writers race on the canonical insert, the loser traps
+     Postgres `23505` unique-violation and falls through to the "attach
+     as member of the winner" path instead of silently dropping the
+     row.
 
 ---
 
@@ -641,7 +665,11 @@ CREATE UNIQUE INDEX idx_unique_canonical_per_cluster
   ON issues(cluster_key) WHERE is_canonical = true;
 ```
 
-**Status:** _still-open_ (new in PR #12).
+**Status:** _addressed-in-PR-#12_ (commit `5f4b1ff`).
+`scripts/006_clustering_invariants_and_rpc.sql` pins `cluster_key NOT
+NULL DEFAULT 'title:empty'` and adds the partial unique index
+`idx_issues_unique_canonical_per_cluster`. Fresh installs get the same
+constraints from `scripts/002_create_issues_schema_v2.sql`.
 
 ---
 
@@ -757,12 +785,12 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 | P0-2   | P0       | addressed           | Sentiment      | `lib/scrapers/shared.ts`                  | Canonical lexicon + tokenized match (topic nouns no longer conflated) |
 | P0-3   | P0       | addressed           | Analytics      | `shared.ts` + `realtime.ts`               | Double-count removed; impact now owns sentiment |
 | P0-4   | P0       | addressed           | Analytics      | `lib/analytics/competitive.ts`            | Mention-window sentiment + null propagation (no fallback channel) |
-| P0-5   | P0       | partial (PR #12)    | Data model     | `index.ts` + `002_*.sql:46`               | `frequency_count` aggregation partially addressed by PR #12; follow-ups P0-7–P1-13 |
+| P0-5   | P0       | addressed-in-PR-#12 | Data model     | `index.ts` + `002_*.sql:46`               | `frequency_count` now bumped atomically via RPC; canonical-filtered aggregates |
 | P0-6   | P0       | still-open          | Performance    | `app/api/stats/route.ts`                  | 6 un-cached full-table scans per page load     |
-| P0-7   | P0       | still-open (PR #12) | Analytics      | `app/api/stats/route.ts:27-90`            | Only Priority Matrix canonical-filtered; other widgets double-count duplicates |
-| P0-8   | P0       | still-open (PR #12) | Data integrity | `shared.ts:311` + `scripts/005_*.sql:16`  | TS uses SHA-1, SQL backfill uses MD5 — disjoint cluster key spaces |
-| P0-9   | P0       | still-open (PR #12) | Data integrity | `scripts/005_*.sql:19,21`                 | Backfill regex `'\\s+'` doesn't match whitespace under default `standard_conforming_strings` |
-| P0-10  | P0       | still-open (PR #12) | Concurrency    | `lib/scrapers/index.ts:30-99`             | Races produce duplicate canonicals, lost increments, silently dropped writes |
+| P0-7   | P0       | addressed-in-PR-#12 | Analytics      | `app/api/stats/route.ts:27-90`            | All stats aggregates + default issues list now canonical-filtered |
+| P0-8   | P0       | addressed-in-PR-#12 | Data integrity | `shared.ts:311` + `scripts/005_*.sql:16`  | TS now uses MD5 to match SQL backfill — cluster keys converge |
+| P0-9   | P0       | addressed-in-PR-#12 | Data integrity | `scripts/005_*.sql:19,21`                 | Backfill regex now uses single-backslash `\s+` and matches whitespace |
+| P0-10  | P0       | addressed-in-PR-#12 | Concurrency    | `lib/scrapers/index.ts:30-99`             | Partial unique index + atomic RPC + 23505 fall-through close all three races |
 | P1-1   | P1       | still-open          | UX / errors    | `app/page.tsx:37`                         | Error and empty state look identical           |
 | P1-2   | P1       | still-open          | UX / signal    | `app/page.tsx:142-175`                    | KPIs are all-time totals, no delta / window    |
 | P1-3   | P1       | still-open          | Data quality   | `app/page.tsx:176,185`                    | Category KPI uses fragile display-name match   |
@@ -775,7 +803,7 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 | P1-10  | P1       | still-open (PR #12) | Data model     | `lib/scrapers/index.ts:45-54`             | Title edits don't rebalance cluster / frequency / canonical linkage |
 | P1-11  | P1       | still-open (PR #12) | Data integrity | `scripts/002_*.sql:48`                    | `ON DELETE SET NULL` orphans whole cluster on canonical deletion |
 | P1-12  | P1       | still-open (PR #12) | Data quality   | `lib/scrapers/shared.ts:317`              | Unicode titles collapse to one `title:empty` bucket |
-| P1-13  | P1       | still-open (PR #12) | Schema         | `scripts/002_*.sql:47`                    | `cluster_key` nullable — canonical-per-cluster invariant unenforceable |
+| P1-13  | P1       | addressed-in-PR-#12 | Schema         | `scripts/002_*.sql:47`                    | `cluster_key` is now NOT NULL + partial unique index on canonical rows |
 | P2-1   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
 | P2-2   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
 | P2-3   | P2       | still-open          | Copy           | `app/page.tsx:254`                        | Footer omits Stack Overflow, Discussions, OpenAI Community |
@@ -830,3 +858,5 @@ Two independent follow-up reviews (2026-04-21) on `claude/review-edge-cases-sCBS
 2. **Plan-alignment / design review** — surfaced the SHA-1 vs MD5 hash mismatch between TS runtime and SQL backfill (P0-8), the nullable `cluster_key` schema gap (P1-13), and pushed back usefully on the `is_canonical DEFAULT TRUE` concern (fine — persist path writes the flag explicitly).
 
 Verdict: **Needs changes** (not redesign). The direction is right — drilldown flow works end-to-end and the data model is sound — but the three P0s (P0-7, P0-8, P0-10) and the clustering-specific P1s should land before merge.
+
+**Follow-up (2026-04-21):** commit `5f4b1ff` on the PR branch closes all four P0 blockers (P0-7, P0-8, P0-9, P0-10) — see each entry's Status line. Remaining PR-#12 scope is the P1 backlog (P1-9 re-scrape re-increment, P1-10 title-edit rebalance, P1-11 canonical-deletion orphaning, P1-12 Unicode collapse, P1-13 is now moot — cluster_key is NOT NULL after commit `5f4b1ff`).
