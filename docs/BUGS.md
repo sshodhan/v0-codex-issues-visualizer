@@ -2,6 +2,7 @@
 
 _Generated: 2026-04-20 from two independent senior-engineer end-to-end reviews._
 _Last reviewed: 2026-04-20 on branch `claude/review-pr-11-SPlkP` (after PR #11 + stacked improvements)._
+_Updated: 2026-04-21 on branch `claude/review-edge-cases-sCBSO` — clustering feature (PR #12) edge cases from two independent follow-up reviews._
 
 Each entry includes priority, a one-sentence description, the exact file:line
 reference, and a minimal fix sketch. Priorities follow the standard
@@ -198,7 +199,7 @@ not touch this file. Fix sketch still applies.
 
 ---
 
-### P0-5: `frequency_count` is never aggregated — always shows 1
+### P0-5: `frequency_count` is never aggregated — always shows 1 — PARTIALLY ADDRESSED (PR #12)
 
 **File:** `scripts/002_create_issues_schema_v2.sql:46` and
 `lib/scrapers/index.ts:65-70`
@@ -210,26 +211,125 @@ uses `frequency_count` as the frequency dimension, so every issue sits at x=1:
 the chart renders a vertical column of dots rather than a scatter, providing no
 frequency signal.
 
-**Fix sketch:**
+**Resolution status:** PR #12 introduces title-based clustering, per-cluster
+canonical rows, and increments `frequency_count` on the canonical when a
+*new* cluster member first appears. The Priority Matrix now reads canonical
+rows only, so frequency is no longer pinned to 1.
 
-```sql
--- migration
-ALTER TABLE issues ADD COLUMN IF NOT EXISTS last_seen_at timestamptz;
-```
+**Open follow-ups from PR #12** — tracked as separate entries below:
+P0-7 (stats double-count), P0-8 (SHA-1 vs MD5 mismatch), P0-9 (SQL backfill
+regex mismatch), P0-10 (concurrency races), P1-9 through P1-13 (re-scrape
+does not re-increment, title-edit rebalance, canonical deletion, Unicode
+collapse, nullable cluster_key).
 
-```ts
-// in upsert options
-mergeColumns: ["title","content","sentiment","impact_score","upvotes",
-               "comments_count","last_seen_at"],
-// plus a raw SQL increment:
-// frequency_count = issues.frequency_count + 1
-```
+**Status:** _partial_ (PR #12 is the in-flight attempt; merging as-is would
+leave the P0-7–P1-13 follow-ups unresolved).
 
-**Status:** _still-open_. `lib/scrapers/index.ts:76-82` still calls
-`upsert(issue, { onConflict, ignoreDuplicates: false })` with no
-`frequency_count` handling. Priority Matrix is therefore still a vertical
-line at x=1. Fix sketch still applies; note this also blocks a
-dedupe-to-`issues.frequency_count` strategy for cross-source clustering.
+---
+
+### P0-7: PR #12 — stats aggregates double-count cluster duplicates; only Priority Matrix is canonical-filtered
+
+**File:** `app/api/stats/route.ts:27-90` and `app/api/issues/route.ts:58-92`
+
+**Problem:** After PR #12, `priorityData` filters `is_canonical = true`
+(`app/api/stats/route.ts:100`), but every other aggregate in the same route
+(`totalIssues`, `sentimentBreakdown`, `sourceBreakdown`, `categoryBreakdown`,
+`trendByDay`, `realtimeInsights`, `competitiveMentions`) still scans the raw
+`issues` table. `/api/issues` also omits a canonical filter when `clusterKey`
+is absent. A cluster with `frequency_count = 5` therefore contributes **5
+rows** to Sentiment/Source/Category/Trend widgets but **1 point** to the
+Priority Matrix — the dashboards tell contradictory stories, and the trend
+chart will fire spurious "surge" insights whenever one viral complaint is
+reposted.
+
+**Fix sketch:** Pick one policy and apply it across all aggregates and the
+issues list:
+
+1. Filter every count to `is_canonical = true` so counts equal "distinct
+   issues", or
+2. Keep all rows but weight by the canonical's `frequency_count` for a
+   "true report volume" framing.
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
+### P0-8: PR #12 — TS clustering uses SHA-1, SQL backfill uses MD5 — the two paths produce disjoint cluster spaces
+
+**File:** `lib/scrapers/shared.ts:311` and
+`scripts/005_add_issue_clustering_and_frequency_backfill.sql:16`
+
+**Problem:** `buildIssueClusterKey` hashes the normalized title with SHA-1
+(`createHash("sha1").update(normalized).digest("hex").slice(0, 16)`), while
+the backfill SQL hashes with `md5(...)`. Even with identical normalization
+output, SHA-1 and MD5 produce completely different 16-character hex
+prefixes. Every backfilled row therefore lives in a *different* cluster
+than every newly scraped row with the same title — duplicate merging
+silently fails forever for any row created before the backfill runs.
+
+**Fix sketch:** Pick one algorithm in both places (MD5 is fine for this
+non-security use and matches Postgres' built-in) and re-run the backfill.
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
+### P0-9: PR #12 — SQL backfill regex `'\\s+'` under `standard_conforming_strings` doesn't match whitespace
+
+**File:** `scripts/005_add_issue_clustering_and_frequency_backfill.sql:19,21`
+
+**Problem:** With Postgres' default `standard_conforming_strings = on`,
+`'\\s+'` is a literal four-character string starting with a backslash.
+The regex engine then reads `\\s` as "escaped backslash followed by s" —
+matching a literal `\s` sequence, **not whitespace**. Consequence: the
+backfill never collapses whitespace, so a title like `"Codex  hangs"`
+(double space) backfills to a *different* normalized form than the TS
+path produces at runtime. Combined with P0-8 this guarantees backfilled
+and runtime keys never line up.
+
+**Fix sketch:** Use single backslashes (`'[^a-z0-9\s]+'`, `'\s+'`) or an
+`E'...'` escape-string with `E'\\s+'`. Add a fixture-driven test that
+runs the same titles through both the TS normalizer and the SQL
+`regexp_replace` chain and asserts identical keys.
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
+### P0-10: PR #12 — concurrent scrapers can produce two canonicals, lose frequency increments, and silently drop writes
+
+**File:** `lib/scrapers/index.ts:30-99` and
+`scripts/002_create_issues_schema_v2.sql:34-79`
+
+**Problem:** `persistIssueWithClustering` is a sequence of separate awaits
+(select canonical → insert/update → increment). `runAllScrapers` fans
+providers out via `Promise.all`, so three failure modes are real:
+
+1. **Two canonicals for one `cluster_key`.** Two parallel writers both see
+   no canonical and both insert with `is_canonical = true`. No partial
+   unique index rejects this.
+2. **Lost frequency increments.** The increment is a read-then-write
+   (`update({ frequency_count: (canonical.frequency_count || 1) + 1 })`).
+   Two concurrent members both read `N`, both write `N+1`, losing one.
+3. **Silently dropped writes on (source_id, external_id) races.** The
+   pre-check replaced the old `.upsert(onConflict: "source_id,external_id")`.
+   Two concurrent first-time observations both miss the pre-check and both
+   insert; the second trips the unique constraint and `persisted` returns
+   `false`, leaving the row unwritten and the drop invisible in logs.
+
+**Fix sketch:** Add a partial unique index
+`CREATE UNIQUE INDEX ON issues(cluster_key) WHERE is_canonical = true;`,
+move the whole persist-and-cluster flow into a single Postgres RPC/trigger
+so the sequence is transactional, and replace the frequency read-modify-
+write with a SQL-side increment. Restore the `onConflict` upsert behavior
+on (source_id, external_id) for the "update existing row" path.
+
+**Status:** _still-open_ (new in PR #12; current `main` still has the
+pre-PR #12 `upsert(issue, { onConflict, ignoreDuplicates: false })` at
+`lib/scrapers/index.ts:76-82` with no `frequency_count` handling, so
+Priority Matrix is still a vertical line at x=1 on main — PR #12 is the
+in-flight attempt, and this entry covers the races its persist path
+introduces).
 
 ---
 
@@ -422,6 +522,129 @@ feature in some sense, but worth stating explicitly when this lands.
 
 ---
 
+### P1-9: PR #12 — re-scraping an existing cluster member never re-increments the canonical
+
+**File:** `lib/scrapers/index.ts:45-54`
+
+**Problem:** The canonical's `frequency_count` is bumped only on the
+*first* insert of a new member (`lib/scrapers/index.ts:74-78`). When the
+same Reddit / HN / GitHub post is rescraped on a later run, the code
+hits the `existing` branch (matched on `source_id + external_id`), updates
+the row in place, and never bumps the canonical. Over weekly scrapes, a
+widely-discussed duplicate therefore contributes **1** to `frequency_count`,
+not N — which contradicts the "true report volume" framing the Priority
+Matrix communicates on its X-axis.
+
+**Fix sketch:** Pick one semantic for `frequency_count`:
+
+- **Distinct external posts** (smaller, cleaner): drop the increment
+  entirely and rename the axis to "distinct reports".
+- **Report volume over time** (larger, more useful for urgency): on the
+  existing-row branch, emit a SQL increment on the canonical when a
+  sensible "re-observation" signal fires (e.g. `updated_at` / `scraped_at`
+  day has advanced since last seen).
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
+### P1-10: PR #12 — title edits silently break cluster invariants (no rebalance)
+
+**File:** `lib/scrapers/index.ts:45-54`
+
+**Problem:** When an existing `(source_id, external_id)` row is rescraped
+with a changed title (OPs edit titles), the existing branch recomputes
+`cluster_key` and stamps it on the row without decrementing the old
+canonical's `frequency_count`, updating `is_canonical`, or re-pointing
+`canonical_issue_id`. If the edited row was itself a canonical, all its
+members are orphaned — they still reference `canonical_issue_id` pointing
+at a row that now lives in a different cluster. Aggregates drift
+permanently.
+
+**Fix sketch:** On `existing.cluster_key !== newClusterKey`, treat the
+write as a move: detach from old cluster (decrement old canonical,
+promote a new canonical if this row was the head) and reattach via the
+same path a fresh insert uses. Cleanest as a `BEFORE UPDATE OF title`
+trigger.
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
+### P1-11: PR #12 — `ON DELETE SET NULL` on `canonical_issue_id` orphans the cluster
+
+**File:** `scripts/002_create_issues_schema_v2.sql:48`
+
+**Problem:** Deleting a canonical row nulls out `canonical_issue_id` on
+every member, but each member still has `is_canonical = false`. Every
+widget that filters `is_canonical = true` then excludes the entire
+cluster — it disappears from Priority Matrix and related surfaces until
+someone manually promotes a new canonical. `frequency_count` is lost.
+
+**Fix sketch:** Add a `BEFORE DELETE ON issues WHERE is_canonical = true`
+trigger that promotes the oldest remaining member (matching the
+backfill's tie-breaker, `ORDER BY created_at ASC, id ASC`).
+Alternatively, use `ON DELETE CASCADE` if canonicals should not be deleted
+without dropping the cluster.
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
+### P1-12: PR #12 — Unicode titles collapse into a single `title:empty` bucket
+
+**File:** `lib/scrapers/shared.ts:317`
+
+**Problem:** `title.replace(/[^a-z0-9\s]/g, " ")` strips everything
+non-ASCII. Japanese, Chinese, Korean, Arabic, and Latin-1-accented titles
+("café crashes Codex") lose their semantic content; all-CJK titles
+normalize to the empty string and land in the single `"title:empty"`
+bucket — every non-Latin report is merged into one giant pseudo-cluster
+and the first such row becomes its canonical.
+
+**Fix sketch:** Normalize Unicode and preserve letters across scripts:
+
+```ts
+title
+  .toLowerCase()
+  .normalize("NFKD")
+  .replace(/\p{M}+/gu, "")           // strip combining marks
+  .replace(/[^\p{L}\p{N}\s]+/gu, " ")// keep letters/numbers from any script
+```
+
+The SQL backfill needs the equivalent change so the two paths stay in
+sync.
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
+### P1-13: PR #12 — `cluster_key` is nullable, making the canonical-per-cluster invariant unenforceable
+
+**File:** `scripts/002_create_issues_schema_v2.sql:47`
+
+**Problem:** `cluster_key TEXT` is nullable. Combined with the lack of a
+partial unique index, the database cannot express "one canonical per
+cluster". Adding
+`CREATE UNIQUE INDEX ON issues(cluster_key) WHERE is_canonical = true;`
+only works reliably once `cluster_key NOT NULL DEFAULT 'title:empty'`
+is in place (or it becomes a `GENERATED ALWAYS AS (...) STORED` column)
+— otherwise multiple NULLs slip past the index.
+
+**Fix sketch:**
+
+```sql
+ALTER TABLE issues ALTER COLUMN cluster_key SET NOT NULL;
+-- or, better:
+-- ADD COLUMN cluster_key TEXT GENERATED ALWAYS AS (...) STORED;
+CREATE UNIQUE INDEX idx_unique_canonical_per_cluster
+  ON issues(cluster_key) WHERE is_canonical = true;
+```
+
+**Status:** _still-open_ (new in PR #12).
+
+---
+
 ### P1-8: Hacker News query uses boolean AND, not OR — too few results
 
 **File:** `lib/scrapers/providers/hackernews.ts` (query string)
@@ -483,6 +706,25 @@ range input.
 
 ---
 
+### P2-4: Issues-table filter badge says "Cluster:" but renders the category label (pre-PR #12)
+
+**File:** `components/dashboard/issues-table.tsx:137`
+
+**Problem:** The header chip reads `Cluster: {globalCategoryLabel}` — it
+labels itself as "Cluster" but displays the *category* filter value.
+Predates PR #12 but surfaces more prominently now that there is an actual
+cluster filter elsewhere in the dashboard, because a user clicking a
+Priority Matrix point expects the chip to reflect the cluster-key filter.
+
+**Fix sketch:** Either correct the label to `Category:` and add a separate
+chip for the active cluster key (and the canonical's title + report
+count), or drive the chip from `activeClusterKey` when present.
+
+**Status:** _still-open_. Predates PR #12 but surfaces because PR #12
+introduces a real cluster filter that the chip would otherwise reflect.
+
+---
+
 ### P2-3: Dashboard footer still lists only "Reddit, Hacker News, GitHub" — Stack Overflow missing
 
 **File:** `app/page.tsx:224`
@@ -509,25 +751,35 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 
 ## Summary table
 
-| ID     | Priority | Status       | Area           | File                                      | One-liner                                      |
-|--------|----------|--------------|----------------|-------------------------------------------|------------------------------------------------|
-| P0-1   | P0       | addressed    | Data quality   | `lib/scrapers/providers/reddit.ts:27`     | Reddit query uses scoped Codex phrases only    |
-| P0-2   | P0       | addressed    | Sentiment      | `lib/scrapers/shared.ts`                  | Canonical lexicon + tokenized match (topic nouns no longer conflated) |
-| P0-3   | P0       | addressed    | Analytics      | `shared.ts` + `realtime.ts`               | Double-count removed; impact now owns sentiment |
-| P0-4   | P0       | addressed    | Analytics      | `lib/analytics/competitive.ts`            | Mention-window sentiment + null propagation (no fallback channel) |
-| P0-5   | P0       | still-open   | Data model     | `index.ts` + `002_*.sql:46`               | `frequency_count` never increments, always 1  |
-| P0-6   | P0       | still-open   | Performance    | `app/api/stats/route.ts`                  | 6 un-cached full-table scans per page load     |
-| P1-1   | P1       | still-open   | UX / errors    | `app/page.tsx:37`                         | Error and empty state look identical           |
-| P1-2   | P1       | still-open   | UX / signal    | `app/page.tsx:142-175`                    | KPIs are all-time totals, no delta / window    |
-| P1-3   | P1       | still-open   | Data quality   | `app/page.tsx:176,185`                    | Category KPI uses fragile display-name match   |
-| P1-4   | P1       | still-open   | UX             | `hooks/use-dashboard-data.ts:122`         | Full-text search wired but unreachable from UI |
-| P1-5   | P1       | still-open   | Performance    | `lib/scrapers/index.ts:76-82`             | Per-row upsert loop, N round-trips per scrape  |
-| P1-6   | P1       | addressed    | Coverage       | `lib/scrapers/providers/github-discussions.ts` | GitHub Discussions + OpenAI Community scrapers |
-| P1-7   | P1       | still-open   | Feature        | `lib/scrapers/index.ts` (absent)          | Classifier never auto-fed from scraper output  |
-| P1-8   | P1       | addressed    | Coverage       | `lib/scrapers/providers/hackernews.ts:15-27` | HN query now uses `optionalWords` (OR)       |
-| P2-1   | P2       | still-open   | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
-| P2-2   | P2       | still-open   | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
-| P2-3   | P2       | still-open   | Copy           | `app/page.tsx:254`                        | Footer omits Stack Overflow, Discussions, OpenAI Community |
+| ID     | Priority | Status              | Area           | File                                      | One-liner                                      |
+|--------|----------|---------------------|----------------|-------------------------------------------|------------------------------------------------|
+| P0-1   | P0       | addressed           | Data quality   | `lib/scrapers/providers/reddit.ts:27`     | Reddit query uses scoped Codex phrases only    |
+| P0-2   | P0       | addressed           | Sentiment      | `lib/scrapers/shared.ts`                  | Canonical lexicon + tokenized match (topic nouns no longer conflated) |
+| P0-3   | P0       | addressed           | Analytics      | `shared.ts` + `realtime.ts`               | Double-count removed; impact now owns sentiment |
+| P0-4   | P0       | addressed           | Analytics      | `lib/analytics/competitive.ts`            | Mention-window sentiment + null propagation (no fallback channel) |
+| P0-5   | P0       | partial (PR #12)    | Data model     | `index.ts` + `002_*.sql:46`               | `frequency_count` aggregation partially addressed by PR #12; follow-ups P0-7–P1-13 |
+| P0-6   | P0       | still-open          | Performance    | `app/api/stats/route.ts`                  | 6 un-cached full-table scans per page load     |
+| P0-7   | P0       | still-open (PR #12) | Analytics      | `app/api/stats/route.ts:27-90`            | Only Priority Matrix canonical-filtered; other widgets double-count duplicates |
+| P0-8   | P0       | still-open (PR #12) | Data integrity | `shared.ts:311` + `scripts/005_*.sql:16`  | TS uses SHA-1, SQL backfill uses MD5 — disjoint cluster key spaces |
+| P0-9   | P0       | still-open (PR #12) | Data integrity | `scripts/005_*.sql:19,21`                 | Backfill regex `'\\s+'` doesn't match whitespace under default `standard_conforming_strings` |
+| P0-10  | P0       | still-open (PR #12) | Concurrency    | `lib/scrapers/index.ts:30-99`             | Races produce duplicate canonicals, lost increments, silently dropped writes |
+| P1-1   | P1       | still-open          | UX / errors    | `app/page.tsx:37`                         | Error and empty state look identical           |
+| P1-2   | P1       | still-open          | UX / signal    | `app/page.tsx:142-175`                    | KPIs are all-time totals, no delta / window    |
+| P1-3   | P1       | still-open          | Data quality   | `app/page.tsx:176,185`                    | Category KPI uses fragile display-name match   |
+| P1-4   | P1       | still-open          | UX             | `hooks/use-dashboard-data.ts:122`         | Full-text search wired but unreachable from UI |
+| P1-5   | P1       | still-open          | Performance    | `lib/scrapers/index.ts:76-82`             | Per-row upsert loop, N round-trips per scrape  |
+| P1-6   | P1       | addressed           | Coverage       | `lib/scrapers/providers/github-discussions.ts` | GitHub Discussions + OpenAI Community scrapers |
+| P1-7   | P1       | still-open          | Feature        | `lib/scrapers/index.ts` (absent)          | Classifier never auto-fed from scraper output  |
+| P1-8   | P1       | addressed           | Coverage       | `lib/scrapers/providers/hackernews.ts:15-27` | HN query now uses `optionalWords` (OR)       |
+| P1-9   | P1       | still-open (PR #12) | Data model     | `lib/scrapers/index.ts:45-54`             | Re-scrape of existing cluster member never re-increments canonical |
+| P1-10  | P1       | still-open (PR #12) | Data model     | `lib/scrapers/index.ts:45-54`             | Title edits don't rebalance cluster / frequency / canonical linkage |
+| P1-11  | P1       | still-open (PR #12) | Data integrity | `scripts/002_*.sql:48`                    | `ON DELETE SET NULL` orphans whole cluster on canonical deletion |
+| P1-12  | P1       | still-open (PR #12) | Data quality   | `lib/scrapers/shared.ts:317`              | Unicode titles collapse to one `title:empty` bucket |
+| P1-13  | P1       | still-open (PR #12) | Schema         | `scripts/002_*.sql:47`                    | `cluster_key` nullable — canonical-per-cluster invariant unenforceable |
+| P2-1   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
+| P2-2   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
+| P2-3   | P2       | still-open          | Copy           | `app/page.tsx:254`                        | Footer omits Stack Overflow, Discussions, OpenAI Community |
+| P2-4   | P2       | still-open          | UI correctness | `components/dashboard/issues-table.tsx:137` | Chip label reads "Cluster:" but renders category label (predates PR #12) |
 
 ## Discovered during PR #11 review (not yet prioritised)
 
@@ -567,3 +819,14 @@ When PR #10 merged, two items flipped status as documented above:
 - **P0-4** → `addressed`. Mention-window sentiment, nullable contract,
   and the removal of the `fallbackSentiment` back-channel together
   close the co-mentioned-competitor attribution bug.
+
+---
+
+## PR #12 review ledger
+
+Two independent follow-up reviews (2026-04-21) on `claude/review-edge-cases-sCBSO`:
+
+1. **Data-accuracy review** — surfaced the cross-widget double-count regression (P0-7), the re-scrape-never-re-increments bug (P1-9), and the concurrency race modes (P0-10). Also flagged the nondeterministic `maybeSingle()` canonical lookup when rivals exist.
+2. **Plan-alignment / design review** — surfaced the SHA-1 vs MD5 hash mismatch between TS runtime and SQL backfill (P0-8), the nullable `cluster_key` schema gap (P1-13), and pushed back usefully on the `is_canonical DEFAULT TRUE` concern (fine — persist path writes the flag explicitly).
+
+Verdict: **Needs changes** (not redesign). The direction is right — drilldown flow works end-to-end and the data model is sound — but the three P0s (P0-7, P0-8, P0-10) and the clustering-specific P1s should land before merge.
