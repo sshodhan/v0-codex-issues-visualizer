@@ -15,28 +15,167 @@ export interface Category {
   created_at: string
 }
 
-export interface Issue {
+// ============================================================================
+// Evidence layer — raw captured data, append-only
+// ============================================================================
+
+export interface Observation {
   id: string
   source_id: string
-  category_id: string | null
-  external_id: string | null
+  external_id: string
   title: string
   content: string | null
   url: string | null
   author: string | null
-  sentiment: 'positive' | 'negative' | 'neutral'
-  sentiment_score: number
-  impact_score: number
-  frequency_count: number
+  published_at: string | null
+  captured_at: string
+}
+
+export interface ObservationRevision {
+  id: string
+  observation_id: string
+  revision_number: number
+  title: string | null
+  content: string | null
+  author: string | null
+  seen_at: string
+}
+
+export interface EngagementSnapshot {
+  id: string
+  observation_id: string
   upvotes: number
   comments_count: number
-  published_at: string | null
-  relevance_reason: string | null
-  scraped_at: string
-  last_seen_at: string
+  captured_at: string
+}
+
+// ============================================================================
+// Derivation layer — versioned, immutable
+// ============================================================================
+
+export type SentimentLabel = "positive" | "negative" | "neutral"
+
+export interface SentimentScore {
+  observation_id: string
+  algorithm_version: string
+  score: number
+  label: SentimentLabel
+  keyword_presence: number
+  computed_at: string
+}
+
+export interface CategoryAssignment {
+  observation_id: string
+  algorithm_version: string
+  category_id: string
+  confidence: number
+  computed_at: string
+}
+
+export interface ImpactScore {
+  observation_id: string
+  algorithm_version: string
+  score: number
+  inputs_jsonb: Record<string, unknown>
+  computed_at: string
+}
+
+export interface CompetitorMention {
+  observation_id: string
+  competitor: string
+  sentence_window: string | null
+  sentiment_score: number | null
+  confidence: number | null
+  lexicon_version: string
+  algorithm_version: string
+  computed_at: string
+}
+
+export interface Classification {
+  id: string
+  observation_id: string | null
+  prior_classification_id: string | null
+  report_text: string
+  category: string
+  subcategory: string
+  severity: string
+  status: string
+  reproducibility: string
+  impact: string
+  confidence: number
+  summary: string
+  root_cause_hypothesis: string
+  suggested_fix: string
+  evidence_quotes: string[]
+  alternate_categories: string[]
+  tags: string[]
+  needs_human_review: boolean
+  review_reasons: string[]
+  model_used: string | null
+  retried_with_large_model: boolean
+  algorithm_version: string
+  raw_json: unknown
   created_at: string
-  updated_at: string
-  // Joined data
+}
+
+export interface ClassificationReview {
+  id: string
+  classification_id: string
+  status: string | null
+  category: string | null
+  severity: string | null
+  needs_human_review: boolean | null
+  reviewer_notes: string | null
+  reviewed_by: string
+  reviewed_at: string
+}
+
+// ============================================================================
+// Aggregation layer — clusters, materialized-view row shapes
+// ============================================================================
+
+export interface Cluster {
+  id: string
+  cluster_key: string
+  canonical_observation_id: string
+  status: string
+  created_at: string
+}
+
+export interface ClusterMember {
+  id: string
+  cluster_id: string
+  observation_id: string
+  attached_at: string
+  detached_at: string | null
+}
+
+/**
+ * Shape of one row from `mv_observation_current` — the primary read surface
+ * for dashboard API routes. Joins the latest derivation per observation
+ * plus current cluster membership and the latest engagement snapshot.
+ */
+export interface ObservationCurrent {
+  observation_id: string
+  source_id: string
+  external_id: string
+  title: string
+  content: string | null
+  url: string | null
+  author: string | null
+  published_at: string | null
+  captured_at: string
+  cluster_id: string | null
+  cluster_key: string | null
+  is_canonical: boolean
+  frequency_count: number | null
+  sentiment: SentimentLabel | null
+  sentiment_score: number | null
+  category_id: string | null
+  impact_score: number | null
+  upvotes: number | null
+  comments_count: number | null
+  // Joined relations for API responses
   source?: Source
   category?: Category
 }
@@ -44,7 +183,7 @@ export interface Issue {
 export interface ScrapeLog {
   id: string
   source_id: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: "pending" | "running" | "completed" | "failed"
   issues_found: number
   issues_added: number
   error_message: string | null
@@ -75,7 +214,7 @@ export interface DashboardStats {
     sentiment: string
     category: string
   }>
-  top_issues: Issue[]
+  top_issues: ObservationCurrent[]
   last_scrape: ScrapeLog | null
 }
 
@@ -83,6 +222,37 @@ export interface ScrapeResult {
   source: string
   issues_found: number
   issues_added: number
-  status: 'success' | 'error'
+  status: "success" | "error"
   error?: string
+}
+
+/**
+ * Legacy `Issue` shape kept for providers that still return
+ * `Partial<Issue>` — the enrich pass will split these into evidence +
+ * derivation writes via lib/storage/. Providers should migrate to
+ * returning CapturedRecord directly; Issue is a compatibility shim.
+ */
+export interface Issue {
+  id?: string
+  source_id: string
+  category_id?: string | null
+  external_id: string
+  title: string
+  content: string | null
+  url: string | null
+  author: string | null
+  sentiment: SentimentLabel
+  sentiment_score: number
+  impact_score: number
+  frequency_count?: number
+  upvotes: number
+  comments_count: number
+  published_at: string | null
+  relevance_reason?: string | null
+  scraped_at?: string
+  last_seen_at?: string
+  created_at?: string
+  updated_at?: string
+  source?: Source
+  category?: Category
 }

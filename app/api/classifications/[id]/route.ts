@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/admin"
+import { recordClassificationReview } from "@/lib/storage/derivations"
 
+// Reviewer PATCH appends to classification_reviews (append-only).
+// The LLM baseline row in `classifications` is immutable; every reviewer
+// action — including revisions of earlier decisions — is retained.
+// See docs/ARCHITECTURE.md v10 §§3.3, 5.2.
 const reviewUpdateSchema = z.object({
   status: z.enum(["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"]).optional(),
   category: z.string().optional(),
   severity: z.enum(["critical", "high", "medium", "low"]).optional(),
   needs_human_review: z.boolean().optional(),
   reviewer_notes: z.string().optional(),
-  reviewed_by: z.string().optional(),
+  reviewed_by: z.string().min(1),
 })
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -22,28 +27,16 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       return NextResponse.json({ error: "Invalid payload", details: parsed.error.flatten() }, { status: 400 })
     }
 
-    const updates = {
-      ...parsed.data,
-      reviewed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }
-
     const supabase = createAdminClient()
-    const { data, error } = await supabase
-      .from("bug_report_classifications")
-      .update(updates)
-      .eq("id", id)
-      .select("*")
-      .single()
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    const reviewId = await recordClassificationReview(supabase, id, parsed.data)
+    if (!reviewId) {
+      return NextResponse.json({ error: "Failed to record review" }, { status: 500 })
     }
 
-    return NextResponse.json({ data })
+    return NextResponse.json({ data: { id: reviewId, classification_id: id, ...parsed.data } })
   } catch (error) {
     return NextResponse.json(
-      { error: "Failed to update classification", detail: error instanceof Error ? error.message : "unknown_error" },
+      { error: "Failed to record review", detail: error instanceof Error ? error.message : "unknown_error" },
       { status: 500 }
     )
   }

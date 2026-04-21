@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { toDbRecord, type ClassificationApiRecord } from "@/lib/classification/mapping"
+import { toClassificationPayload, type ClassificationApiRecord } from "@/lib/classification/mapping"
 import { CLASSIFIER_SYSTEM_PROMPT } from "@/lib/classification/prompt"
 import { buildClassificationUserTurn } from "@/lib/classification/report-summary"
 import { CLASSIFICATION_SCHEMA, evidenceQuotesAreSubstrings, validateEnumFields } from "@/lib/classification/schema"
+import { recordClassification } from "@/lib/storage/derivations"
 
 const classifyInputSchema = z.object({
   report_text: z.string().min(1),
@@ -37,10 +38,7 @@ const classifyInputSchema = z.object({
     )
     .optional(),
   screenshot_or_diff: z.string().optional(),
-  source_issue_id: z.string().uuid().optional(),
-  source_issue_url: z.string().url().optional(),
-  source_issue_title: z.string().optional(),
-  source_issue_sentiment: z.enum(["positive", "negative", "neutral"]).optional(),
+  observation_id: z.string().uuid().optional(),
 })
 
 function parseResponseJson(responseJson: unknown): ClassificationApiRecord {
@@ -131,12 +129,30 @@ export async function POST(request: Request) {
     const userTurn = buildClassificationUserTurn(parsed.data)
     const smallModel = process.env.CLASSIFIER_MODEL_SMALL ?? "gpt-5-mini"
     const largeModel = process.env.CLASSIFIER_MODEL_LARGE ?? "gpt-5"
+    const supabase =
+      process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+        ? createAdminClient()
+        : null
 
+    // First attempt on the small model. Every LLM call is persisted so
+    // small-vs-large drift is analyzable — see docs/ARCHITECTURE.md v10 §3.2.
     let classification = await runClassifier(userTurn, smallModel)
     let modelUsed = smallModel
     let retriedWithLargeModel = false
+    let smallModelClassificationId: string | null = null
 
     if (classification.confidence < 0.7) {
+      // Persist the small-model attempt first, then retry on large.
+      if (supabase) {
+        const hardenedSmall = applyHardReviewRules(classification, parsed.data.report_text)
+        const smallPayload = toClassificationPayload(hardenedSmall, parsed.data.report_text, {
+          observation_id: parsed.data.observation_id,
+          model_used: smallModel,
+          retried_with_large_model: false,
+        })
+        smallModelClassificationId = await recordClassification(supabase, smallPayload)
+      }
+
       classification = await runClassifier(userTurn, largeModel)
       modelUsed = largeModel
       retriedWithLargeModel = true
@@ -164,28 +180,25 @@ export async function POST(request: Request) {
     }
 
     const hardened = applyHardReviewRules(classification, parsed.data.report_text)
-    const dbRecord = toDbRecord(hardened, parsed.data.report_text, {
-      source_issue_id: parsed.data.source_issue_id,
-      source_issue_url: parsed.data.source_issue_url,
-      source_issue_title: parsed.data.source_issue_title,
-      source_issue_sentiment: parsed.data.source_issue_sentiment,
+    const payload = toClassificationPayload(hardened, parsed.data.report_text, {
+      observation_id: parsed.data.observation_id,
+      prior_classification_id: smallModelClassificationId ?? undefined,
       model_used: modelUsed,
       retried_with_large_model: retriedWithLargeModel,
     })
 
-    if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      const supabase = createAdminClient()
-      const { error } = await supabase.from("bug_report_classifications").insert(dbRecord)
-      if (error) {
-        console.error("bug_report_classifications insert failed", error)
-      }
+    let classificationId: string | null = null
+    if (supabase) {
+      classificationId = await recordClassification(supabase, payload)
     }
 
     return NextResponse.json({
       classification: hardened,
+      id: classificationId,
       meta: {
         model_used: modelUsed,
         retried_with_large_model: retriedWithLargeModel,
+        prior_classification_id: smallModelClassificationId,
       },
     })
   } catch (error) {
