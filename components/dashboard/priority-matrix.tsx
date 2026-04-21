@@ -17,11 +17,14 @@ interface PriorityMatrixProps {
   data: Array<{
     id: string
     title: string
+    cluster_key: string
     impact_score: number
     frequency_count: number
     sentiment: string
     category: { name: string; color: string } | null
   }>
+  activeClusterKey?: string | null
+  onClusterSelect?: (clusterKey: string | null) => void
 }
 
 const SENTIMENT_COLORS = {
@@ -30,8 +33,10 @@ const SENTIMENT_COLORS = {
   neutral: "#6b7280", // Gray
 }
 
-export function PriorityMatrix({ data }: PriorityMatrixProps) {
+export function PriorityMatrix({ data, activeClusterKey, onClusterSelect }: PriorityMatrixProps) {
   const chartData = data.map((item) => ({
+    id: item.id,
+    clusterKey: item.cluster_key,
     x: item.frequency_count,
     y: item.impact_score,
     z: 100,
@@ -152,13 +157,34 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
                   return null
                 }}
               />
-              <Scatter name="Issues" data={chartData}>
+              <Scatter
+                name="Issues"
+                data={chartData}
+                onClick={(point: { clusterKey?: string }) =>
+                  onClusterSelect?.(point.clusterKey || null)
+                }
+              >
                 {chartData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} />
+                  <Cell
+                    key={`cell-${index}`}
+                    fill={entry.color}
+                    stroke={entry.clusterKey === activeClusterKey ? "#f97316" : "transparent"}
+                    strokeWidth={entry.clusterKey === activeClusterKey ? 2 : 0}
+                    style={{ cursor: "pointer" }}
+                  />
                 ))}
               </Scatter>
             </ScatterChart>
           </ResponsiveContainer>
+        </div>
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => onClusterSelect?.(null)}
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+          >
+            {activeClusterKey ? "Clear selected cluster" : "Click a point to view grouped issues"}
+          </button>
         </div>
         <div className="mt-4 grid grid-cols-2 gap-4 text-xs text-muted-foreground">
           <div className="rounded-md bg-secondary/50 p-2 text-center">

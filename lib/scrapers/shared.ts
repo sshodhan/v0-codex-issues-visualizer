@@ -1,4 +1,5 @@
 import type { Category } from "../types.ts"
+import { createHash } from "crypto"
 import { evaluateCodexRelevance } from "./relevance.ts"
 import { COMPETITOR_KEYWORDS } from "../analytics/competitors.ts"
 import { NEGATIVE_WORDS, POSITIVE_WORDS } from "../analytics/sentiment-lexicon.ts"
@@ -312,4 +313,21 @@ export function dedupeIssues<T extends {
   }
 
   return unique
+}
+
+function normalizeTitleForCluster(title: string): string {
+  return normalizeWhitespace(
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+  )
+}
+
+// Deterministic title matcher used to group repeated reports into a single
+// canonical issue cluster.
+export function buildIssueClusterKey(title: string): string {
+  const normalized = normalizeTitleForCluster(title)
+  if (!normalized) return "title:empty"
+  return `title:${createHash("md5").update(normalized).digest("hex").slice(0, 16)}`
 }

@@ -27,11 +27,19 @@ function firstRelation<T>(value: T[] | T | null | undefined): T | null {
 export async function GET() {
   const supabase = await createClient()
 
+  // Every dashboard aggregate reads canonical rows only. Issues are grouped
+  // into clusters by cluster_key; the canonical carries the aggregated
+  // frequency_count so volume-aware widgets (Priority Matrix) stay accurate
+  // without duplicates re-inflating counts/sentiment/source/category/trend.
   const { count: totalIssues } = await supabase
     .from("issues")
     .select("*", { count: "exact", head: true })
+    .eq("is_canonical", true)
 
-  const { data: sentimentData } = await supabase.from("issues").select("sentiment")
+  const { data: sentimentData } = await supabase
+    .from("issues")
+    .select("sentiment")
+    .eq("is_canonical", true)
 
   const sentimentCounts = { positive: 0, negative: 0, neutral: 0 }
   sentimentData?.forEach((issue: { sentiment: Sentiment | null }) => {
@@ -40,9 +48,10 @@ export async function GET() {
     }
   })
 
-  const { data: sourceData } = await supabase.from("issues").select(`
-    source:sources(name, slug)
-  `)
+  const { data: sourceData } = await supabase
+    .from("issues")
+    .select(`source:sources(name, slug)`)
+    .eq("is_canonical", true)
 
   const sourceCounts: Record<string, number> = {}
   sourceData?.forEach((issue: SourceJoin) => {
@@ -50,9 +59,10 @@ export async function GET() {
     sourceCounts[sourceName] = (sourceCounts[sourceName] || 0) + 1
   })
 
-  const { data: categoryData } = await supabase.from("issues").select(`
-    category:categories(name, slug, color)
-  `)
+  const { data: categoryData } = await supabase
+    .from("issues")
+    .select(`category:categories(name, slug, color)`)
+    .eq("is_canonical", true)
 
   const categoryCounts: Record<string, { count: number; color: string }> = {}
   categoryData?.forEach((issue: CategoryJoin) => {
@@ -71,6 +81,7 @@ export async function GET() {
   const { data: trendData } = await supabase
     .from("issues")
     .select("published_at, sentiment")
+    .eq("is_canonical", true)
     .gte("published_at", thirtyDaysAgo.toISOString())
     .order("published_at", { ascending: true })
 
@@ -95,11 +106,12 @@ export async function GET() {
   const { data: priorityData } = await supabase.from("issues").select(`
     id,
     title,
+    cluster_key,
     impact_score,
     frequency_count,
     sentiment,
     category:categories(name, color)
-  `)
+  `).eq("is_canonical", true)
 
   // Pull a single 6-day window once and split it for both realtime insights
   // and recent competitive mentions (avoids duplicate queries).
@@ -119,6 +131,7 @@ export async function GET() {
       category:categories(name, slug, color),
       source:sources(name, slug)
     `)
+    .eq("is_canonical", true)
     .gte("published_at", sixDaysAgo.toISOString())
     .order("published_at", { ascending: false })
 

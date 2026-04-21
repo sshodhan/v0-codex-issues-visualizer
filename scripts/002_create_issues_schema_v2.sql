@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS issues (
   sentiment_score DECIMAL(3, 2) DEFAULT 0,
   impact_score INTEGER DEFAULT 1 CHECK (impact_score BETWEEN 1 AND 10),
   frequency_count INTEGER DEFAULT 1,
+  cluster_key TEXT NOT NULL DEFAULT 'title:empty',
+  canonical_issue_id UUID REFERENCES issues(id) ON DELETE SET NULL,
+  is_canonical BOOLEAN DEFAULT TRUE,
   upvotes INTEGER DEFAULT 0,
   comments_count INTEGER DEFAULT 0,
   published_at TIMESTAMPTZ,
@@ -69,6 +72,14 @@ CREATE TABLE IF NOT EXISTS scrape_logs (
 CREATE INDEX IF NOT EXISTS idx_issues_source ON issues(source_id);
 CREATE INDEX IF NOT EXISTS idx_issues_category ON issues(category_id);
 CREATE INDEX IF NOT EXISTS idx_issues_sentiment ON issues(sentiment);
+CREATE INDEX IF NOT EXISTS idx_issues_cluster_key ON issues(cluster_key);
+CREATE INDEX IF NOT EXISTS idx_issues_canonical ON issues(is_canonical);
+-- Partial unique index enforces "exactly one canonical per cluster" at the DB
+-- so concurrent writers cannot both insert rival canonicals for the same
+-- cluster_key. The application recovers from the resulting 23505 by
+-- retrying as a non-canonical member.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_unique_canonical_per_cluster
+  ON issues(cluster_key) WHERE is_canonical = true;
 CREATE INDEX IF NOT EXISTS idx_issues_published_at ON issues(published_at);
 CREATE INDEX IF NOT EXISTS idx_issues_scraped_at ON issues(scraped_at);
 CREATE INDEX IF NOT EXISTS idx_scrape_logs_source ON scrape_logs(source_id);
@@ -123,3 +134,15 @@ CREATE POLICY "service_delete_issues" ON issues FOR DELETE TO service_role USING
 CREATE POLICY "service_insert_scrape_logs" ON scrape_logs FOR INSERT TO service_role WITH CHECK (true);
 CREATE POLICY "service_update_scrape_logs" ON scrape_logs FOR UPDATE TO service_role USING (true);
 CREATE POLICY "service_delete_scrape_logs" ON scrape_logs FOR DELETE TO service_role USING (true);
+
+-- Atomic helper used by lib/scrapers/index.ts persistIssueWithClustering.
+-- Expressing the increment SQL-side avoids read-modify-write drift when two
+-- concurrent scrapers add members to the same cluster.
+CREATE OR REPLACE FUNCTION increment_canonical_frequency(canonical_id UUID)
+RETURNS void
+LANGUAGE sql
+AS $$
+  UPDATE issues
+  SET frequency_count = frequency_count + 1
+  WHERE id = canonical_id;
+$$;

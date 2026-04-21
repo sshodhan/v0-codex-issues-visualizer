@@ -23,6 +23,7 @@ export interface DashboardStats {
   priorityMatrix: Array<{
     id: string
     title: string
+    cluster_key: string
     impact_score: number
     frequency_count: number
     sentiment: string
@@ -90,6 +91,9 @@ export interface Issue {
   sentiment_score: number
   impact_score: number
   frequency_count: number
+  cluster_key: string
+  canonical_issue_id: string | null
+  is_canonical: boolean
   upvotes: number
   comments_count: number
   published_at: string
@@ -122,6 +126,7 @@ export function useIssues(filters?: {
   sortBy?: string
   order?: string
   q?: string
+  clusterKey?: string
 }) {
   const params = new URLSearchParams()
   if (filters?.source) params.set("source", filters.source)
@@ -131,6 +136,7 @@ export function useIssues(filters?: {
   if (filters?.sortBy) params.set("sortBy", filters.sortBy)
   if (filters?.order) params.set("order", filters.order)
   if (filters?.q) params.set("q", filters.q)
+  if (filters?.clusterKey) params.set("clusterKey", filters.clusterKey)
 
   const { data, error, isLoading, mutate } = useSWR<{
     data: Issue[]

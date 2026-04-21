@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import type { Issue, Source, Category } from "@/lib/types"
-import { dedupeIssues } from "@/lib/scrapers/shared"
+import { dedupeIssues, buildIssueClusterKey } from "@/lib/scrapers/shared"
 import { scrapeReddit } from "@/lib/scrapers/providers/reddit"
 import { scrapeHackerNews } from "@/lib/scrapers/providers/hackernews"
 import { scrapeGitHub } from "@/lib/scrapers/providers/github"
@@ -36,6 +36,110 @@ interface RunSummary {
   added: number
   errors: string[]
   bySource: Array<{ source: string; found: number; added: number; status: "success" | "error"; error?: string }>
+}
+
+// Postgres unique_violation SQLSTATE — emitted when the partial unique index
+// on (cluster_key) WHERE is_canonical rejects a second canonical for the same
+// cluster, or when (source_id, external_id) collides under concurrent inserts.
+const PG_UNIQUE_VIOLATION = "23505"
+
+type SupabaseError = { code?: string } | null
+
+async function findCanonicalId(
+  supabase: ReturnType<typeof createAdminClient>,
+  clusterKey: string
+): Promise<string | null> {
+  const { data } = await supabase
+    .from("issues")
+    .select("id")
+    .eq("cluster_key", clusterKey)
+    .eq("is_canonical", true)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  return data?.id ?? null
+}
+
+async function insertMemberAndBump(
+  supabase: ReturnType<typeof createAdminClient>,
+  issue: Partial<Issue>,
+  clusterKey: string,
+  canonicalId: string
+): Promise<boolean> {
+  const { error: insertError } = await supabase.from("issues").insert({
+    ...issue,
+    cluster_key: clusterKey,
+    canonical_issue_id: canonicalId,
+    is_canonical: false,
+    frequency_count: 1,
+  })
+  if (insertError) return false
+
+  const { error: rpcError } = await supabase.rpc(
+    "increment_canonical_frequency",
+    { canonical_id: canonicalId }
+  )
+  return !rpcError
+}
+
+async function persistIssueWithClustering(
+  supabase: ReturnType<typeof createAdminClient>,
+  issue: Partial<Issue>
+): Promise<boolean> {
+  if (!issue.source_id || !issue.external_id || !issue.title) return false
+
+  const clusterKey = buildIssueClusterKey(issue.title)
+
+  // If this exact external row already exists, update mutable content only.
+  // We intentionally do NOT rewrite cluster_key / canonical linkage /
+  // frequency_count here — title edits would otherwise move the row to a new
+  // cluster without rebalancing the old canonical's count, creating drift.
+  // Handling title edits end-to-end is tracked as P1-10 in docs/BUGS.md.
+  const { data: existing } = await supabase
+    .from("issues")
+    .select("id")
+    .eq("source_id", issue.source_id)
+    .eq("external_id", issue.external_id)
+    .maybeSingle()
+
+  if (existing) {
+    const { error } = await supabase
+      .from("issues")
+      .update(issue)
+      .eq("id", existing.id)
+    return !error
+  }
+
+  // New external row. If a canonical already exists for this cluster, attach
+  // as a non-canonical member and atomically bump the canonical's frequency.
+  const existingCanonicalId = await findCanonicalId(supabase, clusterKey)
+  if (existingCanonicalId) {
+    return insertMemberAndBump(supabase, issue, clusterKey, existingCanonicalId)
+  }
+
+  // Attempt to seed the cluster as its canonical. The partial unique index
+  // idx_issues_unique_canonical_per_cluster ensures at most one canonical
+  // per cluster_key survives under concurrent writers.
+  const { error: canonicalInsertError } = await supabase.from("issues").insert({
+    ...issue,
+    cluster_key: clusterKey,
+    canonical_issue_id: null,
+    is_canonical: true,
+    frequency_count: 1,
+  })
+
+  if (!canonicalInsertError) return true
+
+  // If another writer won the canonical slot, retry as a member pointed at
+  // them. Any other error (validation, FK, RLS, etc.) is surfaced as a
+  // failure so the scraper records the drop rather than silently succeeding.
+  if ((canonicalInsertError as SupabaseError)?.code !== PG_UNIQUE_VIOLATION) {
+    return false
+  }
+
+  const winnerCanonicalId = await findCanonicalId(supabase, clusterKey)
+  if (!winnerCanonicalId) return false
+  return insertMemberAndBump(supabase, issue, clusterKey, winnerCanonicalId)
 }
 
 export async function runAllScrapers(): Promise<RunSummary> {
@@ -74,11 +178,8 @@ export async function runAllScrapers(): Promise<RunSummary> {
         let added = 0
 
         for (const issue of issues) {
-          const { error } = await supabase.from("issues").upsert(issue, {
-            onConflict: "source_id,external_id",
-            ignoreDuplicates: false,
-          })
-          if (!error) added++
+          const persisted = await persistIssueWithClustering(supabase, issue)
+          if (persisted) added++
         }
 
         if (log) {
@@ -166,11 +267,8 @@ export async function runScraper(slug: string): Promise<RunSummary> {
   const issues = dedupeIssues(await scraper(source, categories))
   let added = 0
   for (const issue of issues) {
-    const { error } = await supabase.from("issues").upsert(issue, {
-      onConflict: "source_id,external_id",
-      ignoreDuplicates: false,
-    })
-    if (!error) added++
+    const persisted = await persistIssueWithClustering(supabase, issue)
+    if (persisted) added++
   }
 
   return {

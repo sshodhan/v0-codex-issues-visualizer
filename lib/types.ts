@@ -28,6 +28,9 @@ export interface Issue {
   sentiment_score: number
   impact_score: number
   frequency_count: number
+  cluster_key: string
+  canonical_issue_id: string | null
+  is_canonical: boolean
   upvotes: number
   comments_count: number
   published_at: string | null

@@ -32,13 +32,16 @@ export default function DashboardPage() {
     sentiment?: string
     sortBy?: string
     order?: string
+    clusterKey?: string
   }>({})
+  const [activeClusterKey, setActiveClusterKey] = useState<string | null>(null)
 
   const { stats, isLoading: statsLoading, refresh: refreshStats } = useDashboardStats()
   const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues({
     ...issueFilters,
     days: globalDays || undefined,
     category: globalCategory === "all" ? undefined : globalCategory,
+    clusterKey: activeClusterKey || undefined,
   })
   const { scrape } = useScrape()
   const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({ limit: 30 })
@@ -208,7 +211,13 @@ export default function DashboardPage() {
             </div>
 
             {/* Priority Matrix */}
-            <PriorityMatrix data={stats.priorityMatrix} />
+            <PriorityMatrix
+              data={stats.priorityMatrix}
+              activeClusterKey={activeClusterKey}
+              onClusterSelect={(clusterKey) => {
+                setActiveClusterKey(clusterKey)
+              }}
+            />
 
             {/* Real-time insights + competitive mentions */}
             <div className="grid gap-6 lg:grid-cols-2">
