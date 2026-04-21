@@ -777,6 +777,34 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 
 ---
 
+### P2-5: Count-centric KPI framing obscured decision-making in top-priority view
+
+**Files/components affected:** `app/page.tsx` (top widgets + priority framing),
+`components/dashboard/priority-matrix.tsx` (priority context handoff),
+`components/dashboard/issues-table.tsx` (representative issue surfacing).
+
+**Problem (previous anti-pattern):** The top-of-dashboard prioritization
+experience over-indexed on raw counts, which encouraged "largest bucket wins"
+interpretations and hid why a category was urgent. Users had to mentally join
+count-heavy widgets with separate sentiment and issue-detail regions to infer
+actionability.
+
+**Final resolution:** The dashboard now uses a story-first priority framing:
+each top priority is presented as **category + sentiment + representative
+issues**, so urgency is read as a narrative with evidence rather than a
+count-only leaderboard.
+
+**Closed on:** 2026-04-21.
+
+**Verification checklist (explicit):**
+- [x] Top widgets no longer rely on raw counts as the primary ranking signal.
+- [x] Category↔sentiment relationship is visible in one view, without mental joins.
+- [x] Each top priority includes exemplar issue evidence (representative issues).
+
+**Status:** _addressed_ (closed 2026-04-21).
+
+---
+
 ## Summary table
 
 | ID     | Priority | Status              | Area           | File                                      | One-liner                                      |
@@ -808,6 +836,7 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 | P2-2   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
 | P2-3   | P2       | still-open          | Copy           | `app/page.tsx:254`                        | Footer omits Stack Overflow, Discussions, OpenAI Community |
 | P2-4   | P2       | still-open          | UI correctness | `components/dashboard/issues-table.tsx:137` | Chip label reads "Cluster:" but renders category label (predates PR #12) |
+| P2-5   | P2       | addressed           | Prioritization | `app/page.tsx` + dashboard components     | Story-first priority framing (category + sentiment + representative issues) replaces count-centric KPI ranking |
 
 ## Discovered during PR #11 review (not yet prioritised)
 
