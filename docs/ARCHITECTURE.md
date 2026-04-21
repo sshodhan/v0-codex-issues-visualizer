@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20 (v8 — integrates with PR #11 urgency rework (sentiment weight in impact, not urgency) + `keyword_presence` signal; fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-21 (v9 — issue-clustering / canonical-frequency data model documented, edge cases captured (PR #12); v8 — integrates with PR #11 urgency rework (sentiment weight in impact, not urgency) + `keyword_presence` signal; fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -93,8 +93,15 @@ Dashboard UI (app/page.tsx)
 2. Source adapters fetch raw records.
 3. Candidates are cleaned and filtered (normalize whitespace, relevance, low-value exclusions).
 4. Remaining records are enriched with sentiment, heuristic category, and impact score.
-5. Records are deduped and upserted to `issues` on `(source_id, external_id)`.
+5. Records are deduped and passed to `persistIssueWithClustering` (`lib/scrapers/index.ts`), which derives a deterministic `cluster_key` from the normalized title and either (a) updates the existing `(source_id, external_id)` row, (b) links the new row to an existing canonical and increments the canonical's `frequency_count`, or (c) inserts a new canonical row for a fresh cluster. Raw-report traceability is preserved via `canonical_issue_id`.
 6. Run metadata is written to `scrape_logs`.
+
+#### 3.1.1 Clustering invariants (target state)
+
+- **Exactly one canonical per `cluster_key`.** Enforced today only by in-process read-then-write; should be tightened to a partial unique index (`CREATE UNIQUE INDEX … ON issues(cluster_key) WHERE is_canonical = true`) with the persist path wrapped in a Postgres function or atomic `INSERT … ON CONFLICT` so concurrent scrapers cannot create rival canonicals.
+- **Non-canonical rows point to their canonical** (`canonical_issue_id`) and keep their own raw content for traceability.
+- **`frequency_count` lives only on the canonical row**; members stay at 1. Incrementing should be atomic (SQL-side `frequency_count = frequency_count + 1`), not a JS read-modify-write.
+- **`cluster_key` normalization must be identical in TS and SQL.** The TS path (`buildIssueClusterKey` in `lib/scrapers/shared.ts`) and any backfill SQL must use the same algorithm and hash or the backfill will not merge with scraped rows. Today they diverge (see `docs/BUGS.md`); both must settle on one hash (MD5 matches Postgres' built-in) and identical regex semantics under `standard_conforming_strings = on`.
 
 ### 3.2 LLM classification flow (new)
 
@@ -133,17 +140,23 @@ This enables end-to-end provenance from dashboard insight → classifier decisio
 
 Layout:
 - `lib/scrapers/index.ts` — orchestrator. `runAllScrapers()` (parallel) and
-  `runScraper(slug)` (single-source). Owns scrape_logs lifecycle and upserts.
+  `runScraper(slug)` (single-source). Owns scrape_logs lifecycle and writes
+  rows via `persistIssueWithClustering`, which derives a `cluster_key` per
+  issue and manages canonical/non-canonical linkage + `frequency_count`.
 - `lib/scrapers/shared.ts` — relevance filter (delegates to `relevance.ts`),
   ingest-time sentiment classifier (`analyzeSentiment`, consumes the
   canonical lexicon in `lib/analytics/sentiment-lexicon.ts`), topic-noun
   presence counter (`calculateKeywordPresence`, drawn from
   `NEGATIVE_KEYWORD_PATTERNS`), category scoring, impact scoring,
-  retry/backoff fetch helper, dedupe. **Does not own polarity word lists or
-  competitor phrases** — those are imported from the analytics-layer
-  canonical modules. `analyzeSentiment` returns `{ sentiment, score,
-  keyword_presence }`; providers today destructure only the first two. See
-  `docs/SCORING.md` for the current signal contract.
+  competitor keyword detection, retry/backoff fetch helper, dedupe, and the
+  deterministic `buildIssueClusterKey` + `normalizeTitleForCluster` helpers
+  that drive clustering. The SQL counterpart in
+  `scripts/005_add_issue_clustering_and_frequency_backfill.sql` must be kept
+  byte-for-byte equivalent (same normalization, same hash algorithm). **Does
+  not own polarity word lists or competitor phrases** — those are imported
+  from the analytics-layer canonical modules. `analyzeSentiment` returns
+  `{ sentiment, score, keyword_presence }`; providers today destructure only
+  the first two. See `docs/SCORING.md` for the current signal contract.
 - `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts` —
   one provider per file. Each owns its source-specific query and the
   mapping into a `Partial<Issue>`. `github-discussions` and `openai-community`
@@ -181,6 +194,17 @@ Responsibilities:
 - Pull a single 6-day window once and feed both realtime and competitive
   analytics from it (avoids duplicate queries).
 - Normalize Supabase relation payload shape (`firstRelation`).
+- Feed the Priority Matrix from canonical rows only (`is_canonical = true`)
+  so cluster frequency is surfaced without double-counting duplicates.
+
+**Canonical-filter policy (open gap).** The Priority Matrix is canonical-
+filtered, but the other aggregates in this route (`totalIssues`,
+`sentimentBreakdown`, `sourceBreakdown`, `categoryBreakdown`, `trendByDay`,
+`realtimeInsights`, `competitiveMentions`) and `/api/issues` still query the
+full `issues` table. Until the filter policy is unified, the Priority Matrix
+and the rest of the dashboard count differently. Resolve by either applying
+`is_canonical = true` uniformly or by weighting by `frequency_count` in
+aggregations — see `docs/BUGS.md`.
 
 Heavy analytics live in `lib/analytics/*`:
 - `lib/analytics/realtime.ts` — urgency-ranked category insights with
@@ -318,7 +342,22 @@ Extension guidance:
 
 - `sources`: source registry.
 - `categories`: canonical heuristic categories.
-- `issues`: normalized issue facts from public sources.
+- `issues`: normalized issue facts from public sources, now with clustering
+  metadata:
+  - `cluster_key TEXT` — deterministic title-based grouping key
+    (`title:<16-char hash>`). **Should be `NOT NULL`** with a default of
+    `'title:empty'`; today nullable.
+  - `canonical_issue_id UUID REFERENCES issues(id) ON DELETE SET NULL` —
+    non-canonical rows point to their cluster's canonical. `ON DELETE SET
+    NULL` leaves members orphaned when a canonical is deleted; a trigger
+    should promote the oldest remaining member instead.
+  - `is_canonical BOOLEAN DEFAULT TRUE` — marks the representative row for
+    a cluster. Default is `TRUE` for ergonomic inserts; the persist path
+    writes the flag explicitly.
+  - `frequency_count INTEGER DEFAULT 1` — aggregated report count, kept on
+    the canonical row only. Increments should be atomic (SQL-side) and, for
+    repeat observations of already-known external posts, should bump the
+    canonical's count past the first-sighting insert.
 - `scrape_logs`: ingestion run metadata and failures.
 
 ### 5.2 New triage table
@@ -333,6 +372,11 @@ Extension guidance:
 ### 5.3 Key indexes and constraints
 
 - Existing unique key for issues: `(source_id, external_id)`.
+- Clustering lookup indexes: `idx_issues_cluster_key` on `cluster_key`,
+  `idx_issues_canonical` on `is_canonical`.
+- **Target (not yet in place):** partial unique index
+  `ON issues(cluster_key) WHERE is_canonical = true` to prevent concurrent
+  scrapers from inserting rival canonicals for the same cluster.
 - Triage index: `(category, severity, needs_human_review, created_at DESC)`.
 - Traceability index: `(source_issue_id, created_at DESC)`.
 
