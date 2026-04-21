@@ -564,7 +564,13 @@ Checklist:
 2. **Human authority over model output**: AI suggests; reviewer decides.
 3. **Boundary validation is non-negotiable**: reject malformed/unsafe model outputs.
 4. **Schema evolution with replayability**: keep raw records and model metadata.
-5. **Actionability over vanity metrics**: optimize for triage decisions, not chart volume.
+5. **Actionability over vanity metrics**: prioritize category risk narratives over raw counts; any "top issue" claim must include sentiment composition (negative/neutral/positive mix), and surfaced priorities must include at least one representative issue title/link for evidence.
+6. **Comparative context over absolute volume**: rising category risk and worsening negative-share trend are stronger action signals than high total issue count alone.
+
+### Dashboard UX doctrine
+
+- One orientation metric is allowed: **total reports**.
+- Every other headline widget must answer: **what should we fix next, and why**.
 
 ---
 
