@@ -36,7 +36,7 @@ export function RealtimeInsights({ insights }: RealtimeInsightsProps) {
           What engineers should fix now
         </CardTitle>
         <CardDescription>
-          Ranked from the last 72 hours by urgency (volume + momentum + impact + negative sentiment).
+          Ranked from the last 72 hours by urgency (volume + momentum + impact + source diversity).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
