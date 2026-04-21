@@ -9,6 +9,10 @@ CREATE INDEX IF NOT EXISTS idx_issues_cluster_key ON issues(cluster_key);
 CREATE INDEX IF NOT EXISTS idx_issues_canonical ON issues(is_canonical);
 
 -- Deterministic title normalization and key generation.
+-- Kept in lock-step with buildIssueClusterKey() in lib/scrapers/shared.ts:
+-- md5 of lower → strip-non-alphanumeric → collapse-whitespace, first 16 hex chars.
+-- Regex patterns use single-backslash escapes so the engine actually matches the
+-- \s whitespace class under the default standard_conforming_strings setting.
 UPDATE issues
 SET cluster_key = CONCAT(
   'title:',
@@ -16,8 +20,8 @@ SET cluster_key = CONCAT(
     md5(
       trim(
         regexp_replace(
-          regexp_replace(lower(coalesce(title, '')), '[^a-z0-9\\s]+', ' ', 'g'),
-          '\\s+',
+          regexp_replace(lower(coalesce(title, '')), '[^a-z0-9\s]+', ' ', 'g'),
+          '\s+',
           ' ',
           'g'
         )

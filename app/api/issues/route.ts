@@ -88,7 +88,12 @@ export async function GET(request: NextRequest) {
   }
 
   if (clusterKey) {
+    // Drilldown: show every row in the cluster (canonical + members).
     query = query.eq("cluster_key", clusterKey)
+  } else {
+    // Default list: canonical representatives only so repeat reports of the
+    // same issue don't flood the table. Users drill in via clusterKey.
+    query = query.eq("is_canonical", true)
   }
 
   const { data, error, count } = await query

@@ -329,5 +329,5 @@ function normalizeTitleForCluster(title: string): string {
 export function buildIssueClusterKey(title: string): string {
   const normalized = normalizeTitleForCluster(title)
   if (!normalized) return "title:empty"
-  return `title:${createHash("sha1").update(normalized).digest("hex").slice(0, 16)}`
+  return `title:${createHash("md5").update(normalized).digest("hex").slice(0, 16)}`
 }
