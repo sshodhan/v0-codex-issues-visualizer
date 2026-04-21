@@ -1,0 +1,240 @@
+"use client"
+
+import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { cn } from "@/lib/utils"
+import { 
+  AlertTriangle, 
+  TrendingUp, 
+  TrendingDown,
+  ArrowRight,
+  ExternalLink,
+  Sparkles
+} from "lucide-react"
+
+interface HeroInsightProps {
+  topInsight: {
+    category: string
+    categorySlug: string
+    headline: string
+    subheadline: string
+    metrics: {
+      total: number
+      negativeShare: number
+      momentum: number
+      sourcesReporting: number
+    }
+    topIssues: Array<{
+      id: string
+      title: string
+      url: string | null
+      source: string
+      impact_score: number
+    }>
+  } | null
+  onNavigateToCategory?: (slug: string) => void
+  className?: string
+}
+
+export function HeroInsight({ 
+  topInsight, 
+  onNavigateToCategory,
+  className 
+}: HeroInsightProps) {
+  if (!topInsight) {
+    return (
+      <Card className={cn("bg-card border-border", className)}>
+        <CardContent className="p-8 text-center">
+          <Sparkles className="h-10 w-10 text-muted-foreground mx-auto mb-4" />
+          <h2 className="text-xl font-semibold text-foreground mb-2">
+            No urgent insights detected
+          </h2>
+          <p className="text-muted-foreground">
+            All categories are within normal thresholds. Check back after your next data sync.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const { category, categorySlug, headline, subheadline, metrics, topIssues } = topInsight
+  const isRising = metrics.momentum > 0
+
+  return (
+    <Card className={cn(
+      "relative overflow-hidden bg-gradient-to-br from-card to-card/80 border-border shadow-lg",
+      className
+    )}>
+      {/* Accent stripe */}
+      <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[var(--negative)] via-[var(--insight-warning)] to-[var(--negative)]" />
+      
+      <CardContent className="p-6 md:p-8">
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6">
+          {/* Main insight content */}
+          <div className="flex-1 min-w-0">
+            {/* Header badges */}
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              <Badge 
+                variant="outline" 
+                className="bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20 font-semibold"
+              >
+                <AlertTriangle className="h-3 w-3 mr-1" />
+                Needs Attention
+              </Badge>
+              <Badge 
+                variant="outline"
+                className={cn(
+                  "font-medium",
+                  isRising 
+                    ? "bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20" 
+                    : "bg-[var(--positive)]/10 text-[var(--positive)] border-[var(--positive)]/20"
+                )}
+              >
+                {isRising ? (
+                  <TrendingUp className="h-3 w-3 mr-1" />
+                ) : (
+                  <TrendingDown className="h-3 w-3 mr-1" />
+                )}
+                {isRising ? "+" : ""}{metrics.momentum}% vs last period
+              </Badge>
+            </div>
+
+            {/* Headline */}
+            <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-2 text-balance">
+              {headline}
+            </h2>
+            <p className="text-muted-foreground text-lg mb-6">
+              {subheadline}
+            </p>
+
+            {/* Metrics row */}
+            <div className="flex flex-wrap gap-6 mb-6">
+              <div className="flex flex-col">
+                <span className="text-2xl font-bold text-foreground">{metrics.total}</span>
+                <span className="text-sm text-muted-foreground">total signals</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-2xl font-bold text-[var(--negative)]">{Math.round(metrics.negativeShare * 100)}%</span>
+                <span className="text-sm text-muted-foreground">negative sentiment</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-2xl font-bold text-foreground">{metrics.sourcesReporting}</span>
+                <span className="text-sm text-muted-foreground">sources reporting</span>
+              </div>
+            </div>
+
+            {/* CTA */}
+            <Button 
+              onClick={() => onNavigateToCategory?.(categorySlug)}
+              className="gap-2"
+              size="lg"
+            >
+              Review {category} issues
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Evidence panel */}
+          <div className="lg:w-96 lg:pl-6 lg:border-l lg:border-border">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+              Representative Issues
+            </h3>
+            <div className="space-y-3">
+              {topIssues.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No sample issues available.</p>
+              ) : (
+                topIssues.slice(0, 3).map((issue, index) => (
+                  <div 
+                    key={issue.id} 
+                    className="bg-secondary/50 rounded-lg p-3 hover:bg-secondary transition-colors"
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="text-xs font-bold text-muted-foreground shrink-0">
+                        #{index + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        {issue.url ? (
+                          <a 
+                            href={issue.url} 
+                            target="_blank" 
+                            rel="noreferrer"
+                            className="text-sm font-medium text-foreground hover:text-primary line-clamp-2 flex items-start gap-1"
+                          >
+                            <span className="flex-1">{issue.title}</span>
+                            <ExternalLink className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" />
+                          </a>
+                        ) : (
+                          <p className="text-sm font-medium text-foreground line-clamp-2">
+                            {issue.title}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-xs text-muted-foreground">{issue.source}</span>
+                          <span className="text-xs text-muted-foreground">
+                            Impact: {issue.impact_score.toFixed(1)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// Utility to compute hero insight from realtime insights data
+export function computeHeroInsight(
+  realtimeInsights: Array<{
+    category: { name: string; slug: string; color: string }
+    nowCount: number
+    previousCount: number
+    momentum: number
+    avgImpact: number
+    negativeRatio: number
+    sourceDiversity: number
+    urgencyScore: number
+    topIssues: Array<{
+      id: string
+      title: string
+      url: string | null
+      source: string
+      impact_score: number
+    }>
+  }>
+): HeroInsightProps["topInsight"] {
+  if (!realtimeInsights || realtimeInsights.length === 0) {
+    return null
+  }
+
+  // Get the top insight by urgency score
+  const top = realtimeInsights[0]
+  
+  // Skip if it's the "Other" category - use second highest instead
+  const insight = top.category.name.toLowerCase() === "other" && realtimeInsights.length > 1
+    ? realtimeInsights[1]
+    : top
+
+  const isRising = insight.momentum > 0
+  const momentumText = isRising ? "escalating" : "stabilizing"
+  const negativeText = insight.negativeRatio > 70 ? "overwhelmingly negative" : insight.negativeRatio > 50 ? "mostly negative" : "mixed"
+
+  return {
+    category: insight.category.name,
+    categorySlug: insight.category.slug,
+    headline: `${insight.category.name} issues are ${momentumText}`,
+    subheadline: `${insight.nowCount} signals in the last 72 hours with ${negativeText} sentiment. ${insight.sourceDiversity} source${insight.sourceDiversity !== 1 ? "s" : ""} reporting this theme.`,
+    metrics: {
+      total: insight.nowCount,
+      negativeShare: insight.negativeRatio / 100,
+      momentum: insight.momentum,
+      sourcesReporting: insight.sourceDiversity,
+    },
+    topIssues: insight.topIssues,
+  }
+}

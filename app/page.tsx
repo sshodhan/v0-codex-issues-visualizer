@@ -2,8 +2,15 @@
 
 import { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
-import { RefreshCw, AlertCircle, Loader2, BarChart3 } from "lucide-react"
-import { StatCard } from "@/components/dashboard/stat-card"
+import { RefreshCw, Loader2, BarChart3 } from "lucide-react"
+import { StatCard, InsightKpiCard } from "@/components/dashboard/stat-card"
+import { HeroInsight, computeHeroInsight } from "@/components/dashboard/hero-insight"
+import { 
+  LoadingState, 
+  EmptyState, 
+  ErrorState,
+  DashboardSkeleton 
+} from "@/components/dashboard/dashboard-states"
 import { SentimentChart } from "@/components/dashboard/sentiment-chart"
 import { SourceChart } from "@/components/dashboard/source-chart"
 import { TrendChart } from "@/components/dashboard/trend-chart"
@@ -34,7 +41,7 @@ export default function DashboardPage() {
     order?: string
   }>({})
 
-  const { stats, isLoading: statsLoading, refresh: refreshStats } = useDashboardStats()
+  const { stats, isLoading: statsLoading, isError: statsError, refresh: refreshStats } = useDashboardStats()
   const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues({
     ...issueFilters,
     days: globalDays || undefined,
@@ -60,6 +67,12 @@ export default function DashboardPage() {
     setIssueFilters((prev) => ({ ...prev, ...newFilters }))
   }
 
+  const handleNavigateToCategory = (slug: string) => {
+    setGlobalCategory(slug)
+    // Scroll to triage section
+    document.getElementById("triage-section")?.scrollIntoView({ behavior: "smooth" })
+  }
+
   const categoryOptions = useMemo(() => {
     const dynamic = (stats?.categoryBreakdown || []).map((category) => ({
       value: category.name.toLowerCase().replace(/\s+/g, "-"),
@@ -72,10 +85,18 @@ export default function DashboardPage() {
 
   const globalTimeLabel = globalDays === 0 ? "All time" : `Last ${globalDays} days`
   const globalCategoryLabel = categoryOptions.find((option) => option.value === globalCategory)?.label || "All categories"
+
+  // Compute KPI summary with insight-first approach
   const kpiSummary = useMemo(() => {
     const grouped = new Map<
       string,
-      { total: number; negative: number; urgencyProxy: number; impactTotal: number }
+      { 
+        total: number
+        negative: number
+        urgencyProxy: number
+        impactTotal: number
+        topIssue: { title: string; url: string | null; source: string } | null
+      }
     >()
 
     for (const item of stats?.priorityMatrix || []) {
@@ -89,12 +110,23 @@ export default function DashboardPage() {
         negative: 0,
         urgencyProxy: 0,
         impactTotal: 0,
+        topIssue: null,
       }
 
       current.total += 1
       if (item.sentiment === "negative") current.negative += 1
       current.urgencyProxy += urgencyScore
       current.impactTotal += item.impact_score
+      
+      // Track top issue by impact
+      if (!current.topIssue || item.impact_score > (current.topIssue as { title: string; url: string | null; source: string; impact?: number }).impact!) {
+        current.topIssue = { 
+          title: item.title, 
+          url: null, // Priority matrix doesn't include URL
+          source: "Priority Matrix"
+        }
+      }
+      
       grouped.set(categoryName, current)
     }
 
@@ -105,24 +137,41 @@ export default function DashboardPage() {
       negativeShare: values.total > 0 ? values.negative / values.total : 0,
     }))
 
-    const topRiskCategory = categories.reduce<(typeof categories)[number] | null>(
+    // Filter out "Other" for primary display
+    const specificCategories = categories.filter(c => c.name.toLowerCase() !== "other")
+    const displayCategories = specificCategories.length > 0 ? specificCategories : categories
+
+    const topRiskCategory = displayCategories.reduce<(typeof categories)[number] | null>(
       (best, candidate) =>
         !best || candidate.urgencyProxy > best.urgencyProxy ? candidate : best,
       null
     )
 
     const minVolumeForTheme = Math.max(2, Math.ceil((stats?.totalIssues || 0) * 0.05))
-    const impactfulPool = categories.filter((category) => category.total >= minVolumeForTheme)
-    const mostImpactfulTheme = (impactfulPool.length ? impactfulPool : categories).reduce<
+    const impactfulPool = displayCategories.filter((category) => category.total >= minVolumeForTheme)
+    const mostImpactfulTheme = (impactfulPool.length ? impactfulPool : displayCategories).reduce<
       (typeof categories)[number] | null
     >((best, candidate) => (!best || candidate.avgImpact > best.avgImpact ? candidate : best), null)
+
+    // Find other category stats for display
+    const otherCategory = categories.find(c => c.name.toLowerCase() === "other")
+    const otherRate = otherCategory && stats?.totalIssues 
+      ? (otherCategory.total / stats.totalIssues) * 100 
+      : 0
 
     return {
       topRiskCategory,
       mostImpactfulTheme,
       topRiskNegativeShare: topRiskCategory?.negativeShare || 0,
+      otherRate,
+      totalSignals: stats?.totalIssues || 0,
     }
   }, [stats])
+
+  // Compute hero insight from realtime data
+  const heroInsight = useMemo(() => {
+    return computeHeroInsight(stats?.realtimeInsights || [])
+  }, [stats?.realtimeInsights])
 
   const lastScrapeTime = stats?.lastScrape?.completed_at
     ? formatDistanceToNow(new Date(stats.lastScrape.completed_at), {
@@ -172,92 +221,72 @@ export default function DashboardPage() {
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
         {statsLoading ? (
-          <div className="flex min-h-[50vh] items-center justify-center">
-            <div className="flex flex-col items-center gap-4">
-              <Loader2 className="h-10 w-10 animate-spin text-primary" />
-              <p className="text-muted-foreground">Loading dashboard...</p>
-            </div>
-          </div>
+          <DashboardSkeleton />
+        ) : statsError ? (
+          <ErrorState
+            title="Failed to load dashboard"
+            message="We couldn't connect to the database. Please check your configuration and try again."
+            onRetry={() => refreshStats()}
+            showSettings
+          />
         ) : !stats || stats.totalIssues === 0 ? (
-          <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4">
-            <AlertCircle className="h-12 w-12 text-muted-foreground" />
-            <div className="text-center">
-              <h2 className="text-xl font-semibold text-foreground">
-                No Data Yet
-              </h2>
-              <p className="text-muted-foreground mt-1">
-                Click &quot;Refresh Data&quot; to scrape issues from Reddit, Hacker
-                News, and GitHub.
-              </p>
-            </div>
-            <Button onClick={handleRefresh} disabled={isRefreshing} size="lg">
-              {isRefreshing ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Scraping...
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Start Scraping
-                </>
-              )}
-            </Button>
-          </div>
+          <EmptyState
+            onRefresh={handleRefresh}
+            isRefreshing={isRefreshing}
+          />
         ) : (
           <div className="flex flex-col gap-8">
-            {/* Stats Cards */}
+            {/* Hero Insight Block - The "Aha" moment */}
+            <HeroInsight 
+              topInsight={heroInsight}
+              onNavigateToCategory={handleNavigateToCategory}
+            />
+
+            {/* Secondary KPI Cards - Insight-first design */}
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {kpiSummary.topRiskCategory && (
+                <InsightKpiCard
+                  category={kpiSummary.topRiskCategory.name}
+                  headline={`${kpiSummary.topRiskCategory.name} has the highest urgency score combining volume, sentiment, and impact.`}
+                  metrics={{
+                    total: kpiSummary.topRiskCategory.total,
+                    negativeShare: kpiSummary.topRiskCategory.negativeShare,
+                    avgImpact: kpiSummary.topRiskCategory.avgImpact,
+                  }}
+                  topIssue={kpiSummary.topRiskCategory.topIssue || undefined}
+                  variant="risk"
+                />
+              )}
+              
+              {kpiSummary.mostImpactfulTheme && kpiSummary.mostImpactfulTheme.name !== kpiSummary.topRiskCategory?.name && (
+                <InsightKpiCard
+                  category={kpiSummary.mostImpactfulTheme.name}
+                  headline={`Highest average impact score among categories with sustained volume.`}
+                  metrics={{
+                    total: kpiSummary.mostImpactfulTheme.total,
+                    negativeShare: kpiSummary.mostImpactfulTheme.negativeShare,
+                    avgImpact: kpiSummary.mostImpactfulTheme.avgImpact,
+                  }}
+                  topIssue={kpiSummary.mostImpactfulTheme.topIssue || undefined}
+                  variant="impact"
+                />
+              )}
+
+              {/* Orientation metric - kept minimal */}
               <StatCard
-                title="Total Reports"
-                value={stats.totalIssues}
-                subtitle="Orientation metric"
-                contextText="Use this as baseline volume, not priority."
+                title="Total Signals"
+                value={kpiSummary.totalSignals}
+                subtitle="Baseline volume across all sources"
+                contextText={kpiSummary.otherRate > 10 
+                  ? `${kpiSummary.otherRate.toFixed(0)}% uncategorized - consider taxonomy review`
+                  : "Use trends and categories for prioritization, not raw counts."
+                }
                 icon={<BarChart3 className="h-5 w-5" />}
-              />
-              <StatCard
-                title="Top Risk Category"
-                value={kpiSummary.topRiskCategory?.name || "N/A"}
-                subtitle={
-                  kpiSummary.topRiskCategory
-                    ? `${kpiSummary.topRiskCategory.total} signals weighted by impact, frequency, and sentiment`
-                    : "No categorized signals yet"
-                }
-                contextText={
-                  kpiSummary.topRiskCategory
-                    ? `${kpiSummary.topRiskCategory.name} has the highest urgency proxy right now.`
-                    : undefined
-                }
-                className="border-l-4 border-l-[hsl(var(--chart-4))]"
-              />
-              <StatCard
-                title="Negative Share in Top Category"
-                value={`${Math.round(kpiSummary.topRiskNegativeShare * 100)}%`}
-                subtitle="Sentiment concentration in highest-risk theme"
-                contextText={
-                  kpiSummary.topRiskCategory
-                    ? `${kpiSummary.topRiskCategory.negative}/${kpiSummary.topRiskCategory.total} reports are negative in ${kpiSummary.topRiskCategory.name}.`
-                    : "Needs a top risk category to calculate."
-                }
-                className="border-l-4 border-l-[hsl(var(--chart-3))]"
-              />
-              <StatCard
-                title="Most Impactful Theme"
-                value={kpiSummary.mostImpactfulTheme?.name || "N/A"}
-                subtitle={
-                  kpiSummary.mostImpactfulTheme
-                    ? `Avg impact ${kpiSummary.mostImpactfulTheme.avgImpact.toFixed(2)} with enough volume`
-                    : "No category has enough signal yet"
-                }
-                contextText={
-                  kpiSummary.mostImpactfulTheme
-                    ? `${kpiSummary.mostImpactfulTheme.name} combines sustained volume with high user pain.`
-                    : undefined
-                }
-                className="border-l-4 border-l-[hsl(var(--chart-5))]"
+                variant={kpiSummary.otherRate > 15 ? "warning" : "default"}
               />
             </div>
 
+            {/* Global Filters */}
             <GlobalFilterBar
               timeDays={globalDays}
               onTimeChange={setGlobalDays}
@@ -266,16 +295,17 @@ export default function DashboardPage() {
               onCategoryChange={setGlobalCategory}
             />
 
+            {/* Senior Review Callout */}
             <SeniorReviewCallout />
 
-            {/* Charts Row 1 */}
+            {/* Charts Row - Visual context */}
             <div className="grid gap-6 lg:grid-cols-3">
               <SentimentChart data={stats.sentimentBreakdown} />
               <SourceChart data={stats.sourceBreakdown} />
               <CategoryHeatmap data={stats.categorySentimentBreakdown} />
             </div>
 
-            {/* Priority Matrix */}
+            {/* Priority Matrix - Actionable view */}
             <PriorityMatrix data={stats.priorityMatrix} />
 
             {/* Real-time insights + competitive mentions */}
@@ -287,25 +317,26 @@ export default function DashboardPage() {
               />
             </div>
 
+            {/* Classification Triage - Workflow zone */}
+            <div id="triage-section">
+              <ClassificationTriage
+                records={classifications}
+                stats={classificationStats}
+                isLoading={classificationsLoading}
+                activeCategory={globalCategory}
+                timeDays={globalDays}
+                onRefresh={async () => {
+                  await Promise.all([refreshClassifications(), refreshClassificationStats()])
+                }}
+              />
+            </div>
 
-            {/* Classifier-backed triage with traceability */}
-            <ClassificationTriage
-              records={classifications}
-              stats={classificationStats}
-              isLoading={classificationsLoading}
-              activeCategory={globalCategory}
-              timeDays={globalDays}
-              onRefresh={async () => {
-                await Promise.all([refreshClassifications(), refreshClassificationStats()])
-              }}
-            />
-
-            {/* Trend Chart */}
+            {/* Trend Chart - Historical context */}
             {stats.trendData.length > 0 && (
               <TrendChart data={stats.trendData} />
             )}
 
-            {/* Issues Table */}
+            {/* Issues Table - Deep dive zone */}
             <IssuesTable
               issues={issues}
               isLoading={issuesLoading}
