@@ -11,6 +11,13 @@ const ALLOWED_SORT = new Set([
   "sentiment_score",
 ])
 
+// Backward-compatible aliases for sort fields that were renamed during the
+// three-layer split. Clients passing the old name continue to work instead
+// of silently falling back to impact_score.
+const SORT_ALIASES: Record<string, string> = {
+  scraped_at: "captured_at",
+}
+
 // Reads the materialized view mv_observation_current, which carries one row
 // per active cluster canonical observation joined to the latest derivation
 // rows. See docs/ARCHITECTURE.md v10 §§3.1c, 5.3.
@@ -24,7 +31,8 @@ export async function GET(request: NextRequest) {
   const days = searchParams.get("days")
   const search = searchParams.get("q")
   const sortByRaw = searchParams.get("sortBy") || "impact_score"
-  const sortBy = ALLOWED_SORT.has(sortByRaw) ? sortByRaw : "impact_score"
+  const sortByAliased = SORT_ALIASES[sortByRaw] ?? sortByRaw
+  const sortBy = ALLOWED_SORT.has(sortByAliased) ? sortByAliased : "impact_score"
   const order = searchParams.get("order") === "asc" ? "asc" : "desc"
   const limit = Math.min(parseInt(searchParams.get("limit") || "100"), MAX_LIMIT)
   const offset = Math.max(parseInt(searchParams.get("offset") || "0"), 0)

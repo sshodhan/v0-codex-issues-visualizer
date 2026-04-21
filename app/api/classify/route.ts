@@ -39,6 +39,14 @@ const classifyInputSchema = z.object({
     .optional(),
   screenshot_or_diff: z.string().optional(),
   observation_id: z.string().uuid().optional(),
+  // Legacy aliases — accepted for one release cycle so external callers
+  // don't break on the three-layer split cutover. Internally coerced to
+  // observation_id + context metadata. New callers should pass
+  // observation_id directly.
+  source_issue_id: z.string().uuid().optional(),
+  source_issue_url: z.string().url().optional(),
+  source_issue_title: z.string().optional(),
+  source_issue_sentiment: z.enum(["positive", "negative", "neutral"]).optional(),
 })
 
 function parseResponseJson(responseJson: unknown): ClassificationApiRecord {
@@ -134,6 +142,13 @@ export async function POST(request: Request) {
         ? createAdminClient()
         : null
 
+    // Back-compat: coerce legacy source_issue_id into observation_id when
+    // the new field is absent. source_issue_url/title/sentiment are
+    // accepted for parse compatibility but no longer persisted on the
+    // classification row — traceability now comes from the linked
+    // observation via mv_observation_current.
+    const observationId = parsed.data.observation_id ?? parsed.data.source_issue_id ?? undefined
+
     // First attempt on the small model. Every LLM call is persisted so
     // small-vs-large drift is analyzable — see docs/ARCHITECTURE.md v10 §3.2.
     let classification = await runClassifier(userTurn, smallModel)
@@ -146,7 +161,7 @@ export async function POST(request: Request) {
       if (supabase) {
         const hardenedSmall = applyHardReviewRules(classification, parsed.data.report_text)
         const smallPayload = toClassificationPayload(hardenedSmall, parsed.data.report_text, {
-          observation_id: parsed.data.observation_id,
+          observation_id: observationId,
           model_used: smallModel,
           retried_with_large_model: false,
         })
@@ -181,7 +196,7 @@ export async function POST(request: Request) {
 
     const hardened = applyHardReviewRules(classification, parsed.data.report_text)
     const payload = toClassificationPayload(hardened, parsed.data.report_text, {
-      observation_id: parsed.data.observation_id,
+      observation_id: observationId,
       prior_classification_id: smallModelClassificationId ?? undefined,
       model_used: modelUsed,
       retried_with_large_model: retriedWithLargeModel,

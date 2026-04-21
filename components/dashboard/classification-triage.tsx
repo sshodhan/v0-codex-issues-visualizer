@@ -84,8 +84,12 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
     [triageRecords, selectedId]
   )
 
+  const trimmedReviewer = reviewer.trim()
+  const canSubmitReview = Boolean(selected) && trimmedReviewer.length > 0
+
   const submitReview = async () => {
     if (!selected) return
+    if (!trimmedReviewer) return // API requires reviewed_by (audit trail)
 
     setIsSubmitting(true)
     try {
@@ -94,7 +98,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
         severity: severityOverride as (typeof SEVERITY_OPTIONS)[number],
         category: categoryOverride || selected.category,
         needs_human_review: false,
-        reviewed_by: reviewer || undefined,
+        reviewed_by: trimmedReviewer,
         reviewer_notes: notes || undefined,
       })
       await onRefresh()
@@ -248,8 +252,13 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
               <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Override rationale / notes" />
             </div>
             <div className="flex items-center gap-2">
-              <Button onClick={submitReview} disabled={isSubmitting}>{isSubmitting ? "Saving..." : "Mark reviewed"}</Button>
+              <Button onClick={submitReview} disabled={isSubmitting || !canSubmitReview}>
+                {isSubmitting ? "Saving..." : "Mark reviewed"}
+              </Button>
               <Button variant="outline" onClick={() => onRefresh()} disabled={isSubmitting}>Refresh queue</Button>
+              {!canSubmitReview && (
+                <span className="text-xs text-muted-foreground">Reviewer name required</span>
+              )}
             </div>
           </div>
         )}
