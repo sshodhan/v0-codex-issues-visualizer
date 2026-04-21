@@ -3,6 +3,19 @@ import { evaluateCodexRelevance } from "./relevance.ts"
 import { COMPETITOR_KEYWORDS } from "../analytics/competitors.ts"
 import { NEGATIVE_WORDS, POSITIVE_WORDS } from "../analytics/sentiment-lexicon.ts"
 
+const NEGATIVE_KEYWORD_PATTERNS = [
+  /\bbugs?\b/g,
+  /\berrors?\b/g,
+  /\bcrash(?:es|ed|ing)?\b/g,
+  /\bbroken\b/g,
+  /\bissues?\b/g,
+  /\bproblems?\b/g,
+  /\bregressions?\b/g,
+  /\bnot\s+working\b/g,
+  /\bdoesn['’]?t\s+work\b/g,
+  /\bfail(?:s|ed|ing|ure|ures)?\b/g,
+]
+
 export function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim()
 }
@@ -31,16 +44,27 @@ export function detectCompetitorMentions(text: string): string[] {
   return Array.from(found)
 }
 
+export function calculateKeywordPresence(text: string): number {
+  const lowerText = text.toLowerCase()
+
+  return NEGATIVE_KEYWORD_PATTERNS.reduce((count, pattern) => {
+    return count + (lowerText.match(pattern) || []).length
+  }, 0)
+}
+
 // Ingest-time sentiment classifier. Consumes the canonical polarity lexicon
 // from lib/analytics/sentiment-lexicon so the ingest-side and the
 // mention-level classifier in lib/analytics/competitive share one source of
-// truth. Closes P0-2 (topic-noun contamination) as a side effect — topic
-// nouns like "bug", "error", "issue", "problem", "fail" are absent from the
-// canonical lexicon by construction, so bug-category posts are no longer
-// pre-loaded with negative sentiment regardless of tone.
+// truth. Closes P0-2 (topic-noun contamination): topic nouns like "bug",
+// "error", "issue", "problem", "fail" are absent from the canonical lexicon
+// by construction, so bug-category posts are no longer pre-loaded with
+// negative sentiment regardless of tone. Topic-noun *presence* (which is
+// still a useful signal for urgency/triage, just not a polarity signal) is
+// surfaced separately via `keyword_presence`.
 export function analyzeSentiment(text: string): {
   sentiment: "positive" | "negative" | "neutral"
   score: number
+  keyword_presence: number
 } {
   const lowerText = text.toLowerCase()
   const tokens = lowerText.match(/[a-z']+/g) ?? []
@@ -57,13 +81,19 @@ export function analyzeSentiment(text: string): {
   if (/\bdoesn'?t\s+work\b/.test(lowerText)) negativeCount++
   if (/\bnot\s+working\b/.test(lowerText)) negativeCount++
 
+  const keyword_presence = calculateKeywordPresence(text)
+
   const total = positiveCount + negativeCount
-  if (total === 0) return { sentiment: "neutral", score: 0 }
+  if (total === 0) return { sentiment: "neutral", score: 0, keyword_presence }
 
   const score = (positiveCount - negativeCount) / total
-  if (score > 0.2) return { sentiment: "positive", score: Math.min(score, 0.99) }
-  if (score < -0.2) return { sentiment: "negative", score: Math.max(score, -0.99) }
-  return { sentiment: "neutral", score }
+  if (score > 0.2) {
+    return { sentiment: "positive", score: Math.min(score, 0.99), keyword_presence }
+  }
+  if (score < -0.2) {
+    return { sentiment: "negative", score: Math.max(score, -0.99), keyword_presence }
+  }
+  return { sentiment: "neutral", score, keyword_presence }
 }
 
 type CategoryPattern = {

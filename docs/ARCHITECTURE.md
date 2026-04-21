@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-20 (v8 — fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-20 (v8 — integrates with PR #11 urgency rework (sentiment weight in impact, not urgency) + `keyword_presence` signal; fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -66,7 +66,10 @@ Supabase (Postgres)
          │
          ▼
 Analytics modules (lib/analytics/*)
-  ├─ realtime.ts           (urgency = volume × decay + momentum + impact + neg + diversity)
+  ├─ realtime.ts           (urgency = decayedVolume*1.6 + max(momentum,0)*1.4
+  │                                    + avgImpact*1.0 + (sourceDiversity-1)*0.8;
+  │                         sentiment weight lives in impact_score, not urgency —
+  │                         see docs/SCORING.md)
   ├─ competitive.ts        (mention-window sentiment per competitor + confidence/coverage)
   ├─ competitors.ts        (canonical competitor keyword + display-name source of truth)
   └─ sentiment-lexicon.ts  (shared polarity/negator lexicon — dependency-free)
@@ -133,10 +136,14 @@ Layout:
   `runScraper(slug)` (single-source). Owns scrape_logs lifecycle and upserts.
 - `lib/scrapers/shared.ts` — relevance filter (delegates to `relevance.ts`),
   ingest-time sentiment classifier (`analyzeSentiment`, consumes the
-  canonical lexicon in `lib/analytics/sentiment-lexicon.ts`), category
-  scoring, impact scoring, retry/backoff fetch helper, dedupe. **Does not
-  own polarity word lists or competitor phrases** — those are imported from
-  the analytics-layer canonical modules.
+  canonical lexicon in `lib/analytics/sentiment-lexicon.ts`), topic-noun
+  presence counter (`calculateKeywordPresence`, drawn from
+  `NEGATIVE_KEYWORD_PATTERNS`), category scoring, impact scoring,
+  retry/backoff fetch helper, dedupe. **Does not own polarity word lists or
+  competitor phrases** — those are imported from the analytics-layer
+  canonical modules. `analyzeSentiment` returns `{ sentiment, score,
+  keyword_presence }`; providers today destructure only the first two. See
+  `docs/SCORING.md` for the current signal contract.
 - `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts` —
   one provider per file. Each owns its source-specific query and the
   mapping into a `Partial<Issue>`. `github-discussions` and `openai-community`
@@ -349,17 +356,34 @@ Future improvements:
 
 ### 6.2 Realtime urgency scoring
 
-Current score (`lib/analytics/realtime.ts`) blends:
-- recency-decayed volume (linear from 1.0 at "now" to 0.0 at window edge),
-- positive momentum (vs prior 72h window),
-- average impact,
-- negative sentiment ratio,
-- source diversity (number of distinct sources reporting in the category).
+Current score (`lib/analytics/realtime.ts`) blends four terms:
+
+```
+urgencyScore =
+    decayedVolume       * 1.6   // linear decay from 1.0 at "now" to 0.0 at window edge
+  + max(momentum, 0)    * 1.4   // nowCount - previousCount, floored at 0
+  + avgImpact           * 1.0   // mean impact_score in the "now" bucket
+  + (sourceDiversity-1) * 0.8   // distinct-source bonus, 0 for single-source
+```
+
+Notes on what is *not* a separate term:
+
+- **Negative sentiment ratio is not weighted here.** PR #11 removed the
+  former `negativeRatio * 3` term because sentiment is already applied
+  upstream in `calculateImpactScore` (1.5× boost for
+  `sentiment === "negative"`) and was being double-counted. `negativeRatio`
+  is still computed and returned for the dashboard card but is a display
+  signal, not a ranking input.
+- `keyword_presence` (the count of bug-topic regex hits from
+  `NEGATIVE_KEYWORD_PATTERNS`) is returned by `analyzeSentiment` but not
+  stored on any row and not consumed here. See `docs/SCORING.md` for the
+  full story.
 
 Future improvements:
 1. Add cross-source duplicate clustering (same story across HN + Reddit).
 2. Per-category dynamic thresholds (some categories are noisy by default).
 3. Anomaly detection for sudden surge alerts independent of urgency rank.
+4. Decide the fate of `keyword_presence` (remove, persist, or wire in).
 
 ### 6.3 LLM triage quality controls (classification table)
 

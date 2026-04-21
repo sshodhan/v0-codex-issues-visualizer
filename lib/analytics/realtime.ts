@@ -32,7 +32,7 @@ export interface RealtimeInsight {
 /**
  * Compute urgency-ranked category insights from a window of recent issues.
  *
- * Weights blend volume, momentum (vs prior window), impact, negative ratio
+ * Weights blend volume, momentum (vs prior window), impact,
  * and source diversity. Newer issues inside the "now" window get a mild
  * recency boost so a story that broke 12h ago counts more than one that
  * broke 70h ago.
@@ -121,7 +121,6 @@ export function computeRealtimeInsights(
           b.decayedVolume * 1.6 +
           Math.max(momentum, 0) * 1.4 +
           avgImpact * 1.0 +
-          negativeRatio * 3 +
           (sourceDiversity - 1) * 0.8
         ).toFixed(2)
       )
