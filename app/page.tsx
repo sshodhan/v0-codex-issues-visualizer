@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
-import { RefreshCw, Loader2, BarChart3 } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { RefreshCw, Loader2, BarChart3, BrainCircuit, TrendingUp } from "lucide-react"
 import { StatCard, InsightKpiCard } from "@/components/dashboard/stat-card"
 import { HeroInsight, computeHeroInsight } from "@/components/dashboard/hero-insight"
 import { 
-  LoadingState, 
   EmptyState, 
   ErrorState,
   DashboardSkeleton 
@@ -20,7 +20,6 @@ import { IssuesTable } from "@/components/dashboard/issues-table"
 import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
-import { SeniorReviewCallout } from "@/components/dashboard/senior-review-callout"
 import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
 import {
   useDashboardStats,
@@ -32,6 +31,7 @@ import {
 import { formatDistanceToNow } from "date-fns"
 
 export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState("dashboard")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [globalDays, setGlobalDays] = useState(30)
   const [globalCategory, setGlobalCategory] = useState("all")
@@ -48,7 +48,7 @@ export default function DashboardPage() {
     category: globalCategory === "all" ? undefined : globalCategory,
   })
   const { scrape } = useScrape()
-  const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({ limit: 30 })
+  const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({ limit: 100 })
   const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats()
 
   const handleRefresh = async () => {
@@ -69,8 +69,7 @@ export default function DashboardPage() {
 
   const handleNavigateToCategory = (slug: string) => {
     setGlobalCategory(slug)
-    // Scroll to triage section
-    document.getElementById("triage-section")?.scrollIntoView({ behavior: "smooth" })
+    setActiveTab("classifications")
   }
 
   const categoryOptions = useMemo(() => {
@@ -122,7 +121,7 @@ export default function DashboardPage() {
       if (!current.topIssue || item.impact_score > (current.topIssue as { title: string; url: string | null; source: string; impact?: number }).impact!) {
         current.topIssue = { 
           title: item.title, 
-          url: null, // Priority matrix doesn't include URL
+          url: null,
           source: "Priority Matrix"
         }
       }
@@ -179,6 +178,10 @@ export default function DashboardPage() {
       })
     : "Never"
 
+  // Classification stats for tab badge
+  const pendingReviewCount = classificationStats?.needsReviewCount ?? 
+    classifications.filter(r => r.needs_human_review).length
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -219,7 +222,7 @@ export default function DashboardPage() {
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
+      <main className="container mx-auto px-4 py-6">
         {statsLoading ? (
           <DashboardSkeleton />
         ) : statsError ? (
@@ -235,90 +238,130 @@ export default function DashboardPage() {
             isRefreshing={isRefreshing}
           />
         ) : (
-          <div className="flex flex-col gap-8">
-            {/* Hero Insight Block - The "Aha" moment */}
-            <HeroInsight 
-              topInsight={heroInsight}
-              onNavigateToCategory={handleNavigateToCategory}
-            />
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+            <TabsList className="grid w-full max-w-md grid-cols-2 mx-auto">
+              <TabsTrigger value="dashboard" className="gap-2">
+                <TrendingUp className="h-4 w-4" />
+                Dashboard
+              </TabsTrigger>
+              <TabsTrigger value="classifications" className="gap-2 relative">
+                <BrainCircuit className="h-4 w-4" />
+                AI Classifications
+                {pendingReviewCount > 0 && (
+                  <span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 text-xs font-medium text-destructive-foreground">
+                    {pendingReviewCount}
+                  </span>
+                )}
+              </TabsTrigger>
+            </TabsList>
 
-            {/* Secondary KPI Cards - Insight-first design */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {kpiSummary.topRiskCategory && (
-                <InsightKpiCard
-                  category={kpiSummary.topRiskCategory.name}
-                  headline={`${kpiSummary.topRiskCategory.name} has the highest urgency score combining volume, sentiment, and impact.`}
-                  metrics={{
-                    total: kpiSummary.topRiskCategory.total,
-                    negativeShare: kpiSummary.topRiskCategory.negativeShare,
-                    avgImpact: kpiSummary.topRiskCategory.avgImpact,
-                  }}
-                  topIssue={kpiSummary.topRiskCategory.topIssue || undefined}
-                  variant="risk"
-                />
-              )}
-              
-              {kpiSummary.mostImpactfulTheme && kpiSummary.mostImpactfulTheme.name !== kpiSummary.topRiskCategory?.name && (
-                <InsightKpiCard
-                  category={kpiSummary.mostImpactfulTheme.name}
-                  headline={`Highest average impact score among categories with sustained volume.`}
-                  metrics={{
-                    total: kpiSummary.mostImpactfulTheme.total,
-                    negativeShare: kpiSummary.mostImpactfulTheme.negativeShare,
-                    avgImpact: kpiSummary.mostImpactfulTheme.avgImpact,
-                  }}
-                  topIssue={kpiSummary.mostImpactfulTheme.topIssue || undefined}
-                  variant="impact"
-                />
-              )}
-
-              {/* Orientation metric - kept minimal */}
-              <StatCard
-                title="Total Signals"
-                value={kpiSummary.totalSignals}
-                subtitle="Baseline volume across all sources"
-                contextText={kpiSummary.otherRate > 10 
-                  ? `${kpiSummary.otherRate.toFixed(0)}% uncategorized - consider taxonomy review`
-                  : "Use trends and categories for prioritization, not raw counts."
-                }
-                icon={<BarChart3 className="h-5 w-5" />}
-                variant={kpiSummary.otherRate > 15 ? "warning" : "default"}
+            {/* Dashboard Tab */}
+            <TabsContent value="dashboard" className="space-y-8 mt-6">
+              {/* Hero Insight Block - The "Aha" moment */}
+              <HeroInsight 
+                topInsight={heroInsight}
+                onNavigateToCategory={handleNavigateToCategory}
               />
-            </div>
 
-            {/* Global Filters */}
-            <GlobalFilterBar
-              timeDays={globalDays}
-              onTimeChange={setGlobalDays}
-              categoryOptions={categoryOptions}
-              categoryValue={globalCategory}
-              onCategoryChange={setGlobalCategory}
-            />
+              {/* Secondary KPI Cards - Insight-first design */}
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {kpiSummary.topRiskCategory && (
+                  <InsightKpiCard
+                    category={kpiSummary.topRiskCategory.name}
+                    headline={`${kpiSummary.topRiskCategory.name} has the highest urgency score combining volume, sentiment, and impact.`}
+                    metrics={{
+                      total: kpiSummary.topRiskCategory.total,
+                      negativeShare: kpiSummary.topRiskCategory.negativeShare,
+                      avgImpact: kpiSummary.topRiskCategory.avgImpact,
+                    }}
+                    topIssue={kpiSummary.topRiskCategory.topIssue || undefined}
+                    variant="risk"
+                  />
+                )}
+                
+                {kpiSummary.mostImpactfulTheme && kpiSummary.mostImpactfulTheme.name !== kpiSummary.topRiskCategory?.name && (
+                  <InsightKpiCard
+                    category={kpiSummary.mostImpactfulTheme.name}
+                    headline={`Highest average impact score among categories with sustained volume.`}
+                    metrics={{
+                      total: kpiSummary.mostImpactfulTheme.total,
+                      negativeShare: kpiSummary.mostImpactfulTheme.negativeShare,
+                      avgImpact: kpiSummary.mostImpactfulTheme.avgImpact,
+                    }}
+                    topIssue={kpiSummary.mostImpactfulTheme.topIssue || undefined}
+                    variant="impact"
+                  />
+                )}
 
-            {/* Senior Review Callout */}
-            <SeniorReviewCallout />
+                {/* Orientation metric - kept minimal */}
+                <StatCard
+                  title="Total Signals"
+                  value={kpiSummary.totalSignals}
+                  subtitle="Baseline volume across all sources"
+                  contextText={kpiSummary.otherRate > 10 
+                    ? `${kpiSummary.otherRate.toFixed(0)}% uncategorized - consider taxonomy review`
+                    : "Use trends and categories for prioritization, not raw counts."
+                  }
+                  icon={<BarChart3 className="h-5 w-5" />}
+                  variant={kpiSummary.otherRate > 15 ? "warning" : "default"}
+                />
+              </div>
 
-            {/* Charts Row - Visual context */}
-            <div className="grid gap-6 lg:grid-cols-3">
-              <SentimentChart data={stats.sentimentBreakdown} />
-              <SourceChart data={stats.sourceBreakdown} />
-              <CategoryHeatmap data={stats.categorySentimentBreakdown} />
-            </div>
-
-            {/* Priority Matrix - Actionable view */}
-            <PriorityMatrix data={stats.priorityMatrix} />
-
-            {/* Real-time insights + competitive mentions */}
-            <div className="grid gap-6 lg:grid-cols-2">
-              <RealtimeInsights insights={stats.realtimeInsights} />
-              <CompetitiveMentions
-                mentions={stats.competitiveMentions || []}
-                meta={stats.competitiveMentionsMeta}
+              {/* Global Filters */}
+              <GlobalFilterBar
+                timeDays={globalDays}
+                onTimeChange={setGlobalDays}
+                categoryOptions={categoryOptions}
+                categoryValue={globalCategory}
+                onCategoryChange={setGlobalCategory}
               />
-            </div>
 
-            {/* Classification Triage - Workflow zone */}
-            <div id="triage-section">
+              {/* Charts Row - Visual context */}
+              <div className="grid gap-6 lg:grid-cols-3">
+                <SentimentChart data={stats.sentimentBreakdown} />
+                <SourceChart data={stats.sourceBreakdown} />
+                <CategoryHeatmap data={stats.categorySentimentBreakdown} />
+              </div>
+
+              {/* Priority Matrix - Actionable view */}
+              <PriorityMatrix data={stats.priorityMatrix} />
+
+              {/* Real-time insights + competitive mentions */}
+              <div className="grid gap-6 lg:grid-cols-2">
+                <RealtimeInsights insights={stats.realtimeInsights} />
+                <CompetitiveMentions
+                  mentions={stats.competitiveMentions || []}
+                  meta={stats.competitiveMentionsMeta}
+                />
+              </div>
+
+              {/* Trend Chart - Historical context */}
+              {stats.trendData.length > 0 && (
+                <TrendChart data={stats.trendData} />
+              )}
+
+              {/* Issues Table - Deep dive zone */}
+              <IssuesTable
+                issues={issues}
+                isLoading={issuesLoading}
+                globalTimeLabel={globalTimeLabel}
+                globalCategoryLabel={globalCategoryLabel}
+                onFilterChange={handleFilterChange}
+              />
+            </TabsContent>
+
+            {/* AI Classifications Tab */}
+            <TabsContent value="classifications" className="space-y-6 mt-6">
+              {/* Classification-specific filters */}
+              <GlobalFilterBar
+                timeDays={globalDays}
+                onTimeChange={setGlobalDays}
+                categoryOptions={categoryOptions}
+                categoryValue={globalCategory}
+                onCategoryChange={setGlobalCategory}
+              />
+
+              {/* Full Classification Triage Experience */}
               <ClassificationTriage
                 records={classifications}
                 stats={classificationStats}
@@ -329,22 +372,8 @@ export default function DashboardPage() {
                   await Promise.all([refreshClassifications(), refreshClassificationStats()])
                 }}
               />
-            </div>
-
-            {/* Trend Chart - Historical context */}
-            {stats.trendData.length > 0 && (
-              <TrendChart data={stats.trendData} />
-            )}
-
-            {/* Issues Table - Deep dive zone */}
-            <IssuesTable
-              issues={issues}
-              isLoading={issuesLoading}
-              globalTimeLabel={globalTimeLabel}
-              globalCategoryLabel={globalCategoryLabel}
-              onFilterChange={handleFilterChange}
-            />
-          </div>
+            </TabsContent>
+          </Tabs>
         )}
       </main>
 
