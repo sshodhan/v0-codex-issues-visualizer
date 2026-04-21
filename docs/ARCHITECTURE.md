@@ -741,3 +741,108 @@ docs/
 ```
 
 This decomposition keeps ingestion, analytics, and reviewer-governed classification concerns isolated while preserving end-to-end provenance.
+
+---
+
+## 11) Migration runbook — applying the three-layer split
+
+The three-layer split ships as three SQL migrations that must be applied in order. Migrations 001–006 are preserved in git history; they are NOT part of the forward path for a fresh install.
+
+### 11.1 Scope and prerequisites
+
+`scripts/007_three_layer_split.sql` is a **destructive cutover** migration: it drops the old `issues` and `bug_report_classifications` tables and recreates the schema in the three-layer shape. This migration assumes the operator has accepted a full repull from all six providers and does not need to preserve historical rows.
+
+If you need row-for-row preservation of `issues` data, DO NOT apply 007 as-is. Instead, stop and implement a two-step alternative:
+1. A non-destructive `007a` that adds new tables alongside existing ones.
+2. A `007b` backfill that walks `issues` → `observations` + version-v1 derivation rows.
+3. A `007c` cutover that swaps reads to the new tables.
+4. `008_drop_legacy_tables.sql` gated on row-count parity.
+
+This runbook covers the destructive path, which is what the current branch implements.
+
+### 11.2 Apply order (destructive-cutover path)
+
+```
+# 1. Take a full pg_dump before running anything destructive.
+pg_dump --no-owner --format=custom "$DATABASE_URL" > backup-pre-007.dump
+
+# 2. Run 007 (drops legacy tables + creates new schema + seeds reference data).
+psql "$DATABASE_URL" -f scripts/007_three_layer_split.sql
+
+# 3. Run 008 (revokes service_role DML on append-only tables).
+psql "$DATABASE_URL" -f scripts/008_revoke_service_role_dml.sql
+
+# 4. Deploy the app code from commit 87ecf95 or later (app reads
+#    mv_observation_current / mv_dashboard_stats / mv_trend_daily).
+
+# 5. Trigger a full repull.
+curl -X POST "$APP_URL/api/scrape" \
+  -H "Authorization: Bearer $CRON_SECRET"
+
+# 6. Verify the materialized views refreshed at the end of the scrape run
+#    and mv_observation_current is populated.
+```
+
+### 11.3 Post-apply validation queries
+
+Run these against the production database after 007 + 008 + first scrape. All should return expected counts > 0 for an active system.
+
+```sql
+-- Evidence layer populated
+select count(*) from observations;
+select count(*) from engagement_snapshots;
+
+-- Derivation layer populated
+select count(*) from sentiment_scores;
+select count(*) from category_assignments;
+select count(*) from impact_scores;
+
+-- Aggregation layer populated
+select count(*) from clusters;
+select count(*) from cluster_members where detached_at is null;
+
+-- Materialized views rebuilt
+select count(*) from mv_observation_current where is_canonical;
+select count(*) from mv_dashboard_stats;
+select count(*) from mv_trend_daily;
+
+-- Last scrape succeeded
+select status, issues_found, issues_added, completed_at
+from scrape_logs
+order by started_at desc
+limit 6;
+```
+
+### 11.4 Append-only invariant verification
+
+After 008, prove the privilege layer is actually enforcing RPC-only writes. Connect as `service_role` and attempt direct DML:
+
+```sql
+-- Should fail with: permission denied for table observations
+insert into observations(source_id, external_id, title) values (gen_random_uuid(), 'tamper', 'x');
+
+-- Should fail with: permission denied for table classifications
+update classifications set summary = 'tampered' where id = (select id from classifications limit 1);
+```
+
+Any success on the above indicates the REVOKEs in 008 did not land and the evidence layer is writable outside the RPCs — **stop deploys and investigate** before proceeding.
+
+### 11.5 Rollback strategy
+
+The 007 migration is destructive and cannot be cleanly rolled back without data loss. The only supported rollback path is:
+
+1. Stop the app.
+2. `psql "$DATABASE_URL" -c 'drop schema public cascade; create schema public;'`
+3. `pg_restore --clean --no-owner -d "$DATABASE_URL" backup-pre-007.dump`
+4. Redeploy the pre-007 app code (any commit before `7587e2f`).
+
+Because 007 drops `issues` and `bug_report_classifications` and the new schema is not byte-compatible, there is no in-place downgrade. Practice the restore on a staging database before running 007 in production.
+
+### 11.6 Incremental migrations after 008
+
+Subsequent schema changes should follow the append-only discipline by default:
+- New derivation types → new table + new `record_*` RPC + new REVOKE on service_role DML + GRANT EXECUTE on the RPC.
+- New aggregation views → prefer materialized views refreshed via `refresh_materialized_views()`.
+- Algorithm-version bumps → insert rows in `algorithm_versions` with `current_effective = true`; the partial unique index enforces one effective per kind.
+
+The guiding principle: every write path must either (a) flow through a `SECURITY DEFINER` RPC that the service_role has `EXECUTE` on, or (b) target a table where service_role retains direct DML (reference tables and aggregation tables). Never both for the same table.
