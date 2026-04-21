@@ -272,7 +272,7 @@ export default function DashboardPage() {
             <div className="grid gap-6 lg:grid-cols-3">
               <SentimentChart data={stats.sentimentBreakdown} />
               <SourceChart data={stats.sourceBreakdown} />
-              <CategoryHeatmap data={stats.categoryBreakdown} />
+              <CategoryHeatmap data={stats.categorySentimentBreakdown} />
             </div>
 
             {/* Priority Matrix */}

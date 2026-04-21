@@ -19,6 +19,21 @@ interface CategoryJoin {
     | null
 }
 
+interface CategorySentimentAccumulator {
+  name: string
+  color: string
+  positive: number
+  neutral: number
+  negative: number
+  total: number
+  impactSum: number
+  topIssue: {
+    title: string
+    url: string | null
+    impact_score: number
+  } | null
+}
+
 function firstRelation<T>(value: T[] | T | null | undefined): T | null {
   if (!value) return null
   return Array.isArray(value) ? value[0] || null : value
@@ -64,6 +79,61 @@ export async function GET() {
       categoryCounts[cat.name].count++
     }
   })
+
+  const { data: categorySentimentData } = await supabase.from("issues").select(`
+    title,
+    url,
+    sentiment,
+    impact_score,
+    category:categories(name, slug, color)
+  `)
+
+  const categorySentimentMap: Record<string, CategorySentimentAccumulator> = {}
+  categorySentimentData?.forEach((issue) => {
+    const category = firstRelation(issue.category as CategoryJoin["category"])
+    if (!category) return
+
+    if (!categorySentimentMap[category.name]) {
+      categorySentimentMap[category.name] = {
+        name: category.name,
+        color: category.color,
+        positive: 0,
+        neutral: 0,
+        negative: 0,
+        total: 0,
+        impactSum: 0,
+        topIssue: null,
+      }
+    }
+
+    const bucket = categorySentimentMap[category.name]
+    const sentiment = issue.sentiment as Sentiment | null
+    if (sentiment) {
+      bucket[sentiment] += 1
+    }
+    bucket.total += 1
+    const issueImpact = Number(issue.impact_score) || 0
+    bucket.impactSum += issueImpact
+
+    if (!bucket.topIssue || issueImpact > bucket.topIssue.impact_score) {
+      bucket.topIssue = {
+        title: (issue.title as string) || "Untitled issue",
+        url: (issue.url as string | null) ?? null,
+        impact_score: issueImpact,
+      }
+    }
+  })
+
+  const categorySentimentBreakdown = Object.values(categorySentimentMap).map((entry) => ({
+    name: entry.name,
+    color: entry.color,
+    positive: entry.positive,
+    neutral: entry.neutral,
+    negative: entry.negative,
+    total: entry.total,
+    avgImpact: entry.total > 0 ? entry.impactSum / entry.total : 0,
+    topIssue: entry.topIssue,
+  }))
 
   const thirtyDaysAgo = new Date()
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
@@ -157,6 +227,7 @@ export async function GET() {
       count: data.count,
       color: data.color,
     })),
+    categorySentimentBreakdown,
     trendData: Object.values(trendByDay),
     priorityMatrix: priorityData || [],
     realtimeInsights,
