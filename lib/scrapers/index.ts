@@ -10,6 +10,8 @@ import { scrapeOpenAICommunity } from "@/lib/scrapers/providers/openai-community
 import {
   recordObservation,
   recordEngagementSnapshot,
+  recordRevision,
+  recordIngestionArtifact,
 } from "@/lib/storage/evidence"
 import {
   recordSentiment,
@@ -50,13 +52,19 @@ type AdminClient = ReturnType<typeof createAdminClient>
 
 /**
  * Persist one captured issue across the three layers:
- * 1. evidence (observation + engagement snapshot)
+ * 1. evidence (observation + revision if title/content changed +
+ *    engagement snapshot + raw upstream artifact)
  * 2. derivation (sentiment, category, impact)
  * 3. aggregation (cluster membership)
  *
  * Each write is a SECURITY DEFINER RPC; no direct table mutation.
  * Failure of any derivation/cluster write does not undo the evidence
  * insert — raw capture is independent of enrichment correctness.
+ *
+ * Revision detection: before recording the observation, SELECT the
+ * existing row (if any). If title/content/author have diverged from
+ * what we just captured, append to observation_revisions. The
+ * observation row itself is never updated.
  */
 async function persistIssueRecord(
   supabase: AdminClient,
@@ -64,7 +72,16 @@ async function persistIssueRecord(
 ): Promise<boolean> {
   if (!issue.source_id || !issue.external_id || !issue.title) return false
 
-  // 3.1a Evidence
+  // 3.1a Evidence — detect pre-existing observation so we can distinguish
+  // "first sighting" from "rescrape with edits". Select before insert so
+  // the diff is computed against the frozen original.
+  const { data: existing } = await supabase
+    .from("observations")
+    .select("id, title, content, author")
+    .eq("source_id", issue.source_id)
+    .eq("external_id", issue.external_id)
+    .maybeSingle()
+
   const observationId = await recordObservation(supabase, {
     source_id: issue.source_id,
     external_id: issue.external_id,
@@ -78,12 +95,41 @@ async function persistIssueRecord(
   })
   if (!observationId) return false
 
+  // Revision capture: if the observation already existed and any of
+  // title/content/author have changed, append to observation_revisions.
+  // observations.title/content are frozen at first capture (P1-10 fix).
+  if (existing) {
+    const titleChanged = (existing.title ?? null) !== (issue.title ?? null)
+    const contentChanged = (existing.content ?? null) !== (issue.content ?? null)
+    const authorChanged = (existing.author ?? null) !== (issue.author ?? null)
+    if (titleChanged || contentChanged || authorChanged) {
+      await recordRevision(supabase, observationId, {
+        title: issue.title ?? null,
+        content: issue.content ?? null,
+        author: issue.author ?? null,
+      })
+    }
+  }
+
+  // Engagement snapshot — append every time; the time series is the point.
   await recordEngagementSnapshot(
     supabase,
     observationId,
     issue.upvotes ?? 0,
     issue.comments_count ?? 0,
   )
+
+  // Ingestion artifact — opt-in via provider `_raw`. Providers that don't
+  // set _raw skip this step; artifact capture is per-provider retrofit.
+  if (issue._raw !== undefined) {
+    await recordIngestionArtifact(
+      supabase,
+      issue.source_id,
+      issue.external_id,
+      new Date().toISOString(),
+      issue._raw,
+    )
+  }
 
   // 3.1b Derivation
   if (issue.sentiment) {

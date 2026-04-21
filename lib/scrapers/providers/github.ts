@@ -77,6 +77,7 @@ export async function scrapeGitHub(
           upvotes: reactions,
           comments_count: comments,
           published_at: item.created_at,
+          _raw: item,
         })
       }
     } catch (error) {

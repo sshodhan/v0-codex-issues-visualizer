@@ -126,6 +126,7 @@ export async function scrapeGitHubDiscussions(
           upvotes,
           comments_count: comments,
           published_at: node.createdAt,
+          _raw: node,
         })
       }
     } catch (error) {

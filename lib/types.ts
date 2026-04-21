@@ -255,4 +255,11 @@ export interface Issue {
   updated_at?: string
   source?: Source
   category?: Category
+  /**
+   * Raw upstream API payload for this record. When populated, the scraper
+   * orchestrator forwards it to `ingestion_artifacts` for replay
+   * (docs/ARCHITECTURE.md v10 §5.1). Not all providers populate this yet;
+   * providers that do NOT set `_raw` skip artifact capture.
+   */
+  _raw?: unknown
 }

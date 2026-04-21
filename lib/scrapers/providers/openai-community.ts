@@ -116,6 +116,7 @@ export async function scrapeOpenAICommunity(
           upvotes,
           comments_count: replyCount,
           published_at: topic.created_at,
+          _raw: topic,
         })
       }
     } catch (error) {
