@@ -564,7 +564,7 @@ Checklist:
 2. **Human authority over model output**: AI suggests; reviewer decides.
 3. **Boundary validation is non-negotiable**: reject malformed/unsafe model outputs.
 4. **Schema evolution with replayability**: keep raw records and model metadata.
-5. **Actionability over vanity metrics**: optimize for triage decisions, not chart volume.
+5. **Actionability over vanity metrics**: optimize for triage decisions, not chart volume; interpret dashboard priority copy with the [Dashboard interpretation contract](./SCORING.md#8-dashboard-interpretation-contract).
 
 ---
 
