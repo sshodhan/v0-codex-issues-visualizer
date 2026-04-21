@@ -153,10 +153,10 @@ Notes:
   `urgencyScore`. It is intentionally a display signal only; sentiment's
   contribution to urgency now lives inside `impact_score` via
   `calculateImpactScore`'s 1.5× boost.
-- The realtime card UI (`components/dashboard/realtime-insights.tsx:39`)
-  still advertises "volume + momentum + impact + negative sentiment" as the
-  urgency recipe — that copy is stale and should be updated to drop
-  "negative sentiment" (tracked as N-1 in `docs/BUGS.md`).
+- The realtime card UI (`components/dashboard/realtime-insights.tsx:39`) now
+  reads "(volume + momentum + impact + source diversity)", matching the
+  four-term formula above. (Previously advertised "negative sentiment"; fixed
+  per N-1 in `docs/BUGS.md`.)
 
 ## 5. Competitive sentiment (`computeCompetitiveMentions`)
 
@@ -193,4 +193,3 @@ Windsurf" currently logs +1 to Cursor _and_ +1 to Windsurf.
 4. Stored `impact_score` is permanently sentiment-inflated.
 5. `computeCompetitiveMentions` attributes sentiment to every co-mentioned
    competitor (see **P0-4**).
-6. UI card copy for urgency is stale (see **N-1** in `docs/BUGS.md`).
