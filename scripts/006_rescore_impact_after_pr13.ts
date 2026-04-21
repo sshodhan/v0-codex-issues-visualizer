@@ -1,5 +1,5 @@
 /**
- * N-6 one-shot re-score migration draft (PR #13 follow-up)
+ * N-6 one-shot re-score migration (PR #13 follow-up)
  *
  * Why this exists:
  * - PR #13 changed sentiment semantics by removing bug-topic nouns from the
@@ -14,12 +14,24 @@
  * 3) Run a staged apply with --limit=1000 --apply on staging.
  * 4) Run full --apply in production (with RESCORE_CONFIRM=yes).
  *
+ * Caveats to review before apply:
+ * - `analyzeSentiment` is called against `title + " " + content` read from the
+ *   DB. Scrapers analyze the raw `title + " " + selftext/body` *before*
+ *   truncating `title` to 500 chars and `content` to 2000 chars (see
+ *   `lib/scrapers/providers/*`). For rows where the pre-truncation text
+ *   contained polarity tokens beyond char 500/2000, the re-scored sentiment
+ *   may differ slightly from the original even without the PR #13 change.
+ *   Inspect the dry-run's `examples.sentimentChanged` list before applying.
+ * - The script is idempotent: unchanged rows are skipped, and re-running
+ *   `--apply` after success is a no-op.
+ * - The script uses keyset pagination by `id` (UUID), so concurrent inserts
+ *   during the run are tolerated (new rows are appended at the end and will
+ *   simply be scanned; they'll be unchanged since scrapers already use the
+ *   post-PR-#13 logic).
+ *
  * Runtime estimate (~50k rows):
- * - With batch size 500: ~100 read pages.
- * - Sentiment + impact recalculation is in-process and lightweight (regex/token
- *   work), typically much faster than network I/O.
- * - Most wall time is expected from DB reads/writes; rough estimate is a few
- *   minutes for dry-run, longer for full apply depending on update volume.
+ * - With batch size 500 and concurrency 8, a full apply is typically a few
+ *   minutes, dominated by DB round-trips. Dry-run is faster (reads only).
  *
  * Execute with Node + TS stripping:
  *   node --experimental-strip-types scripts/006_rescore_impact_after_pr13.ts
@@ -51,8 +63,8 @@ type UpdatedRow = {
   id: string
   old: {
     sentiment: Sentiment | null
-    sentiment_score: number
-    impact_score: number
+    sentiment_score: number | null
+    impact_score: number | null
   }
   next: {
     sentiment: Sentiment
@@ -65,6 +77,9 @@ type ParsedArgs = {
   dryRun: boolean
   apply: boolean
   limit?: number
+  batchSize: number
+  concurrency: number
+  reportPath?: string
 }
 
 type Summary = {
@@ -72,6 +87,9 @@ type Summary = {
   mode: "dry-run" | "apply"
   limit: number | null
   batchSize: number
+  concurrency: number
+  interrupted: boolean
+  error: string | null
   totals: {
     scanned: number
     wouldUpdate: number
@@ -93,13 +111,25 @@ type Summary = {
   }
 }
 
-const BATCH_SIZE = 500
+const DEFAULT_BATCH_SIZE = 500
+const DEFAULT_CONCURRENCY = 8
 const EXAMPLE_LIMIT = 20
+
+function parsePositiveInt(raw: string, flag: string): number {
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${flag} value: ${raw}`)
+  }
+  return parsed
+}
 
 function parseArgs(argv: string[]): ParsedArgs {
   let apply = false
   let dryRun = true
   let limit: number | undefined
+  let batchSize = DEFAULT_BATCH_SIZE
+  let concurrency = DEFAULT_CONCURRENCY
+  let reportPath: string | undefined
 
   for (const arg of argv) {
     if (arg === "--apply") {
@@ -113,12 +143,19 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue
     }
     if (arg.startsWith("--limit=")) {
-      const raw = arg.slice("--limit=".length)
-      const parsed = Number.parseInt(raw, 10)
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new Error(`Invalid --limit value: ${raw}`)
-      }
-      limit = parsed
+      limit = parsePositiveInt(arg.slice("--limit=".length), "--limit")
+      continue
+    }
+    if (arg.startsWith("--batch-size=")) {
+      batchSize = parsePositiveInt(arg.slice("--batch-size=".length), "--batch-size")
+      continue
+    }
+    if (arg.startsWith("--concurrency=")) {
+      concurrency = parsePositiveInt(arg.slice("--concurrency=".length), "--concurrency")
+      continue
+    }
+    if (arg.startsWith("--report=")) {
+      reportPath = arg.slice("--report=".length)
       continue
     }
     if (arg === "--help" || arg === "-h") {
@@ -133,31 +170,36 @@ function parseArgs(argv: string[]): ParsedArgs {
     )
   }
 
-  return { apply, dryRun, limit }
+  return { apply, dryRun, limit, batchSize, concurrency, reportPath }
 }
 
 function printHelpAndExit(): never {
   console.log(`Usage:
-  node --experimental-strip-types scripts/006_rescore_impact_after_pr13.ts [--dry-run] [--limit=N]
-  RESCORE_CONFIRM=yes node --experimental-strip-types scripts/006_rescore_impact_after_pr13.ts --apply [--limit=N]
+  node --experimental-strip-types scripts/006_rescore_impact_after_pr13.ts [--dry-run] [options]
+  RESCORE_CONFIRM=yes node --experimental-strip-types scripts/006_rescore_impact_after_pr13.ts --apply [options]
 
 Modes:
-  --dry-run  Default. No writes; prints summary and writes JSON report.
-  --apply    Performs updates. Requires RESCORE_CONFIRM=yes.
+  --dry-run            Default. No writes; prints summary and writes JSON report.
+  --apply              Performs updates. Requires RESCORE_CONFIRM=yes.
 
 Options:
-  --limit=N  Process first N rows only (ordered by id).
+  --limit=N            Process first N rows only (ordered by id).
+  --batch-size=N       Rows fetched per page. Default ${DEFAULT_BATCH_SIZE}.
+  --concurrency=N      Parallel UPDATEs during --apply. Default ${DEFAULT_CONCURRENCY}.
+  --report=PATH        Override JSON report output path.
 `)
   process.exit(0)
 }
 
-function toNumericScore(value: number | string | null): number {
-  if (typeof value === "number") return value
-  if (typeof value === "string") {
-    const parsed = Number.parseFloat(value)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return 0
+function toNumericScore(value: number | string | null): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === "number") return Number.isFinite(value) ? value : null
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function roundScore(value: number): number {
+  return Number(value.toFixed(2))
 }
 
 function pushExample(bucket: UpdatedRow[], row: UpdatedRow) {
@@ -181,7 +223,10 @@ async function run() {
     generatedAt: new Date().toISOString(),
     mode: args.apply ? "apply" : "dry-run",
     limit: args.limit ?? null,
-    batchSize: BATCH_SIZE,
+    batchSize: args.batchSize,
+    concurrency: args.concurrency,
+    interrupted: false,
+    error: null,
     totals: { scanned: 0, wouldUpdate: 0, updated: 0, unchanged: 0 },
     sentimentTransitions: {},
     impactDeltaDistribution: {},
@@ -198,120 +243,174 @@ async function run() {
     },
   }
 
-  let lastSeenId: string | null = null
+  let cancelled = false
+  const onSignal = (sig: NodeJS.Signals) => {
+    if (cancelled) return
+    cancelled = true
+    summary.interrupted = true
+    console.warn(`\nReceived ${sig}; finishing current batch and writing report...`)
+  }
+  process.on("SIGINT", onSignal)
+  process.on("SIGTERM", onSignal)
 
-  while (true) {
-    const remaining = args.limit ? args.limit - summary.totals.scanned : BATCH_SIZE
-    if (remaining <= 0) break
-    const batchLimit = Math.min(BATCH_SIZE, remaining)
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = path.dirname(__filename)
+  const dateStamp = summary.generatedAt.slice(0, 10).replaceAll("-", "")
+  const tmpDir = path.join(__dirname, "tmp")
+  const resolvedReportPath =
+    args.reportPath ?? path.join(tmpDir, `rescore-${dateStamp}.json`)
 
-    let query = supabase
-      .from("issues")
-      .select("id,title,content,sentiment,sentiment_score,impact_score,upvotes,comments_count")
-      .order("id", { ascending: true })
-      .limit(batchLimit)
+  const writeReport = async () => {
+    await mkdir(path.dirname(resolvedReportPath), { recursive: true })
+    await writeFile(resolvedReportPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8")
+  }
 
-    if (lastSeenId) {
-      query = query.gt("id", lastSeenId)
-    }
+  try {
+    let lastSeenId: string | null = null
+    let batchIndex = 0
 
-    const { data, error } = await query
-    if (error) throw new Error(`Failed fetching issues batch: ${error.message}`)
+    while (!cancelled) {
+      const remaining = args.limit
+        ? args.limit - summary.totals.scanned
+        : args.batchSize
+      if (remaining <= 0) break
+      const batchLimit = Math.min(args.batchSize, remaining)
 
-    const rows = (data ?? []) as IssueRow[]
-    if (rows.length === 0) break
+      let query = supabase
+        .from("issues")
+        .select("id,title,content,sentiment,sentiment_score,impact_score,upvotes,comments_count")
+        .order("id", { ascending: true })
+        .limit(batchLimit)
 
-    for (const row of rows) {
-      summary.totals.scanned += 1
-      lastSeenId = row.id
-
-      const text = `${row.title} ${row.content ?? ""}`.trim()
-      const analyzed = analyzeSentiment(text)
-      const newSentiment = analyzed.sentiment
-      const newSentimentScore = Number(analyzed.score.toFixed(2))
-      const newImpactScore = calculateImpactScore(
-        row.upvotes ?? 0,
-        row.comments_count ?? 0,
-        newSentiment
-      )
-
-      const prevSentimentScore = Number(toNumericScore(row.sentiment_score).toFixed(2))
-      const prevImpact = row.impact_score ?? 1
-
-      const sentimentChanged = row.sentiment !== newSentiment
-      const sentimentScoreChanged = prevSentimentScore !== newSentimentScore
-      const impactChanged = prevImpact !== newImpactScore
-      const anyChanged = sentimentChanged || sentimentScoreChanged || impactChanged
-
-      if (!anyChanged) {
-        summary.totals.unchanged += 1
-        continue
+      if (lastSeenId) {
+        query = query.gt("id", lastSeenId)
       }
 
-      summary.totals.wouldUpdate += 1
-      summary.categoryCounts.anyChanged += 1
-      if (sentimentChanged) summary.categoryCounts.sentimentChanged += 1
-      if (sentimentScoreChanged) summary.categoryCounts.sentimentScoreChanged += 1
-      if (impactChanged) summary.categoryCounts.impactChanged += 1
+      const { data, error } = await query
+      if (error) throw new Error(`Failed fetching issues batch: ${error.message}`)
 
-      const transition = transitionKey(row.sentiment, newSentiment)
-      summary.sentimentTransitions[transition] = (summary.sentimentTransitions[transition] ?? 0) + 1
+      const rows = (data ?? []) as IssueRow[]
+      if (rows.length === 0) break
 
-      const impactDelta = newImpactScore - prevImpact
-      const impactDeltaBucket = deltaKey(impactDelta)
-      summary.impactDeltaDistribution[impactDeltaBucket] =
-        (summary.impactDeltaDistribution[impactDeltaBucket] ?? 0) + 1
+      const pendingUpdates: UpdatedRow[] = []
 
-      const record: UpdatedRow = {
-        id: row.id,
-        old: {
-          sentiment: row.sentiment,
-          sentiment_score: prevSentimentScore,
-          impact_score: prevImpact,
-        },
-        next: {
-          sentiment: newSentiment,
-          sentiment_score: newSentimentScore,
-          impact_score: newImpactScore,
-        },
-      }
+      for (const row of rows) {
+        summary.totals.scanned += 1
+        lastSeenId = row.id
 
-      if (sentimentChanged) pushExample(summary.examples.sentimentChanged, record)
-      if (sentimentScoreChanged) pushExample(summary.examples.sentimentScoreChanged, record)
-      if (impactChanged) pushExample(summary.examples.impactChanged, record)
+        const text = `${row.title} ${row.content ?? ""}`.trim()
+        const analyzed = analyzeSentiment(text)
+        const newSentiment = analyzed.sentiment
+        const newSentimentScore = roundScore(analyzed.score)
+        const newImpactScore = calculateImpactScore(
+          row.upvotes ?? 0,
+          row.comments_count ?? 0,
+          newSentiment
+        )
 
-      if (args.apply) {
-        const { error: updateError } = await supabase
-          .from("issues")
-          .update({
+        const prevSentimentScoreRaw = toNumericScore(row.sentiment_score)
+        const prevSentimentScore =
+          prevSentimentScoreRaw === null ? null : roundScore(prevSentimentScoreRaw)
+        const prevImpact = row.impact_score
+
+        const sentimentChanged = row.sentiment !== newSentiment
+        const sentimentScoreChanged = prevSentimentScore !== newSentimentScore
+        const impactChanged = prevImpact !== newImpactScore
+        const anyChanged = sentimentChanged || sentimentScoreChanged || impactChanged
+
+        if (!anyChanged) {
+          summary.totals.unchanged += 1
+          continue
+        }
+
+        summary.totals.wouldUpdate += 1
+        summary.categoryCounts.anyChanged += 1
+        if (sentimentChanged) summary.categoryCounts.sentimentChanged += 1
+        if (sentimentScoreChanged) summary.categoryCounts.sentimentScoreChanged += 1
+        if (impactChanged) summary.categoryCounts.impactChanged += 1
+
+        const transition = transitionKey(row.sentiment, newSentiment)
+        summary.sentimentTransitions[transition] =
+          (summary.sentimentTransitions[transition] ?? 0) + 1
+
+        const impactDelta = newImpactScore - (prevImpact ?? 1)
+        const impactDeltaBucket = deltaKey(impactDelta)
+        summary.impactDeltaDistribution[impactDeltaBucket] =
+          (summary.impactDeltaDistribution[impactDeltaBucket] ?? 0) + 1
+
+        const record: UpdatedRow = {
+          id: row.id,
+          old: {
+            sentiment: row.sentiment,
+            sentiment_score: prevSentimentScore,
+            impact_score: prevImpact,
+          },
+          next: {
             sentiment: newSentiment,
             sentiment_score: newSentimentScore,
             impact_score: newImpactScore,
-          })
-          .eq("id", row.id)
-
-        if (updateError) {
-          throw new Error(`Failed updating issue ${row.id}: ${updateError.message}`)
+          },
         }
 
-        summary.totals.updated += 1
-      }
-    }
+        if (sentimentChanged) pushExample(summary.examples.sentimentChanged, record)
+        if (sentimentScoreChanged) pushExample(summary.examples.sentimentScoreChanged, record)
+        if (impactChanged) pushExample(summary.examples.impactChanged, record)
 
-    if (rows.length < batchLimit) break
+        if (args.apply) pendingUpdates.push(record)
+      }
+
+      if (args.apply && pendingUpdates.length > 0) {
+        for (let i = 0; i < pendingUpdates.length; i += args.concurrency) {
+          const chunk = pendingUpdates.slice(i, i + args.concurrency)
+          await Promise.all(
+            chunk.map(async (record) => {
+              const { error: updateError } = await supabase
+                .from("issues")
+                .update({
+                  sentiment: record.next.sentiment,
+                  sentiment_score: record.next.sentiment_score,
+                  impact_score: record.next.impact_score,
+                })
+                .eq("id", record.id)
+
+              if (updateError) {
+                throw new Error(
+                  `Failed updating issue ${record.id}: ${updateError.message}`
+                )
+              }
+              summary.totals.updated += 1
+            })
+          )
+        }
+      }
+
+      batchIndex += 1
+      console.log(
+        `[batch ${batchIndex}] scanned=${summary.totals.scanned} ` +
+          `wouldUpdate=${summary.totals.wouldUpdate} ` +
+          `updated=${summary.totals.updated} ` +
+          `unchanged=${summary.totals.unchanged}`
+      )
+
+      if (rows.length < batchLimit) break
+    }
+  } catch (err) {
+    summary.error = err instanceof Error ? err.message : String(err)
+    try {
+      await writeReport()
+    } catch {
+      /* swallow — original error takes precedence */
+    }
+    throw err
+  } finally {
+    process.off("SIGINT", onSignal)
+    process.off("SIGTERM", onSignal)
   }
 
-  const dateStamp = new Date().toISOString().slice(0, 10).replaceAll("-", "")
-  const __filename = fileURLToPath(import.meta.url)
-  const __dirname = path.dirname(__filename)
-  const tmpDir = path.join(__dirname, "tmp")
-  await mkdir(tmpDir, { recursive: true })
-
-  const reportPath = path.join(tmpDir, `rescore-${dateStamp}.json`)
-  await writeFile(reportPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8")
+  await writeReport()
 
   console.log("=== N-6 re-score summary ===")
-  console.log(`Mode: ${summary.mode}`)
+  console.log(`Mode: ${summary.mode}${summary.interrupted ? " (interrupted)" : ""}`)
   console.log(`Rows scanned: ${summary.totals.scanned}`)
   console.log(`Rows unchanged: ${summary.totals.unchanged}`)
   console.log(`Rows needing update: ${summary.totals.wouldUpdate}`)
@@ -340,7 +439,9 @@ async function run() {
   console.log(`  sentimentScoreChanged: ${summary.examples.sentimentScoreChanged.length}`)
   console.log(`  impactChanged: ${summary.examples.impactChanged.length}`)
 
-  console.log(`\nReport written: ${reportPath}`)
+  console.log(`\nReport written: ${resolvedReportPath}`)
+
+  if (summary.interrupted) process.exit(130)
 }
 
 run().catch((error) => {
