@@ -182,7 +182,42 @@ Windsurf" currently logs +1 to Cursor _and_ +1 to Windsurf.
 | `urgencyScore`     | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card |
 | `negativeRatio`    | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card (display) |
 
-## 7. Known limitations (summary)
+
+## 8. Dashboard interpretation contract
+
+When turning analytics into dashboard copy, follow this interpretation contract:
+
+- `frequency_count` is **not** a standalone priority narrative. It is a volume
+  descriptor and can overstate urgency if repeated low-impact duplicates dominate
+  a cluster.
+- Priority statements must combine **category context + sentiment composition +
+  impact**. Frequency alone is insufficient for ranking action.
+- Any urgency claim must include top examples as evidence (the surfaced sample
+  issues are mandatory support, not optional decoration).
+
+Canonical UI-copy prioritization signal (approximate):
+
+```
+risk_signal = negative_share × avg_impact × momentum
+```
+
+Where:
+
+- `negative_share` is the category-level negative sentiment ratio in the active
+  window,
+- `avg_impact` is the mean `impact_score` for that category/window,
+- `momentum` is directional change vs prior window (often shown as `now - prior`;
+  apply product-specific handling when momentum is negative).
+
+Use this signal as copy guidance rather than a strict replacement for
+`urgencyScore`.
+
+Do/Don’t examples:
+
+- **Do:** “Auth issues are 78% negative and rising +12 vs prior window.”
+- **Don’t:** “Auth has 42 issues.”
+
+## 9. Known limitations (summary)
 
 1. `keyword_presence` is a returned-but-unconsumed signal. Pick one:
    remove from the return type, persist as a column and index it, or wire
