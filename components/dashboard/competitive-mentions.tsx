@@ -1,39 +1,37 @@
 "use client"
 
-import { useMemo } from "react"
-import { Trophy, TrendingUp } from "lucide-react"
+import { Trophy, TrendingUp, CircleHelp } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import type { Issue } from "@/hooks/use-dashboard-data"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
-interface CompetitiveMentionsProps {
-  issues: Issue[]
+type MentionItem = {
+  competitor: string
+  totalMentions: number
+  coverage: number
+  avgConfidence: number
+  netSentiment: number
 }
 
-const COMPETITORS = [
-  { label: "Cursor", terms: ["cursor"] },
-  { label: "Claude", terms: ["claude"] },
-  { label: "GitHub Copilot", terms: ["copilot", "github copilot"] },
-  { label: "Windsurf", terms: ["windsurf", "codeium"] },
-  { label: "Replit", terms: ["replit"] },
-]
+type MentionsMeta = {
+  competitorsTracked: number
+  mentionCoverage: number
+  avgConfidence: number
+  totalScoredMentions?: number
+}
 
-export function CompetitiveMentions({ issues }: CompetitiveMentionsProps) {
-  const mentions = useMemo(() => {
-    const totals = COMPETITORS.map((competitor) => {
-      const count = issues.reduce((acc, issue) => {
-        const haystack = `${issue.title} ${issue.content}`.toLowerCase()
-        const hasMention = competitor.terms.some((term) => haystack.includes(term))
-        return hasMention ? acc + 1 : acc
-      }, 0)
+interface CompetitiveMentionsProps {
+  mentions: MentionItem[]
+  meta?: MentionsMeta
+}
 
-      return { name: competitor.label, count }
-    })
+function pct(value: number | undefined | null): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "—"
+  return `${Math.round(value * 100)}%`
+}
 
-    return totals.filter((item) => item.count > 0).sort((a, b) => b.count - a.count)
-  }, [issues])
-
-  const totalMentioned = mentions.reduce((acc, item) => acc + item.count, 0)
+export function CompetitiveMentions({ mentions, meta }: CompetitiveMentionsProps) {
+  const totalMentioned = mentions.reduce((acc, item) => acc + item.totalMentions, 0)
 
   return (
     <Card>
@@ -43,7 +41,7 @@ export function CompetitiveMentions({ issues }: CompetitiveMentionsProps) {
           Competitive mentions
         </CardTitle>
         <CardDescription>
-          Track which alternatives users mention in scoped issues to prioritize competitive gaps faster.
+          Mention-level sentiment with confidence and coverage metrics for transparent competitive benchmarking.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -58,10 +56,31 @@ export function CompetitiveMentions({ issues }: CompetitiveMentionsProps) {
                 {totalMentioned}
               </span>
             </div>
+            {meta && (
+              <TooltipProvider delayDuration={150}>
+                <div className="grid grid-cols-3 gap-2 rounded-md border border-border/60 bg-muted/30 p-2 text-xs">
+                  <MetaStat
+                    label="Competitors"
+                    value={String(meta.competitorsTracked)}
+                    hint="Number of tracked competitors with at least one mention in the scope."
+                  />
+                  <MetaStat
+                    label="Coverage"
+                    value={pct(meta.mentionCoverage)}
+                    hint="Share of raw mentions whose surrounding sentence contained evidence tokens the scorer could use."
+                  />
+                  <MetaStat
+                    label="Confidence"
+                    value={pct(meta.avgConfidence)}
+                    hint="Mean per-issue confidence across scored mentions, weighted by mention volume."
+                  />
+                </div>
+              </TooltipProvider>
+            )}
             <div className="flex flex-wrap gap-2">
               {mentions.map((item) => (
-                <Badge key={item.name} variant="secondary" className="text-xs">
-                  {item.name}: {item.count}
+                <Badge key={item.competitor} variant="secondary" className="text-xs">
+                  {item.competitor}: {item.totalMentions} · conf {pct(item.avgConfidence)} · cov {pct(item.coverage)}
                 </Badge>
               ))}
             </div>
@@ -69,5 +88,30 @@ export function CompetitiveMentions({ issues }: CompetitiveMentionsProps) {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+function MetaStat({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="flex items-center gap-1 text-muted-foreground">
+        {label}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-3 w-3 items-center justify-center text-muted-foreground/70 hover:text-foreground"
+              aria-label={`${label} definition`}
+            >
+              <CircleHelp className="h-3 w-3" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-[220px] text-xs">
+            {hint}
+          </TooltipContent>
+        </Tooltip>
+      </span>
+      <span className="font-medium text-foreground">{value}</span>
+    </div>
   )
 }

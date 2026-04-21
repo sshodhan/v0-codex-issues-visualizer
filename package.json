@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node --test --experimental-strip-types lib/scrapers/*.test.ts tests/*.test.ts"
+    "test": "node --test --experimental-strip-types lib/analytics/*.test.ts lib/scrapers/*.test.ts tests/*.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

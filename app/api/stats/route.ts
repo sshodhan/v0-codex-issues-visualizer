@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { computeRealtimeInsights } from "@/lib/analytics/realtime"
-import { computeCompetitiveMentions } from "@/lib/analytics/competitive"
+import {
+  computeCompetitiveMentions,
+  summarizeCompetitiveMentions,
+} from "@/lib/analytics/competitive"
 
 type Sentiment = "positive" | "negative" | "neutral"
 
@@ -133,6 +136,7 @@ export async function GET() {
 
   const realtimeInsights = computeRealtimeInsights(normalizedRecent)
   const competitiveMentions = computeCompetitiveMentions(normalizedRecent)
+  const competitiveMentionsMeta = summarizeCompetitiveMentions(competitiveMentions)
 
   const { data: lastScrape } = await supabase
     .from("scrape_logs")
@@ -157,6 +161,7 @@ export async function GET() {
     priorityMatrix: priorityData || [],
     realtimeInsights,
     competitiveMentions,
+    competitiveMentionsMeta,
     lastScrape,
   })
 }

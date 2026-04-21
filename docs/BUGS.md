@@ -47,21 +47,34 @@ the central phrase list.
 
 ### P0-2: Sentiment signal conflates functional words with emotional words — addressed in PR #11 + follow-ups
 
-**File:** `lib/scrapers/shared.ts:79-84`
+**Status:** ✅ Fixed on 2026-04-20 as a side effect of the competitive-sentiment
+lexicon unification.
 
-**Problem:** `negativeWords` includes `"bug"`, `"error"`, `"issue"`,
-`"problem"`. These are topic words (the post *is about* a bug), not valence
-words. Every post in the "Bug" category is pre-loaded with negative sentiment
-regardless of tone. This cascades into `calculateImpactScore` (1.5× multiplier,
-`shared.ts:255`) **and** the urgency formula (negativeRatio×3,
-`realtime.ts:124`), double-penalising bug-category issues.
+**Implemented fix:** `analyzeSentiment` in `lib/scrapers/shared.ts` now
+consumes `POSITIVE_WORDS` / `NEGATIVE_WORDS` from the canonical
+`lib/analytics/sentiment-lexicon.ts`. Topic nouns `"bug"`, `"error"`,
+`"issue"`, `"problem"`, `"fail"` are deliberately absent from that lexicon,
+so bug-category posts are no longer pre-loaded with negative sentiment based
+on their *subject*.
 
-```ts
-// fix — remove topic nouns from negativeWords, keep only valence adjectives
-// Remove: "bug", "error", "crash", "issue", "problem", "fail"
-// Keep:   "hate", "terrible", "awful", "bad", "worst", "broken",
-//         "frustrating", "annoying", "disappointing", "unusable"
-```
+The scoring path also switched from substring matching (`lowerText.includes`)
+to tokenized whole-word matching (`lowerText.match(/[a-z']+/g)`), eliminating
+collateral substring hits like `"debugger"` matching `"bug"` or
+`"useless"` matching on any word containing those letters.
+
+**Regression locked in** by `lib/scrapers/shared.test.ts`:
+- Topic-noun-only content ("Bug report: error… for this issue and problem.")
+  scores as neutral.
+- Identifier-like content ("The debugger attached to the process.") is
+  immune to substring pollution.
+- Real polarity ("great and helpful" / "awful and unusable") still fires.
+- Multi-word negatives (`"doesn't work"`, `"not working"`) continue to
+  register via regex, independent of the tokenizer.
+
+Note: `calculateImpactScore` still applies a 1.5× multiplier for negative
+sentiment (P0-3) — that double-counting problem is separate and unaddressed
+by this change. P0-2 addressed the classifier; P0-3 is about how the
+classifier's output is consumed downstream.
 
 **Resolution:** PR #11 pulled bug-topic tokens out of `negativeWords` into
 `NEGATIVE_KEYWORD_PATTERNS` and exposed the count as `keyword_presence` on
@@ -120,18 +133,63 @@ separately in `docs/SCORING.md`:
 
 ### P0-4: Competitive sentiment is attributed to *all* co-mentioned competitors
 
-**File:** `lib/analytics/competitive.ts:55-80`
+**Status:** ✅ Fixed on 2026-04-20, hardened after first senior review, and
+re-hardened after the second senior review closed the `fallbackSentiment`
+backchannel.
 
-**Problem:** If one post mentions both `cursor` and `windsurf`, the inner loop
-attributes the post's sentiment to both competitors. A post saying "Cursor is
-much better than Windsurf" is logged as a positive signal for Cursor *and* a
-positive signal for Windsurf. Net-sentiment bars in the dashboard are therefore
-misleading whenever two competitors appear in the same post.
+**Implemented fix:** `lib/analytics/competitive.ts` computes sentiment at the
+mention level (bounded sentence window around each competitor phrase),
+aggregates multiple mentions per competitor per issue, and rolls up
+positive/negative/neutral counts with a net-sentiment mean weighted by scored
+mentions only. A single issue-level sentiment is never copied to every
+co-mentioned competitor — not directly, and not through any fallback.
 
-**Fix sketch:** Either attribute only to competitors the sentence polarity
-points toward (hard), or deduplicate per-post: only mark the first matched
-competitor (simple) or skip sentiment attribution when `>1` competitor is
-matched (conservative).
+**Hardening round 1 (v7):**
+- API contract preserved: `topIssues[*].sentiment` stays `"positive" |
+  "negative" | "neutral" | null`.
+- Detection uses `COMPETITOR_KEYWORDS` exclusively; `PRETTY_NAME`-stripping
+  is forbidden and regression-tested (Sourcegraph, Gemini cases).
+- Strict sentence window (no ±120-char pad).
+- Parameterized `anchorBrand` (default `"codex"`) with regex-safe escaping.
+- Canonical shared lexicon in `lib/analytics/sentiment-lexicon.ts`.
+- Weighted `competitiveMentionsMeta` (by mention volume).
+- UI renders coverage/confidence + `totalScoredMentions`.
+
+**Hardening round 2 (v8, this review):**
+- **`fallbackSentiment` removed entirely.** The v7 design let zero-evidence
+  mentions inherit the ingest-time `issue.sentiment`. A senior reviewer
+  identified this as P0-4 reintroduced through a side channel: a post
+  dominated by anti-Codex language that merely name-drops Cursor would
+  inherit the post-level negative sentiment and attribute it to Cursor
+  despite zero Cursor-specific evidence. Removing the fallback means
+  evidence-free windows report `sentiment: null` and do NOT increment
+  per-competitor `positive`/`negative`/`neutral` counters. Regression locked
+  in by `competitive.test.ts`: "P0-4 via fallback channel: negative Codex
+  post that name-drops a competitor does NOT attribute negative to the
+  competitor".
+- **Lexicon unification finished.** `analyzeSentiment` in
+  `lib/scrapers/shared.ts` now consumes the canonical lexicon (closes P0-2
+  — see separate entry above). The half-unified state (shared module
+  created, but shared.ts still had inline lists) that v7 shipped is
+  resolved.
+- **Window char-cap.** `MAX_WINDOW_CHARS = 280` per side around the
+  mention, so an unpunctuated social-media blob no longer collapses the
+  window back to full-post scoring. Regression test: "unpunctuated long
+  blob is capped at MAX_WINDOW_CHARS per side".
+- **`summarizeCompetitiveMentions` extracted.** Meta arithmetic moved out
+  of `app/api/stats/route.ts` into `lib/analytics/competitive.ts` so per-
+  competitor shape changes and the dashboard aggregation stay in one file.
+- **Anchor regex cache.** `getAnchorRegexes` memoizes per-anchor `better`
+  / `worse` regexes so the common single-anchor run amortizes to two
+  `Map` lookups per window rather than two `new RegExp()` calls.
+- **Re-export shim dropped.** `shared.ts` no longer re-exports
+  `COMPETITOR_KEYWORDS`; verified no external consumer imports it from
+  there. Canonical source is `lib/analytics/competitors.ts`.
+
+**Transparency:** `competitiveMentions[*]` surfaces `rawMentions`,
+`scoredMentions`, `coverage`, and `avgConfidence` per competitor. The
+`CompetitiveMentions` card renders the weighted coverage/confidence summary
+with tooltip definitions so the metrics are not dead payload.
 
 **Status:** _still-open_. `lib/analytics/competitive.ts:55-92` still loops
 `for (const [competitor] of Object.entries(COMPETITOR_KEYWORDS))` and
@@ -453,10 +511,10 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 
 | ID     | Priority | Status       | Area           | File                                      | One-liner                                      |
 |--------|----------|--------------|----------------|-------------------------------------------|------------------------------------------------|
-| P0-1   | P0       | still-open   | Data quality   | `lib/scrapers/providers/reddit.ts:27`     | Bare `copilot` query matches unrelated products |
-| P0-2   | P0       | partial      | Sentiment      | `lib/scrapers/shared.ts`                  | Topic nouns fixed; `keyword_presence` unconsumed |
+| P0-1   | P0       | addressed    | Data quality   | `lib/scrapers/providers/reddit.ts:27`     | Reddit query uses scoped Codex phrases only    |
+| P0-2   | P0       | addressed    | Sentiment      | `lib/scrapers/shared.ts`                  | Canonical lexicon + tokenized match (topic nouns no longer conflated) |
 | P0-3   | P0       | addressed    | Analytics      | `shared.ts` + `realtime.ts`               | Double-count removed; impact now owns sentiment |
-| P0-4   | P0       | still-open   | Analytics      | `lib/analytics/competitive.ts:55-92`      | Co-mentioned competitors share same sentiment  |
+| P0-4   | P0       | addressed    | Analytics      | `lib/analytics/competitive.ts`            | Mention-window sentiment + null propagation (no fallback channel) |
 | P0-5   | P0       | still-open   | Data model     | `index.ts` + `002_*.sql:46`               | `frequency_count` never increments, always 1  |
 | P0-6   | P0       | still-open   | Performance    | `app/api/stats/route.ts`                  | 6 un-cached full-table scans per page load     |
 | P1-1   | P1       | still-open   | UX / errors    | `app/page.tsx:37`                         | Error and empty state look identical           |
@@ -477,7 +535,7 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 |--------|----------|--------------|----------------|-------------------------------------------|------------------------------------------------|
 | N-1    | P1       | still-open   | UI drift       | `components/dashboard/realtime-insights.tsx:39` | Card description advertises "negative sentiment" as a weight — no longer true. PR #13 reviewer flagged this should land with the formula change, not be deferred; tracked here since #13 did not include the one-line copy edit. |
 | N-2    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:90-131`           | `keyword_presence` is returned, tested, and never consumed. Reviewer recommendation: drop from return type + delete test in a follow-up (simplest), or persist as a column if a consumer lands. Status quo invites future contributors to "fix" the field and break the tests. |
-| N-3    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:107-130`          | Valence words use `.includes(word)` substring match (`"bad"` matches `"badge"`, `"fast"` matches `"breakfast"`) |
+| N-3    | P2       | addressed    | Scoring        | `lib/scrapers/shared.ts`                  | Valence scoring now tokenizes (`lowerText.match(/[a-z']+/g)`) instead of `.includes()`, so `"bad"` no longer matches `"badge"` and `"fast"` no longer matches `"breakfast"`. Closed as a side effect of the PR #10 lexicon-unification merge. |
 | N-4    | P2       | still-open   | Scoring        | All providers                             | `impact_score` engagement inputs (reactions, likes, answers, points, score) are unit-mismatched across sources — SO's `answer_count` is fed into the "comments" slot, etc. |
 | N-5    | P3       | still-open   | Ops            | `scripts/003_*.sql`                       | Two migrations share the `003_` prefix (`003_add_stackoverflow_source.sql`, `003_create_bug_report_classifications.sql`). Tolerable but fragile for ordered runners. |
 | N-6    | P1       | still-open   | Data migration | DB column `issues.impact_score`           | Old rows were written with the PR #11 pre-refactor sentiment logic (topic words forced negative → 1.5× boost applied widely). New rows are written with the narrower negative definition + same 1.5×. Until a re-score pass runs, the `issues` table is heterogeneous; dashboards mixing old + new rows will show a gradual downward drift in bug-category `avgImpact` as old rows age out of the 6-day window. Fix: one-shot SQL re-score job, or document the drift in release notes and let it wash out. |
@@ -498,3 +556,14 @@ The reviewer's "should-fix before merge" list — which this PR does NOT include
 - **N-1**: one-line UI copy fix in `components/dashboard/realtime-insights.tsx:39`.
 - **N-2**: decide `keyword_presence` fate (remove vs. persist).
 - **N-6**: release note or re-score job for `impact_score` heterogeneity.
+
+## PR #10 merge-into-main note
+
+When PR #10 merged, two items flipped status as documented above:
+- **P0-2** → `addressed`. PR #11 fixed topic-noun contamination at the
+  polarity layer; PR #10 finished the job by having `analyzeSentiment`
+  consume the canonical `lib/analytics/sentiment-lexicon.ts` and switching
+  substring matching to whole-token matching (which also closes N-3).
+- **P0-4** → `addressed`. Mention-window sentiment, nullable contract,
+  and the removal of the `fallbackSentiment` back-channel together
+  close the co-mentioned-competitor attribution bug.

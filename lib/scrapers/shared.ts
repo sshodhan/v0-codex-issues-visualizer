@@ -1,14 +1,7 @@
-import type { Category } from "../types"
+import type { Category } from "../types.ts"
 import { evaluateCodexRelevance } from "./relevance.ts"
-
-export const COMPETITOR_KEYWORDS: Record<string, string[]> = {
-  "claude-code": ["claude code", "anthropic claude code", "claude-code"],
-  copilot: ["github copilot", "copilot chat", "copilot workspace"],
-  cursor: ["cursor ide", "cursor editor", "cursor.sh"],
-  windsurf: ["windsurf", "codeium windsurf"],
-  gemini: ["gemini code assist", "gemini cli", "google gemini code"],
-  cody: ["sourcegraph cody", " cody "],
-}
+import { COMPETITOR_KEYWORDS } from "../analytics/competitors.ts"
+import { NEGATIVE_WORDS, POSITIVE_WORDS } from "../analytics/sentiment-lexicon.ts"
 
 const NEGATIVE_KEYWORD_PATTERNS = [
   /\bbugs?\b/g,
@@ -59,33 +52,34 @@ export function calculateKeywordPresence(text: string): number {
   }, 0)
 }
 
+// Ingest-time sentiment classifier. Consumes the canonical polarity lexicon
+// from lib/analytics/sentiment-lexicon so the ingest-side and the
+// mention-level classifier in lib/analytics/competitive share one source of
+// truth. Closes P0-2 (topic-noun contamination): topic nouns like "bug",
+// "error", "issue", "problem", "fail" are absent from the canonical lexicon
+// by construction, so bug-category posts are no longer pre-loaded with
+// negative sentiment regardless of tone. Topic-noun *presence* (which is
+// still a useful signal for urgency/triage, just not a polarity signal) is
+// surfaced separately via `keyword_presence`.
 export function analyzeSentiment(text: string): {
   sentiment: "positive" | "negative" | "neutral"
   score: number
   keyword_presence: number
 } {
-  const positiveWords = [
-    "love", "great", "amazing", "awesome", "excellent", "fantastic",
-    "helpful", "useful", "best", "perfect", "wonderful", "impressive",
-    "revolutionary", "game-changer", "productive", "efficient", "fast",
-    "accurate",
-  ]
-  const negativeWords = [
-    "hate", "terrible", "awful", "bad", "worst", "useless", "unusable",
-    "slow", "expensive", "frustrating", "annoying", "disappointing",
-    "wrong",
-  ]
-
   const lowerText = text.toLowerCase()
+  const tokens = lowerText.match(/[a-z']+/g) ?? []
+
   let positiveCount = 0
   let negativeCount = 0
 
-  positiveWords.forEach((word) => {
-    if (lowerText.includes(word)) positiveCount++
-  })
-  negativeWords.forEach((word) => {
-    if (lowerText.includes(word)) negativeCount++
-  })
+  for (const token of tokens) {
+    if (POSITIVE_WORDS.has(token)) positiveCount++
+    else if (NEGATIVE_WORDS.has(token)) negativeCount++
+  }
+
+  // Multi-word negative phrases the tokenizer cannot see directly.
+  if (/\bdoesn'?t\s+work\b/.test(lowerText)) negativeCount++
+  if (/\bnot\s+working\b/.test(lowerText)) negativeCount++
 
   const keyword_presence = calculateKeywordPresence(text)
 
