@@ -475,8 +475,26 @@ a dynamic list pulled from `/api/stats`'s `sourceBreakdown`.
 
 | ID     | Priority | Status       | Area           | File                                      | One-liner                                      |
 |--------|----------|--------------|----------------|-------------------------------------------|------------------------------------------------|
-| N-1    | P1       | still-open   | UI drift       | `components/dashboard/realtime-insights.tsx:39` | Card description advertises "negative sentiment" as a weight — no longer true |
-| N-2    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:90-131`           | `keyword_presence` is returned, tested, and never consumed (see `docs/SCORING.md`) |
-| N-3    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:107-130`          | Valence words use `.includes(word)` substring match (`"bad"` matches `"badge"`) |
+| N-1    | P1       | still-open   | UI drift       | `components/dashboard/realtime-insights.tsx:39` | Card description advertises "negative sentiment" as a weight — no longer true. PR #13 reviewer flagged this should land with the formula change, not be deferred; tracked here since #13 did not include the one-line copy edit. |
+| N-2    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:90-131`           | `keyword_presence` is returned, tested, and never consumed. Reviewer recommendation: drop from return type + delete test in a follow-up (simplest), or persist as a column if a consumer lands. Status quo invites future contributors to "fix" the field and break the tests. |
+| N-3    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:107-130`          | Valence words use `.includes(word)` substring match (`"bad"` matches `"badge"`, `"fast"` matches `"breakfast"`) |
 | N-4    | P2       | still-open   | Scoring        | All providers                             | `impact_score` engagement inputs (reactions, likes, answers, points, score) are unit-mismatched across sources — SO's `answer_count` is fed into the "comments" slot, etc. |
 | N-5    | P3       | still-open   | Ops            | `scripts/003_*.sql`                       | Two migrations share the `003_` prefix (`003_add_stackoverflow_source.sql`, `003_create_bug_report_classifications.sql`). Tolerable but fragile for ordered runners. |
+| N-6    | P1       | still-open   | Data migration | DB column `issues.impact_score`           | Old rows were written with the PR #11 pre-refactor sentiment logic (topic words forced negative → 1.5× boost applied widely). New rows are written with the narrower negative definition + same 1.5×. Until a re-score pass runs, the `issues` table is heterogeneous; dashboards mixing old + new rows will show a gradual downward drift in bug-category `avgImpact` as old rows age out of the 6-day window. Fix: one-shot SQL re-score job, or document the drift in release notes and let it wash out. |
+| N-7    | P2       | still-open   | Tests          | `tests/scoring-pipeline.test.ts`          | Coverage gaps surfaced by the #13 review: (a) no isolated test asserts the 1.5× negative-sentiment boost in `calculateImpactScore` — the PR's key semantic claim; (b) no boundary tests for `upvotes=0`/`comments=0` (should clamp to 1) or very high engagement (should clamp to 10); (c) no negative test proving `keyword_presence` does NOT feed urgency or impact; (d) the substring-match flaw (N-3) is documented but not characterized, so a "fix" would silently break N-3's current behavior. |
+
+---
+
+## PR #13 review ledger
+
+Two rounds of review have landed on this branch:
+
+1. **Senior-engineer subagent review** (2026-04-20). Systemic pipeline trace, surfaced N-1 through N-5, produced `docs/SCORING.md`.
+2. **Independent Claude review** (2026-04-20, post-rebase onto `main`). Verdict: **Merge with follow-ups. Zero blockers. Human senior engineer review explicitly not required for this PR** — the reviewer's rationale: the refactor is scoped to three files in a domain that already has two rounds of documented review, the math is straightforward, tests pass, and the DB heterogeneity risk is contained and recoverable.
+
+New findings from the #13 review are logged above as **N-6** (impact_score heterogeneity / re-score gap) and **N-7** (test coverage gaps).
+
+The reviewer's "should-fix before merge" list — which this PR does NOT include (all deferred as follow-ups, none are blockers):
+- **N-1**: one-line UI copy fix in `components/dashboard/realtime-insights.tsx:39`.
+- **N-2**: decide `keyword_presence` fate (remove vs. persist).
+- **N-6**: release note or re-score job for `impact_score` heterogeneity.
