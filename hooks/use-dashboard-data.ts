@@ -13,6 +13,20 @@ export interface DashboardStats {
   }
   sourceBreakdown: Array<{ name: string; count: number }>
   categoryBreakdown: Array<{ name: string; count: number; color: string }>
+  categorySentimentBreakdown: Array<{
+    name: string
+    color: string
+    positive: number
+    neutral: number
+    negative: number
+    total: number
+    avgImpact: number
+    topIssue: {
+      title: string
+      url: string | null
+      impact_score: number
+    } | null
+  }>
   trendData: Array<{
     date: string
     positive: number
