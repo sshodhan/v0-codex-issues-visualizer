@@ -33,6 +33,7 @@ export interface Issue {
   published_at: string | null
   relevance_reason: string | null
   scraped_at: string
+  last_seen_at: string
   created_at: string
   updated_at: string
   // Joined data
