@@ -73,6 +73,7 @@ export async function scrapeReddit(
           comments_count: num_comments,
           published_at: new Date(created_utc * 1000).toISOString(),
           relevance_reason: relevance.relevanceReason,
+          _raw: post.data,
         })
       }
     } catch (error) {

@@ -74,6 +74,7 @@ export async function scrapeHackerNews(
         comments_count: hit.num_comments || 0,
         published_at: hit.created_at,
         relevance_reason: relevance.relevanceReason,
+        _raw: hit,
       })
     }
   } catch (error) {

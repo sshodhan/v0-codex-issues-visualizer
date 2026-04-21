@@ -7,10 +7,20 @@ const ALLOWED_SORT = new Set([
   "upvotes",
   "comments_count",
   "published_at",
-  "scraped_at",
+  "captured_at",
   "sentiment_score",
 ])
 
+// Backward-compatible aliases for sort fields that were renamed during the
+// three-layer split. Clients passing the old name continue to work instead
+// of silently falling back to impact_score.
+const SORT_ALIASES: Record<string, string> = {
+  scraped_at: "captured_at",
+}
+
+// Reads the materialized view mv_observation_current, which carries one row
+// per active cluster canonical observation joined to the latest derivation
+// rows. See docs/ARCHITECTURE.md v10 §§3.1c, 5.3.
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
   const searchParams = request.nextUrl.searchParams
@@ -21,14 +31,12 @@ export async function GET(request: NextRequest) {
   const days = searchParams.get("days")
   const search = searchParams.get("q")
   const sortByRaw = searchParams.get("sortBy") || "impact_score"
-  const sortBy = ALLOWED_SORT.has(sortByRaw) ? sortByRaw : "impact_score"
+  const sortByAliased = SORT_ALIASES[sortByRaw] ?? sortByRaw
+  const sortBy = ALLOWED_SORT.has(sortByAliased) ? sortByAliased : "impact_score"
   const order = searchParams.get("order") === "asc" ? "asc" : "desc"
   const limit = Math.min(parseInt(searchParams.get("limit") || "100"), MAX_LIMIT)
   const offset = Math.max(parseInt(searchParams.get("offset") || "0"), 0)
 
-  // Resolve source/category slugs to ids first. Filtering on a joined
-  // relation with `.eq("source.slug", value)` does NOT actually filter
-  // parent rows in supabase-js; this two-step lookup is required.
   let sourceIds: string[] | null = null
   if (source) {
     const { data: srcRows } = await supabase
@@ -54,15 +62,9 @@ export async function GET(request: NextRequest) {
   }
 
   let query = supabase
-    .from("issues")
-    .select(
-      `
-      *,
-      source:sources(*),
-      category:categories(*)
-    `,
-      { count: "exact" }
-    )
+    .from("mv_observation_current")
+    .select("*", { count: "exact" })
+    .eq("is_canonical", true)
     .order(sortBy, { ascending: order === "asc" })
     .range(offset, offset + limit - 1)
 
@@ -80,7 +82,6 @@ export async function GET(request: NextRequest) {
   }
 
   if (search) {
-    // Match on title or content. Both columns are text so ilike is safe.
     const escaped = search.replace(/[%_]/g, (m) => `\\${m}`)
     query = query.or(`title.ilike.%${escaped}%,content.ilike.%${escaped}%`)
   }
@@ -91,5 +92,39 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  return NextResponse.json({ data, count })
+  // Shape-compat: consumers expect `id`, `source`, `category` fields.
+  // Attach sources/categories lookups in JS (cheap, cached by Postgres planner).
+  const rows = data || []
+  const neededSourceIds = new Set(rows.map((r: any) => r.source_id).filter(Boolean))
+  const neededCategoryIds = new Set(rows.map((r: any) => r.category_id).filter(Boolean))
+
+  const [sourcesMap, categoriesMap] = await Promise.all([
+    neededSourceIds.size
+      ? supabase
+          .from("sources")
+          .select("*")
+          .in("id", [...neededSourceIds])
+          .then(({ data }: { data: any[] | null }) =>
+            new Map<string, any>((data || []).map((s: any) => [s.id, s])),
+          )
+      : Promise.resolve(new Map<string, any>()),
+    neededCategoryIds.size
+      ? supabase
+          .from("categories")
+          .select("*")
+          .in("id", [...neededCategoryIds])
+          .then(({ data }: { data: any[] | null }) =>
+            new Map<string, any>((data || []).map((c: any) => [c.id, c])),
+          )
+      : Promise.resolve(new Map<string, any>()),
+  ])
+
+  const enriched = rows.map((r: any) => ({
+    ...r,
+    id: r.observation_id,
+    source: r.source_id ? sourcesMap.get(r.source_id) ?? null : null,
+    category: r.category_id ? categoriesMap.get(r.category_id) ?? null : null,
+  }))
+
+  return NextResponse.json({ data: enriched, count })
 }

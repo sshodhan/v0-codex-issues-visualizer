@@ -170,8 +170,22 @@ export function useScrape() {
 }
 
 
+export interface ClassificationReviewRecord {
+  id: string
+  classification_id: string
+  status: string | null
+  category: string | null
+  severity: string | null
+  needs_human_review: boolean | null
+  reviewer_notes: string | null
+  reviewed_by: string
+  reviewed_at: string
+}
+
 export interface ClassificationRecord {
   id: string
+  observation_id: string | null
+  prior_classification_id: string | null
   category: string
   subcategory: string
   severity: "critical" | "high" | "medium" | "low"
@@ -182,13 +196,21 @@ export interface ClassificationRecord {
   alternate_categories: string[]
   needs_human_review: boolean
   review_reasons: string[]
-  source_issue_title: string | null
-  source_issue_url: string | null
-  source_issue_sentiment: "positive" | "negative" | "neutral" | null
+  model_used: string | null
+  retried_with_large_model: boolean
+  algorithm_version: string
   created_at: string
-  reviewed_at: string | null
-  reviewed_by: string | null
-  reviewer_notes: string | null
+  // Append-only review history (see docs/ARCHITECTURE.md v10 §§3.3, 5.2):
+  latest_review: ClassificationReviewRecord | null
+  effective_status: string
+  effective_category: string
+  effective_severity: string
+  effective_needs_human_review: boolean
+  // Traceability fields — sourced from the linked observation at response time,
+  // not stored on the classification row. See docs/ARCHITECTURE.md v10 §7.2.
+  source_issue_url: string | null
+  source_issue_title: string | null
+  source_issue_sentiment: "positive" | "negative" | "neutral" | null
 }
 
 export interface ClassificationStats {

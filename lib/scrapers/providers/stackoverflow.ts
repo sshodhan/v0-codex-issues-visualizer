@@ -88,6 +88,7 @@ export async function scrapeStackOverflow(
           upvotes: item.score || 0,
           comments_count: item.answer_count || 0,
           published_at: new Date(item.creation_date * 1000).toISOString(),
+          _raw: item,
         })
       }
     } catch (error) {
