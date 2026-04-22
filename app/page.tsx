@@ -1,11 +1,12 @@
 "use client"
 
 import { Suspense, useMemo, useState } from "react"
+import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { AsOfBanner } from "@/components/dashboard/as-of-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { RefreshCw, Loader2, BarChart3, BrainCircuit, TrendingUp } from "lucide-react"
+import { RefreshCw, Loader2, BarChart3, BrainCircuit, TrendingUp, Settings } from "lucide-react"
 import { StatCard, InsightKpiCard } from "@/components/dashboard/stat-card"
 import { HeroInsight, computeHeroInsight } from "@/components/dashboard/hero-insight"
 import { 
@@ -239,6 +240,11 @@ function DashboardContent() {
               <p className="text-muted-foreground">Last synced</p>
               <p className="font-medium text-foreground">{lastScrapeTime}</p>
             </div>
+            <Button asChild variant="ghost" size="icon" title="Admin">
+              <Link href="/admin" aria-label="Admin">
+                <Settings className="h-4 w-4" />
+              </Link>
+            </Button>
             <Button
               onClick={handleRefresh}
               disabled={isRefreshing}
