@@ -246,7 +246,9 @@ Windsurf" currently logs +1 to Cursor _and_ +1 to Windsurf.
 | `urgencyScore`     | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card |
 | `negativeRatio`    | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card (display) |
 | `error_code` / `top_stack_frame` / `top_stack_frame_hash` / `cli_version` / `os` / `shell` / `editor` / `model_id` / `repro_markers` | `extractBugFingerprint` (`lib/scrapers/bug-fingerprint.ts`) | `bug_fingerprints` (algorithm_version = "v1") | SignalLayers panel, priority-matrix tooltip roll-ups, issues-table chips, compound cluster-key label |
-| `cluster_key_compound` | `buildCompoundClusterKey(title, fingerprint)` | `bug_fingerprints.cluster_key_compound` | SignalLayers "Cluster key" line — display/audit only, not a physical cluster key. Physical cluster membership is owned by the semantic pass in `lib/storage/semantic-clusters.ts`. |
+| `cluster_key_compound` | `buildCompoundClusterKey(title, fingerprint)` at ingest (sole writer). `computeCompoundKey(supabase, observation_id)` is the read-time helper used by the on-demand classify GET/POST routes — one derivation site for writes, one for reads. | `bug_fingerprints.cluster_key_compound` | SignalLayers "Cluster key" line + `compound_key` drill-down filter (outcome A). Still display/audit; physical cluster membership remains with the semantic pass in `lib/storage/semantic-clusters.ts`. |
+| `actionability` | `computeActionability` in `lib/analytics/actionability.ts` | Computed per request in `/api/stats`; not stored | Priority Matrix ranking axis (see §10.1) |
+| Fingerprint surge `(error_code, now_count, prev_count, delta, sources)` | `fingerprint_surges(window_hours)` SQL function against `mv_fingerprint_daily` (migration 014) | Not stored | `FingerprintSurgeCard` on the dashboard, wired to the `compound_key` drill-down. |
 | `llm_subcategory` / `llm_primary_tag` / other classifier fields | `classifyReport` (`lib/classification/pipeline.ts`) | `classifications` (joined into `mv_observation_current` at MV refresh) | SignalLayers LLM layer, priority-matrix tooltip subcategory counts, issues-table subcategory chip |
 
 
@@ -378,3 +380,19 @@ Tooltip copy guidance:
   presence, repro markers, and source diversity bonus.
 - Include a short explanatory note that `repro_markers` directly contributes to
   ranking (8% weight, capped), so this signal is not dead/advisory-only data.
+
+### 10.2 Priority Matrix lane aggregation
+
+The Priority Matrix groups per-cluster canonical rows into **category lanes**
+for display. Within a lane, lane-level `actionability` is the **mean of the
+per-row actionability scores** (not a re-computation from aggregate inputs).
+This keeps the scoring formula in one place (`lib/analytics/actionability.ts`)
+and makes the lane's rank a direct function of the rows it contains.
+
+Practical consequence: a lane with one 0.95-actionability row outranks a lane
+with five 0.70-actionability rows (mean 0.95 vs 0.70). This matches the
+dashboard doctrine that one high-actionability cluster is more promote-able
+than five mid-actionability clusters — volume already feeds `frequency` in
+the per-row score. Ties on mean actionability fall back to the legacy
+`priorityScore` (65% impact + 35% frequency) so the visual regression vs
+pre-PR behavior on lanes without fingerprint signal is minimal.

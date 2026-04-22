@@ -505,6 +505,49 @@ The only layer consumed by the dashboard API routes. Every row can be rebuilt fr
 
 The RLS policy for `service_role` grants INSERT but NOT UPDATE/DELETE on `observations`, `observation_revisions`, `engagement_snapshots`, `ingestion_artifacts`, `classifications`, `classification_reviews`. Writes flow through `record_*` RPCs defined with `SECURITY DEFINER` — these are the only way to land a row and they validate shape before insert. Attempts to UPDATE evidence fail at the DB, not at the application, so a buggy scraper cannot corrupt the evidence layer.
 
+### 5.7 Fingerprint time-series MV
+
+`scripts/014_fingerprint_trend.sql` adds a read-optimized time-series surface
+for regex-extracted error codes so the dashboard can answer "is something
+breaking right now?" without scanning `bug_fingerprints` on every request.
+
+- `mv_fingerprint_daily(day, error_code, cnt, source_diversity)` — 60-day
+  daily buckets built from `bug_fingerprints` ⨝ `observations` ⨝ `sources`.
+  One row per `(day, error_code)`. `source_diversity` is the distinct
+  source count on that day, so cross-source amplification is visible
+  without another join at read time. Indexed on `(error_code, day desc)`
+  and `(day desc)` so the surge function hits an index on every run.
+- `v_cluster_source_diversity(cluster_id, source_diversity)` — companion
+  view (not materialized) that projects per-cluster source diversity off
+  `mv_observation_current`. Feeds the 7% `source_diversity` term in the
+  actionability score (see `docs/SCORING.md` §10.1).
+- `fingerprint_surges(window_hours int default 24)` — read-time SQL
+  function returning `(error_code, now_count, prev_count, delta, sources)`
+  for the dashboard surge card and alerting UI. Buckets at day
+  granularity; delta > 0 qualifies as a surge; `prev_count = 0` with
+  `now_count > 0` is the "new in window" signal consumed by
+  `lib/analytics/fingerprint-surge.ts`.
+
+Refresh semantics:
+
+- `refresh_materialized_views()` is extended in place to refresh
+  `mv_observation_current` (CONCURRENTLY, has a unique index),
+  `mv_trend_daily`, and `mv_fingerprint_daily` together at cron end.
+  No scheduling changes — the scraper pipeline already calls the RPC
+  after every ingest batch (`lib/scrapers/index.ts`).
+- No write path to `bug_fingerprints` changes in this migration; the
+  append-only invariants from 013 remain intact.
+- No `algorithm_version` bump — no derivation shape changed.
+- Surge detection is a read-time SQL function, not a new write
+  pipeline or denormalized table.
+
+Invariants preserved:
+
+- `mv_observation_current` is NOT dropped or rebuilt; 014 only adds.
+- No RPC signature changes except the single-function
+  `refresh_materialized_views()` body rewrite (same signature, same
+  grants, same callers).
+
 ---
 
 ## 6) Analytics and triage quality model

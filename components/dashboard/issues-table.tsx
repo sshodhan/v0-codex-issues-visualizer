@@ -35,7 +35,13 @@ interface IssuesTableProps {
     sentiment?: string
     sortBy?: string
     order?: string
+    compound_key?: string
   }) => void
+  // When set, shows a dismissible chip in the filter bar. Matching the
+  // `Cluster: <label>` chip pattern — the user can clear the drill-down
+  // from the table itself without scrolling back to the card that seeded
+  // it (priority matrix tooltip or fingerprint surge card).
+  activeCompoundKey?: string
 }
 
 // Issues table with filters and clickable links
@@ -47,6 +53,7 @@ export function IssuesTable({
   observationCount,
   canonicalCount,
   onFilterChange,
+  activeCompoundKey,
 }: IssuesTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState("impact_score")
@@ -142,6 +149,20 @@ export function IssuesTable({
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             <Badge variant="secondary">Window: {globalTimeLabel}</Badge>
             <Badge variant="secondary">Cluster: {globalCategoryLabel}</Badge>
+            {activeCompoundKey && (
+              <button
+                type="button"
+                onClick={() => onFilterChange({ compound_key: undefined })}
+                className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Clear fingerprint filter ${activeCompoundKey}`}
+                title="Clear fingerprint filter"
+              >
+                <Badge variant="outline" className="font-mono border-destructive/60 text-destructive">
+                  {activeCompoundKey}
+                  <span className="ml-1" aria-hidden>×</span>
+                </Badge>
+              </button>
+            )}
           </div>
         </div>
       </CardHeader>
@@ -235,9 +256,32 @@ export function IssuesTable({
                               expanded view.
                             */}
                             {issue.error_code && (
-                              <Badge variant="outline" className="font-mono text-[10px] border-destructive/60 text-destructive">
-                                {issue.error_code}
-                              </Badge>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  onFilterChange({
+                                    // Prefer the full persisted label so the
+                                    // drill-down is exact (title+err+frame).
+                                    // Fall back to `err:<code>` for pre-014
+                                    // rows that don't yet carry a compound
+                                    // label; /api/issues resolves that to a
+                                    // cluster_key_compound substring match.
+                                    compound_key:
+                                      issue.cluster_key_compound ?? `err:${issue.error_code}`,
+                                  })
+                                }}
+                                className="inline-flex rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                aria-label={`Filter to error code ${issue.error_code}`}
+                                title={`Filter to ${issue.error_code}`}
+                              >
+                                <Badge
+                                  variant="outline"
+                                  className="font-mono text-[10px] border-destructive/60 text-destructive"
+                                >
+                                  {issue.error_code}
+                                </Badge>
+                              </button>
                             )}
                             {issue.top_stack_frame && (
                               <Badge variant="outline" className="font-mono text-[10px]">

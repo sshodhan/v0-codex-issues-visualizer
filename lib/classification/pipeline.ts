@@ -53,6 +53,17 @@ export interface ClassificationCandidate {
   observationId: string
   title: string
   reportText: string
+  // Regex-derived structured context forwarded to classifyReport's
+  // user-turn builder. The classifier schema (classifyInputSchema above)
+  // already accepts both fields; we are enriching the prompt payload, not
+  // changing the response contract. Absent when the fingerprint extraction
+  // didn't find the relevant tokens.
+  env?: Record<string, string>
+  repro?: {
+    count?: number
+    last_seen?: string
+    workspace_hash_if_shared?: string
+  }
 }
 
 export interface ClassificationQueueResult {
@@ -273,6 +284,8 @@ export async function processObservationClassificationQueue(
         {
           report_text: candidate.reportText,
           observation_id: candidate.observationId,
+          env: candidate.env,
+          repro: candidate.repro,
         },
         { supabase },
       )
