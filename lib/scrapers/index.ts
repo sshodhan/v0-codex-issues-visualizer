@@ -28,6 +28,7 @@ import {
 import {
   extractBugFingerprint,
   buildCompoundClusterKey,
+  type BugFingerprint,
 } from "@/lib/scrapers/bug-fingerprint"
 
 export {
@@ -79,7 +80,13 @@ type AdminClient = ReturnType<typeof createAdminClient>
 async function persistIssueRecord(
   supabase: AdminClient,
   issue: Partial<Issue>,
-): Promise<{ observationId: string; title: string; reportText: string; isNewObservation: boolean } | null> {
+): Promise<{
+  observationId: string
+  title: string
+  reportText: string
+  isNewObservation: boolean
+  fingerprint: BugFingerprint
+} | null> {
   if (!issue.source_id || !issue.external_id || !issue.title) return null
 
   // 3.1a Evidence — detect pre-existing observation so we can distinguish
@@ -215,6 +222,33 @@ async function persistIssueRecord(
       sourceSlug: issue.source_slug ?? null,
     }),
     isNewObservation: !existing,
+    fingerprint,
+  }
+}
+
+// Build a ClassificationCandidate that forwards regex-derived env + repro
+// context (outcome C). Keeping this in one place so both runAllScrapers and
+// runScraper wire identical payloads into the queue.
+function buildClassificationCandidate(persisted: {
+  observationId: string
+  title: string
+  reportText: string
+  fingerprint: BugFingerprint
+}): ClassificationCandidate {
+  const env: Record<string, string> = {}
+  const fp = persisted.fingerprint
+  if (fp.cli_version) env.cli_version = fp.cli_version
+  if (fp.os) env.os = fp.os
+  if (fp.shell) env.shell = fp.shell
+  if (fp.editor) env.editor = fp.editor
+  if (fp.model_id) env.model_id = fp.model_id
+
+  return {
+    observationId: persisted.observationId,
+    title: persisted.title,
+    reportText: persisted.reportText,
+    env: Object.keys(env).length > 0 ? env : undefined,
+    repro: fp.repro_markers > 0 ? { count: fp.repro_markers } : undefined,
   }
 }
 
@@ -263,11 +297,7 @@ export async function runAllScrapers(): Promise<RunSummary> {
           if (persisted) {
             added++
             if (persisted.isNewObservation) {
-              classificationCandidates.push({
-                observationId: persisted.observationId,
-                title: persisted.title,
-                reportText: persisted.reportText,
-              })
+              classificationCandidates.push(buildClassificationCandidate(persisted))
             }
           }
         }
