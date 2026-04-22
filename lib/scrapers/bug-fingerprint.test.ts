@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   EMPTY_FINGERPRINT,
   buildCompoundClusterKey,
+  computeCompoundKey,
   extractBugFingerprint,
 } from "./bug-fingerprint.ts"
 import { buildTitleClusterKey } from "../storage/cluster-key.ts"
@@ -270,4 +271,34 @@ test("stack-frame hash is stable across one-line shifts of the same file", () =>
   })
   assert.equal(fpA.top_stack_frame_hash, fpB.top_stack_frame_hash)
   assert.notEqual(fpA.top_stack_frame, fpB.top_stack_frame)
+})
+
+test("computeCompoundKey derives label from observation projection", async () => {
+  const supabase = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({
+            data: {
+              title: "Codex crashes on startup",
+              error_code: "ENOENT",
+              top_stack_frame: "src/cli.ts:14",
+              top_stack_frame_hash: "abc123",
+              cli_version: "1.2.3",
+              fp_os: "macos",
+              fp_shell: "zsh",
+              fp_editor: "vscode",
+              model_id: "gpt-5-mini",
+              repro_markers: 2,
+              fp_keyword_presence: 4,
+            },
+            error: null,
+          }),
+        }),
+      }),
+    }),
+  } as any
+
+  const key = await computeCompoundKey(supabase, "00000000-0000-0000-0000-000000000001")
+  assert.ok(key?.includes("|err:ENOENT|frame:abc123"))
 })

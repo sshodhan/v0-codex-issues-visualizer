@@ -263,10 +263,22 @@ export async function runAllScrapers(): Promise<RunSummary> {
           if (persisted) {
             added++
             if (persisted.isNewObservation) {
+              const fingerprint = extractBugFingerprint({
+                title: persisted.title,
+                content: issue.content ?? null,
+              })
               classificationCandidates.push({
                 observationId: persisted.observationId,
                 title: persisted.title,
                 reportText: persisted.reportText,
+                env: {
+                  ...(fingerprint.cli_version ? { cli_version: fingerprint.cli_version } : {}),
+                  ...(fingerprint.os ? { os: fingerprint.os } : {}),
+                  ...(fingerprint.shell ? { shell: fingerprint.shell } : {}),
+                  ...(fingerprint.editor ? { editor: fingerprint.editor } : {}),
+                  ...(fingerprint.model_id ? { model_id: fingerprint.model_id } : {}),
+                },
+                repro: fingerprint.repro_markers > 0 ? { count: fingerprint.repro_markers } : undefined,
               })
             }
           }

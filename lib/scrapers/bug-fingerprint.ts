@@ -297,6 +297,50 @@ export function buildCompoundClusterKey(title: string, fp: BugFingerprint | null
   return `${base}|${parts.join("|")}`
 }
 
+type CompoundKeyReader = {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (column: string, value: string) => {
+        maybeSingle: () => Promise<{ data: any; error: { message: string } | null }>
+      }
+    }
+  }
+}
+
+/**
+ * Single read-time source of truth for compound-key derivation.
+ *
+ * Reads the observation title from `mv_observation_current` and the latest
+ * fingerprint from `bug_fingerprints`, then derives the label using the same
+ * pure builder used at ingest.
+ */
+export async function computeCompoundKey(
+  supabase: CompoundKeyReader,
+  observationId: string,
+): Promise<string | null> {
+  const { data: row, error } = await supabase
+    .from("mv_observation_current")
+    .select(
+      "title, error_code, top_stack_frame, top_stack_frame_hash, cli_version, fp_os, fp_shell, fp_editor, model_id, repro_markers, fp_keyword_presence",
+    )
+    .eq("observation_id", observationId)
+    .maybeSingle()
+
+  if (error || !row?.title) return null
+  return buildCompoundClusterKey(row.title, {
+    error_code: row.error_code ?? null,
+    top_stack_frame: row.top_stack_frame ?? null,
+    top_stack_frame_hash: row.top_stack_frame_hash ?? null,
+    cli_version: row.cli_version ?? null,
+    os: row.fp_os ?? null,
+    shell: row.fp_shell ?? null,
+    editor: row.fp_editor ?? null,
+    model_id: row.model_id ?? null,
+    repro_markers: row.repro_markers ?? 0,
+    keyword_presence: row.fp_keyword_presence ?? 0,
+  })
+}
+
 // Re-exported for callers that want the normalized title without the
 // hashing step (e.g. the backfill script's diagnostic output).
 export { normalizeTitleForCluster }

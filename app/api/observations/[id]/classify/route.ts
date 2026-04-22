@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
-import { extractBugFingerprint, buildCompoundClusterKey } from "@/lib/scrapers/bug-fingerprint"
+import { extractBugFingerprint, computeCompoundKey } from "@/lib/scrapers/bug-fingerprint"
 import {
   classifyReport,
   ClassificationValidationError,
@@ -92,7 +92,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
           classified_at: existingClassification.created_at,
         }
       : null,
-    compound_key: buildCompoundClusterKey(row.title, regex),
+    compound_key: await computeCompoundKey(supabase as any, parsed.data.id),
   })
 }
 
@@ -156,7 +156,18 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     // classifyReport owns validation, escalation, hard review rules, and
     // the write to `classifications`. We reuse it rather than replicate.
     result = await classifyReport(
-      { report_text: reportText, observation_id: parsed.data.id },
+      {
+        report_text: reportText,
+        observation_id: parsed.data.id,
+        env: {
+          ...(regex.cli_version ? { cli_version: regex.cli_version } : {}),
+          ...(regex.os ? { os: regex.os } : {}),
+          ...(regex.shell ? { shell: regex.shell } : {}),
+          ...(regex.editor ? { editor: regex.editor } : {}),
+          ...(regex.model_id ? { model_id: regex.model_id } : {}),
+        },
+        repro: regex.repro_markers > 0 ? { count: regex.repro_markers } : undefined,
+      },
       { supabase: admin },
     )
   } catch (error) {
@@ -182,7 +193,7 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   // `classifications` directly, so dashboards pick up the new
   // subcategory / tags / etc. on the next materialized-view refresh.
   // The compound-key label is pure regex for the same reason.
-  const compoundKey = buildCompoundClusterKey(row.title, regex)
+  const compoundKey = await computeCompoundKey(supabase as any, parsed.data.id)
 
   return NextResponse.json({
     regex,

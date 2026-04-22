@@ -246,7 +246,7 @@ Windsurf" currently logs +1 to Cursor _and_ +1 to Windsurf.
 | `urgencyScore`     | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card |
 | `negativeRatio`    | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card (display) |
 | `error_code` / `top_stack_frame` / `top_stack_frame_hash` / `cli_version` / `os` / `shell` / `editor` / `model_id` / `repro_markers` | `extractBugFingerprint` (`lib/scrapers/bug-fingerprint.ts`) | `bug_fingerprints` (algorithm_version = "v1") | SignalLayers panel, priority-matrix tooltip roll-ups, issues-table chips, compound cluster-key label |
-| `cluster_key_compound` | `buildCompoundClusterKey(title, fingerprint)` | `bug_fingerprints.cluster_key_compound` | SignalLayers "Cluster key" line — display/audit only, not a physical cluster key. Physical cluster membership is owned by the semantic pass in `lib/storage/semantic-clusters.ts`. |
+| `cluster_key_compound` | `buildCompoundClusterKey(title, fingerprint)` (write-time) + `computeCompoundKey(observationId)` (read-time) | `bug_fingerprints.cluster_key_compound` | SignalLayers "Cluster key" line and `compound_key` drill-down filter — display/audit only, not a physical cluster key. Physical cluster membership is owned by the semantic pass in `lib/storage/semantic-clusters.ts`. |
 | `llm_subcategory` / `llm_primary_tag` / other classifier fields | `classifyReport` (`lib/classification/pipeline.ts`) | `classifications` (joined into `mv_observation_current` at MV refresh) | SignalLayers LLM layer, priority-matrix tooltip subcategory counts, issues-table subcategory chip |
 
 

@@ -18,6 +18,7 @@ import { SentimentChart } from "@/components/dashboard/sentiment-chart"
 import { SourceChart } from "@/components/dashboard/source-chart"
 import { TrendChart } from "@/components/dashboard/trend-chart"
 import { PriorityMatrix } from "@/components/dashboard/priority-matrix"
+import { FingerprintSurgeCard } from "@/components/dashboard/fingerprint-surge-card"
 import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
 import { IssuesTable } from "@/components/dashboard/issues-table"
 import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
@@ -30,6 +31,7 @@ import {
   useScrape,
   useClassifications,
   useClassificationStats,
+  useFingerprintSurges,
 } from "@/hooks/use-dashboard-data"
 import { formatDistanceToNow } from "date-fns"
 
@@ -61,6 +63,7 @@ function DashboardContent() {
     sentiment?: string
     sortBy?: string
     order?: string
+    compound_key?: string
   }>({})
 
   const { stats, isLoading: statsLoading, isError: statsError, refresh: refreshStats } = useDashboardStats({
@@ -82,6 +85,7 @@ function DashboardContent() {
   const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats({
     asOf: asOf || undefined,
   })
+  const { data: fingerprintSurges } = useFingerprintSurges(24)
 
   const handleRefresh = async () => {
     setIsRefreshing(true)
@@ -303,6 +307,11 @@ function DashboardContent() {
                 onNavigateToCategory={handleNavigateToCategory}
               />
 
+              <FingerprintSurgeCard
+                data={fingerprintSurges}
+                onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+              />
+
               {/* Secondary KPI Cards - Insight-first design */}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {kpiSummary.topRiskCategory && (
@@ -364,7 +373,10 @@ function DashboardContent() {
               </div>
 
               {/* Priority Matrix - Actionable view */}
-              <PriorityMatrix data={stats.priorityMatrix} />
+              <PriorityMatrix
+                data={stats.priorityMatrix}
+                onFilterChange={(filters) => handleFilterChange(filters)}
+              />
 
               {/* Real-time insights + competitive mentions */}
               <div className="grid gap-6 lg:grid-cols-2">
@@ -389,6 +401,7 @@ function DashboardContent() {
                 observationCount={issues.length}
                 canonicalCount={stats?.totalIssues || issues.length}
                 onFilterChange={handleFilterChange}
+                activeCompoundKey={issueFilters.compound_key}
               />
             </TabsContent>
 

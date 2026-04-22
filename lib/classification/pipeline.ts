@@ -53,6 +53,12 @@ export interface ClassificationCandidate {
   observationId: string
   title: string
   reportText: string
+  env?: Record<string, string>
+  repro?: {
+    count?: number
+    last_seen?: string
+    workspace_hash_if_shared?: string
+  }
 }
 
 export interface ClassificationQueueResult {
@@ -273,6 +279,8 @@ export async function processObservationClassificationQueue(
         {
           report_text: candidate.reportText,
           observation_id: candidate.observationId,
+          env: candidate.env,
+          repro: candidate.repro,
         },
         { supabase },
       )

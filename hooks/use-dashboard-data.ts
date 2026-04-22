@@ -41,6 +41,9 @@ export interface DashboardStats {
     url?: string | null
     impact_score: number
     frequency_count: number
+    source_diversity?: number
+    actionability?: number
+    priorityScore?: number
     sentiment: string
     category: { name: string; color: string } | null
     fingerprint?: {
@@ -142,6 +145,26 @@ export interface Issue {
   llm_subcategory?: string | null
   llm_primary_tag?: string | null
   fingerprint_algorithm_version?: string | null
+  cluster_key_compound?: string | null
+}
+
+export interface FingerprintSurgeRow {
+  error_code: string
+  now_count: number
+  prev_count: number
+  delta: number
+  sources: number
+}
+
+export interface FingerprintSurgeNewRow {
+  error_code: string
+  count: number
+  sources: number
+}
+
+export interface FingerprintSurgeResponse {
+  surges: FingerprintSurgeRow[]
+  new_in_window: FingerprintSurgeNewRow[]
 }
 
 export function useDashboardStats(options?: {
@@ -180,6 +203,7 @@ export function useIssues(filters?: {
   sortBy?: string
   order?: string
   q?: string
+  compound_key?: string
   asOf?: string
 }) {
   const params = new URLSearchParams()
@@ -190,6 +214,7 @@ export function useIssues(filters?: {
   if (filters?.sortBy) params.set("sortBy", filters.sortBy)
   if (filters?.order) params.set("order", filters.order)
   if (filters?.q) params.set("q", filters.q)
+  if (filters?.compound_key) params.set("compound_key", filters.compound_key)
   if (filters?.asOf) params.set("as_of", filters.asOf)
 
   const { data, error, isLoading, mutate } = useSWR<{
@@ -202,6 +227,20 @@ export function useIssues(filters?: {
   return {
     issues: data?.data || [],
     count: data?.count || 0,
+    isLoading,
+    isError: error,
+    refresh: mutate,
+  }
+}
+
+export function useFingerprintSurges(windowHours = 24) {
+  const url = `/api/fingerprints/surge?window_hours=${windowHours}`
+  const { data, error, isLoading, mutate } = useSWR<FingerprintSurgeResponse>(url, fetcher, {
+    refreshInterval: 60000,
+  })
+
+  return {
+    data,
     isLoading,
     isError: error,
     refresh: mutate,

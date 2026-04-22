@@ -505,6 +505,26 @@ The only layer consumed by the dashboard API routes. Every row can be rebuilt fr
 
 The RLS policy for `service_role` grants INSERT but NOT UPDATE/DELETE on `observations`, `observation_revisions`, `engagement_snapshots`, `ingestion_artifacts`, `classifications`, `classification_reviews`. Writes flow through `record_*` RPCs defined with `SECURITY DEFINER` — these are the only way to land a row and they validate shape before insert. Attempts to UPDATE evidence fail at the DB, not at the application, so a buggy scraper cannot corrupt the evidence layer.
 
+### 5.7 Fingerprint time-series MV
+
+`scripts/014_fingerprint_trend.sql` adds a read-optimized time-series surface
+for regex fingerprint spikes:
+
+- `mv_fingerprint_daily(day, error_code, cnt, source_diversity)` — 60-day
+  daily buckets built from `bug_fingerprints` + `observations` + `sources`.
+- `fingerprint_surges(window_hours int default 24)` — read-time SQL function
+  returning `(error_code, now_count, prev_count, delta, sources)` for the
+  dashboard surge card and alerting UI.
+
+Refresh semantics:
+
+- `refresh_materialized_views()` now refreshes `mv_observation_current`,
+  `mv_trend_daily`, and `mv_fingerprint_daily` together at cron end.
+- No write path to `bug_fingerprints` changes in this migration; append-only
+  invariants remain intact.
+- Surge detection is query-time (`fingerprint_surges`) rather than a new write
+  pipeline or denormalized table.
+
 ---
 
 ## 6) Analytics and triage quality model

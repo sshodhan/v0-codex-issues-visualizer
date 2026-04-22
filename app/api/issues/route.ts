@@ -59,6 +59,7 @@ export async function GET(request: NextRequest) {
   const sentiment = searchParams.get("sentiment")
   const days = searchParams.get("days")
   const search = searchParams.get("q")
+  const compoundKey = searchParams.get("compound_key")
   const sortByRaw = searchParams.get("sortBy") || "impact_score"
   const sortByAliased = SORT_ALIASES[sortByRaw] ?? sortByRaw
   const sortBy = ALLOWED_SORT.has(sortByAliased) ? sortByAliased : "impact_score"
@@ -125,6 +126,14 @@ export async function GET(request: NextRequest) {
         (r.content && r.content.toLowerCase().includes(searchLower))
       )
     }
+    if (compoundKey) {
+      if (compoundKey.startsWith("err:")) {
+        const errCode = compoundKey.slice(4)
+        rows = rows.filter((r: any) => (r.cluster_key_compound ?? "").includes(`err:${errCode}`))
+      } else {
+        rows = rows.filter((r: any) => r.cluster_key_compound === compoundKey)
+      }
+    }
 
     // Sort
     rows.sort((a: any, b: any) => {
@@ -161,6 +170,13 @@ export async function GET(request: NextRequest) {
     if (search) {
       const escaped = search.replace(/[%_]/g, (m) => `\\${m}`)
       query = query.or(`title.ilike.%${escaped}%,content.ilike.%${escaped}%`)
+    }
+    if (compoundKey) {
+      if (compoundKey.startsWith("err:")) {
+        query = query.ilike("cluster_key_compound", `%err:${compoundKey.slice(4)}%`)
+      } else {
+        query = query.eq("cluster_key_compound", compoundKey)
+      }
     }
 
     const result = await query

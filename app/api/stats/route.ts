@@ -5,6 +5,7 @@ import {
   computeCompetitiveMentions,
   summarizeCompetitiveMentions,
 } from "@/lib/analytics/competitive"
+import { computeActionability } from "@/lib/analytics/actionability"
 
 type Sentiment = "positive" | "negative" | "neutral"
 
@@ -245,6 +246,23 @@ export async function GET(request: NextRequest) {
   // layered regex → LLM signal panel per cluster (see
   // components/dashboard/signal-layers.tsx).
   const priorityMatrix = rows.map((r: any) => ({
+    ...(() => {
+      const impactScore = Number(r.impact_score ?? 0)
+      const frequencyCount = Number(r.frequency_count ?? 1)
+      const sourceDiversity = 1
+      const priorityScore = Math.round((impactScore / 10 * 0.65 + Math.min(frequencyCount / 10, 1) * 0.35) * 100)
+      return {
+        actionability: computeActionability({
+          impact_score: impactScore,
+          frequency_count: frequencyCount,
+          error_code: r.error_code ?? null,
+          repro_markers: Number(r.repro_markers ?? 0),
+          source_diversity: sourceDiversity,
+        }),
+        priorityScore,
+        source_diversity: sourceDiversity,
+      }
+    })(),
     id: r.observation_id,
     title: r.title,
     content: r.content ?? null,
@@ -252,6 +270,7 @@ export async function GET(request: NextRequest) {
     impact_score: r.impact_score ?? 0,
     frequency_count: r.frequency_count ?? 1,
     sentiment: r.sentiment ?? "neutral",
+    cluster_key_compound: r.cluster_key_compound ?? null,
     category: r.category_id ? categoryById.get(r.category_id) : null,
     fingerprint: {
       error_code: r.error_code ?? null,
