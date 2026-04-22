@@ -73,7 +73,7 @@ export async function scrapeGitHub(
           author: item.user?.login,
           sentiment,
           sentiment_score: sentimentScore,
-          impact_score: calculateImpactScore(reactions, comments, sentiment),
+          impact_score: calculateImpactScore(reactions, comments, sentiment, source.slug),
           upvotes: reactions,
           comments_count: comments,
           published_at: item.created_at,

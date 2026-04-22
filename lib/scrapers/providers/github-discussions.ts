@@ -122,7 +122,7 @@ export async function scrapeGitHubDiscussions(
           author: node.author?.login || null,
           sentiment,
           sentiment_score: sentimentScore,
-          impact_score: calculateImpactScore(upvotes, comments, sentiment),
+          impact_score: calculateImpactScore(upvotes, comments, sentiment, source.slug),
           upvotes,
           comments_count: comments,
           published_at: node.createdAt,

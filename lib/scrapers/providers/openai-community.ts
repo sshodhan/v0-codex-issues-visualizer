@@ -112,7 +112,7 @@ export async function scrapeOpenAICommunity(
           author: op?.username || null,
           sentiment,
           sentiment_score: sentimentScore,
-          impact_score: calculateImpactScore(upvotes, replyCount, sentiment),
+          impact_score: calculateImpactScore(upvotes, replyCount, sentiment, source.slug),
           upvotes,
           comments_count: replyCount,
           published_at: topic.created_at,

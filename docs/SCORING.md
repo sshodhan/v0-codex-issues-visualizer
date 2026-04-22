@@ -6,7 +6,26 @@ follow-up commits `3b6637f`, `1d91c98`, rebased onto `main`)._
 This is the canonical description of how a scraped issue becomes a stored
 `sentiment`, `impact_score`, and ranked `urgencyScore`. Read this file before
 changing any scoring code or any consumer of `impact_score` / `urgencyScore` /
-`negativeRatio`. Related files:
+`negativeRatio`.
+
+**What changed in v2** (`scripts/011_algorithm_v2_bump.sql`, driven by the
+top-20-by-impact eye test):
+
+- **impact v2** — source-authority multiplier (§3). First-party GitHub issues
+  outrank news/announcement channels at identical engagement.
+- **sentiment v2** — complaint-marker lexicon expansion + `does not work` /
+  `keeps <V-ing>` multi-word patterns (§2).
+- **category v2** — broader phrase lists (Bug `issue`/`unable to`/`can't`/
+  `fails`; Documentation `review`/`hands-on`/`walkthrough`; Integration
+  `github auth`/`open-source llms`/`integrate`/`vs code`; Feature Request
+  `support for`/`when will`) and the Other-fallback threshold lowered from 2
+  to 1 so a single phrase hit wins.
+
+v1 derivation rows remain in `sentiment_scores` / `category_assignments` /
+`impact_scores` for replay comparison; the MV picks the newest per-observation
+row via `distinct on (observation_id) order by computed_at desc`.
+
+Related files:
 
 - `lib/scrapers/shared.ts` — sentiment, keyword presence, impact score.
 - `lib/analytics/realtime.ts` — urgency formula.
@@ -46,6 +65,23 @@ provider (reddit | hackernews | github | github-discussions | stackoverflow | op
 ```
 
 ## 2. Sentiment classification (`analyzeSentiment`)
+
+**Current version: v2** (complaint-marker lexicon; eye-test Pattern B). v1
+kept only explicit valence adjectives (`awful`, `frustrating`, …); v2 adds
+polarity verbs/adjectives of distress that the eye test showed v1 was
+missing: `unable`, `stuck`, `broken`, `missing`, `fails`, `failed`, `can't`,
+`cannot`, `won't`, `refuses`, `buggy`, `clunky`, `painful`. Topic nouns
+(`bug`, `error`, `issue`, `problem`, `crash`, `fail`, `regression`) remain
+out of the polarity lexicon — they feed `keyword_presence` only, per the
+P0-2 split. v1 derivation rows stay in `sentiment_scores` for replay.
+
+Two new multi-word patterns in `analyzeSentiment` (shared.ts), alongside
+the existing `doesn't work` / `not working`:
+
+- `does not work`
+- `keeps <V-ing>` — narrow pattern catching `keeps (prompting|opening|
+  asking|showing|failing|crashing|happening|popping)` without over-triggering
+  on neutral uses of `keeps`.
 
 **Two keyword sets, two different jobs:**
 
@@ -94,11 +130,34 @@ Known limitations:
 
 ## 3. Impact score (`calculateImpactScore`)
 
+**Current version: v2** (source-authority weighting; eye-test Pattern A).
+v1 rows remain in `impact_scores` for replay; see §7.4 of
+`docs/ARCHITECTURE.md` and `scripts/011_algorithm_v2_bump.sql` for the
+append-only contract.
+
 ```
 engagementScore = min( log10(max(upvotes,1) + max(comments,1)*2) * 2, 8 )
 sentimentBoost  = 1.5 if sentiment === "negative" else 1.0
-impact_score    = min( round(engagementScore * sentimentBoost), 10 )     ∈ [1,10]
+authority       = SOURCE_AUTHORITY[sourceSlug] ?? 1.0         -- v2 addition
+impact_score    = min( round(engagementScore * sentimentBoost * authority), 10 )  ∈ [1,10]
 ```
+
+Source-authority multiplier (v2):
+
+| sourceSlug             | multiplier | rationale                                         |
+|------------------------|-----------:|---------------------------------------------------|
+| `github`               | 1.8×       | First-party openai/codex issues — triage-actionable |
+| `github-discussions`   | 1.4×       | First-party feedback channel, slightly less actionable |
+| `stackoverflow`        | 1.0×       | Baseline — task-specific questions                |
+| `openai-community`     | 1.0×       | Baseline — first-party forum                      |
+| `reddit`               | 0.7×       | Community discussion / announcement               |
+| `hackernews`           | 0.7×       | News / announcement                               |
+| (omitted / unknown)    | 1.0×       | Back-compat default for 3-arg callers and future sources |
+
+The weights encode the observation that a first-party bug report is
+inherently more actionable than a 500-upvote announcement — the v1 formula
+was blind to this distinction, so the Pattern A anchor case (the open
+`openai/codex` issue that ranked #11 at impact 3) rose appropriately in v2.
 
 - Stored in `issues.impact_score` (INT, CHECK between 1 and 10).
 - Per PR #11, the sentiment boost stays here (rather than in the urgency

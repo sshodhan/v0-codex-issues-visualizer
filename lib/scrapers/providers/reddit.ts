@@ -68,7 +68,7 @@ export async function scrapeReddit(
           author,
           sentiment,
           sentiment_score: sentimentScore,
-          impact_score: calculateImpactScore(score, num_comments, sentiment),
+          impact_score: calculateImpactScore(score, num_comments, sentiment, source.slug),
           upvotes: score,
           comments_count: num_comments,
           published_at: new Date(created_utc * 1000).toISOString(),

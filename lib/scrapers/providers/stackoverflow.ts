@@ -83,7 +83,8 @@ export async function scrapeStackOverflow(
           impact_score: calculateImpactScore(
             item.score || 0,
             item.answer_count || 0,
-            sentiment
+            sentiment,
+            source.slug
           ),
           upvotes: item.score || 0,
           comments_count: item.answer_count || 0,

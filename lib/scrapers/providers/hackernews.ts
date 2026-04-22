@@ -68,7 +68,8 @@ export async function scrapeHackerNews(
         impact_score: calculateImpactScore(
           hit.points || 0,
           hit.num_comments || 0,
-          sentiment
+          sentiment,
+          source.slug
         ),
         upvotes: hit.points || 0,
         comments_count: hit.num_comments || 0,

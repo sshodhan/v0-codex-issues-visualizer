@@ -4,16 +4,25 @@
 // callers previously had their own inline word lists that drifted apart; this
 // module is the single source of truth so drift is no longer possible.
 //
-// Constraint: only true *polarity adjectives/verbs expressing opinion* belong
-// here. Topic nouns and problem-describing verbs ("bug", "error", "issue",
-// "problem", "fail", "crash", "broken", "regression", "buggy") are
-// deliberately excluded — they describe what a post is *about*, not how the
-// author feels. Treating them as polarity was P0-2. Those words are still
-// tracked at ingest time via `NEGATIVE_KEYWORD_PATTERNS` in shared.ts and
-// surfaced as `keyword_presence` for urgency-layer consumption.
+// Inclusion rule (refined in v2 after the Pattern-B eye test):
 //
-// Multi-word phrases (e.g. "not working") are handled at the call site via
-// regex.
+//   - Topic NOUNS stay out: "bug", "error", "issue", "problem", "fail",
+//     "crash", "regression". They describe what a post is *about*, not how
+//     the author feels. Treating them as polarity was P0-2. Those words are
+//     still tracked at ingest time via `NEGATIVE_KEYWORD_PATTERNS` in
+//     shared.ts and surfaced as `keyword_presence`.
+//
+//   - Polarity ADJECTIVES / distress VERBS are in: "broken", "buggy",
+//     "unable", "stuck", "missing", "fails" (past-tense verb, distinct from
+//     the topic noun "fail"), "painful", "clunky". These carry implicit
+//     author-polarity in titles like "Unable to connect GitHub Auth …" that
+//     v1 labeled neutral.
+//
+// This refinement is why `CURRENT_VERSIONS.sentiment` is "v2" — v1 rows stay
+// in the DB for replay comparison.
+//
+// Multi-word phrases (e.g. "not working", "does not work",
+// "keeps <V-ing>") are handled at the call site in shared.ts via regex.
 export const POSITIVE_WORDS: ReadonlySet<string> = new Set([
   "good", "great", "awesome", "excellent", "fantastic", "helpful", "useful",
   "love", "loved", "loving", "solid", "fine", "improved",
@@ -30,6 +39,9 @@ export const NEGATIVE_WORDS: ReadonlySet<string> = new Set([
   "bad", "awful", "terrible", "worst", "worse", "hate",
   "slow", "slower", "unusable", "frustrating", "disappointing",
   "useless", "annoying",
+  // v2 complaint markers (eye-test Pattern B).
+  "unable", "stuck", "broken", "missing", "fails", "failed",
+  "can't", "cannot", "won't", "refuses", "buggy", "clunky", "painful",
 ])
 
 export const NEGATORS: ReadonlySet<string> = new Set([

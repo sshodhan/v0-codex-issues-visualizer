@@ -7,9 +7,9 @@
 // scripts/007_three_layer_split.sql.
 
 export const CURRENT_VERSIONS = {
-  sentiment: "v1",
-  category: "v1",
-  impact: "v1",
+  sentiment: "v2",
+  category: "v2",
+  impact: "v2",
   competitor_mention: "v1",
   classification: "v1",
 } as const
