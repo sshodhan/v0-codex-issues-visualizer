@@ -13,9 +13,49 @@
 -- This migration assumes user has authorized a full repull (no data is
 -- preserved from the old `issues` / `bug_report_classifications` tables).
 -- Run in a transaction.
+--
+-- Safe to apply on either (a) a fresh database or (b) a database previously
+-- seeded by 001–006 ("original setup"). The cleanup block below drops legacy
+-- policies on `sources`, `categories`, and `scrape_logs` that survive the
+-- cutover (the tables themselves are not dropped, so their 002-era policies
+-- would otherwise collide with the new `public_read_*` names created in the
+-- RLS section at the bottom of this file).
 -- ============================================================================
 
 begin;
+
+-- ----------------------------------------------------------------------------
+-- 0) Legacy policy cleanup (001/002 artifacts on reference tables)
+--
+-- 001 created policies like "Allow public read sources" and
+-- "Service role full access sources"; 002 replaced those with
+-- "public_read_sources" + "service_insert_sources"/"service_update_sources"/
+-- "service_delete_sources". Tables `sources`, `categories`, `scrape_logs` are
+-- kept across the cutover, so their policies are not dropped by the
+-- `drop table` calls below and must be removed explicitly before the RLS
+-- block re-creates a `public_read_*` family under the same names.
+-- ----------------------------------------------------------------------------
+
+drop policy if exists "Allow public read sources" on sources;
+drop policy if exists "Allow public read categories" on categories;
+drop policy if exists "Allow public read scrape_logs" on scrape_logs;
+drop policy if exists "Service role full access sources" on sources;
+drop policy if exists "Service role full access categories" on categories;
+drop policy if exists "Service role full access scrape_logs" on scrape_logs;
+
+drop policy if exists "public_read_sources" on sources;
+drop policy if exists "public_read_categories" on categories;
+drop policy if exists "public_read_scrape_logs" on scrape_logs;
+
+drop policy if exists "service_insert_sources" on sources;
+drop policy if exists "service_update_sources" on sources;
+drop policy if exists "service_delete_sources" on sources;
+drop policy if exists "service_insert_categories" on categories;
+drop policy if exists "service_update_categories" on categories;
+drop policy if exists "service_delete_categories" on categories;
+drop policy if exists "service_insert_scrape_logs" on scrape_logs;
+drop policy if exists "service_update_scrape_logs" on scrape_logs;
+drop policy if exists "service_delete_scrape_logs" on scrape_logs;
 
 -- ----------------------------------------------------------------------------
 -- 1) Drop old objects (clean slate)
