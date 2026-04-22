@@ -78,13 +78,15 @@ Supabase (Postgres) — three-layer data model
          │   ├─ /api/stats           (dashboard aggregates + realtime + competitive)
          │   ├─ /api/scrape          (trigger all scrapers)
          │   ├─ /api/scrape/[source] (trigger one scraper)
-         │   └─ /api/cron/scrape     (Vercel cron entry)
+         │   ├─ /api/cron/scrape     (Vercel cron — every 6h)
+         │   └─ /api/cron/classify-backfill (Vercel cron — daily 03:00 UTC)
          │
          └─ API: classifier/reviewer layer
              ├─ /api/classify
              ├─ /api/classifications
              ├─ /api/classifications/stats
-             └─ /api/classifications/:id (PATCH)
+             ├─ /api/classifications/:id (PATCH)
+             └─ /api/observations/:id/classify  (GET = read latest, POST = force pass)
          │
          ▼
 Analytics modules (lib/analytics/*)
@@ -156,6 +158,7 @@ A scrape run is structured as three sequential passes over the captured records.
 3. The queue applies a dedupe guard (`classifications.observation_id`) so already-classified observations are skipped by default; reclassification is opt-in policy.
 4. Each candidate is classified by the same internal helper used by `/api/classify` (`classifyReport()`), avoiding server-side HTTP self-calls.
 5. Failures are isolated per observation (the scrape run continues), emitted through the server logger with `component: "classification-pipeline"`, and surfaced in scrape error summaries.
+6. The ingest queue only enqueues *newly captured* observations. The long tail (rows ingested before the classifier was wired up, or whose first attempt errored) is reached by a separate daily Vercel cron at `/api/cron/classify-backfill` (daily 03:00 UTC; sits between the 00:00 and 06:00 scrape ticks). It walks `mv_observation_current` for rows where `is_canonical = true AND llm_classified_at IS NULL AND impact_score >= 6`, sorts by `impact_score DESC, published_at DESC`, and routes the top N through the same `processObservationClassificationQueue()` helper with `reclassifyExisting: false`. Default cap is 10 canonicals/run (~$0.40/run at gpt-5-mini rates) so wall-clock fits under Vercel Hobby's 60s `maxDuration`; override with `?limit=` up to 100 on Pro plans. Run summary is written to `scrape_logs` with `source_id = NULL`; `/api/stats` explicitly excludes those rows from the "Last synced" chip so backfill runs don't masquerade as scrapes. See §3.5 for the full scheduled-jobs contract and `lib/classification/backfill-candidates.ts` for the pure mv-row → `ClassificationCandidate` projection (env/repro derivation goes through the shared helpers in `lib/classification/candidate.ts` so this path and `lib/scrapers/index.ts → buildClassificationCandidate` cannot drift).
 
 #### 3.1.1 Clustering invariants
 
@@ -199,6 +202,27 @@ For any dashboard number, the analyst can walk the chain backwards:
 5. **Upstream evidence** → the `url` field on the observation links back to the original Reddit / HN / GitHub / Stack Overflow / OpenAI Community post.
 
 Past readings are reproducible: re-running any aggregate with `computed_at <= T` over the derivation layer yields exactly the numbers the dashboard showed at time T, regardless of later algorithm changes or reviewer overrides.
+
+### 3.5 Scheduled jobs
+
+The deployment runs two Vercel cron entries (configured in `vercel.json`). Both share the same auth contract (`Authorization: Bearer $CRON_SECRET`, fail-closed 503 in production when `CRON_SECRET` is unset, allow unauthenticated in non-prod for local dev) and both write run summaries to `scrape_logs`.
+
+| Path | Cadence | What it does | `scrape_logs.source_id` | Kill switch |
+|---|---|---|---|---|
+| `/api/cron/scrape` | `0 */6 * * *` (every 6 h) | Fans out to every registered provider, persists evidence + derivations, attaches clusters, enqueues new observations through `processObservationClassificationQueue`, refreshes MVs. | non-null per provider | unset `CRON_SECRET` and disable in `vercel.json` |
+| `/api/cron/classify-backfill` | `0 3 * * *` (daily 03:00 UTC) | Walks `mv_observation_current` for `is_canonical = true AND llm_classified_at IS NULL AND impact_score >= 6`, classifies up to `DEFAULT_LIMIT` (10) rows via the same queue with the dedupe guard, refreshes MVs. | NULL (distinguishes from scrape rows; `/api/stats` lastScrape filter excludes NULL `source_id`) | `CLASSIFY_BACKFILL_DISABLED=1` (preferred — does not break ingest classifier or SignalLayers Refresh) |
+
+**Failure modes**
+- Both routes set `maxDuration = 60` to fit Vercel Hobby; Pro plans clamp at 300.
+- The classify-backfill cron's dedupe (`hasExistingClassification`) is a per-observation SELECT-then-INSERT, so two overlapping runs can race; the partial unique index needed to close that race conflicts with the large-model retry pattern (which writes a second row pointing back via `prior_classification_id`) — tracked as BUGS.md N-9.
+- A run that exceeds `maxDuration` leaves a `status='running'` row in `scrape_logs` because `finalize()` never executes. Restart the cron tomorrow; the dedupe guard makes a re-run idempotent against already-classified observations.
+- The "Last synced" header chip pulls from `scrape_logs WHERE source_id IS NOT NULL`, so backfill runs do **not** overwrite the ingest sync timestamp. Operators see backfill activity through `/admin` and the AI Classifications tab populating, not through the header.
+
+**Operational checklist before enabling the schedule**
+1. `CRON_SECRET` set in Vercel prod env (without it, both routes return 503).
+2. `OPENAI_API_KEY` set in Vercel prod env (`/api/cron/classify-backfill` returns 503 without it).
+3. `scripts/013_backfill_fingerprints.ts` has run against the corpus so observations have env/repro to thread into the classifier prompt.
+4. `vercel.json` cron paths match the route paths exactly.
 
 ---
 
@@ -248,12 +272,11 @@ The only module allowed to write to the database. Enforces the three-layer bound
 
 ### 4.8 `lib/classification/`
 
-- `pipeline.ts` — shared server-side classification executor used by both
-  `/api/classify` and scraper orchestration. Owns: model-call/retry policy,
-  hard review-rule application, enum/evidence validation, synthesized
-  observation report text helper, dedupe checks against existing
-  `classifications` rows, and per-observation failure logging for scrape-driven
-  classification.
+- `pipeline.ts` — shared server-side classification executor used by `/api/classify`, `/api/observations/:id/classify`, scraper orchestration, and the daily classify-backfill cron. Owns: model-call/retry policy, hard review-rule application, enum/evidence validation, dedupe checks against existing `classifications` rows, and per-observation failure logging.
+- `candidate.ts` — dependency-free types and pure helpers shared by every callsite that builds a `ClassificationCandidate`: `synthesizeObservationReportText`, `buildEnvFromFingerprintColumns`, `buildReproFromFingerprintMarkers`. Kept dependency-free so node:test can import it without resolving `@/*` aliases (see Testability invariant in §4.1). Both the ingest-time builder (`lib/scrapers/index.ts → buildClassificationCandidate`) and the backfill builder (`lib/classification/backfill-candidates.ts → buildBackfillCandidates`) call these helpers — single source of truth for the classifier env/repro contract.
+- `backfill-candidates.ts` — pure projection from `mv_observation_current` row shape to `ClassificationCandidate`, used exclusively by `/api/cron/classify-backfill`. The mv renames the fingerprint os/shell/editor columns to `fp_*` to avoid collisions with observation-level columns; this module rewires them at the boundary.
+- `taxonomy.ts` — canonical LLM-side enum constants (`CATEGORY_ENUM`, `SEVERITY_ENUM`, etc.). Note: the LLM `CATEGORY_ENUM` is intentionally disjoint from the heuristic `categories.slug` namespace populated by `lib/scrapers/shared.ts → categorizeIssue`. Two separate taxonomies, two separate UI surfaces (heuristic on the dashboard tab, LLM on the AI Classifications tab); `components/dashboard/classification-triage.tsx` carries an explicit guard so a heuristic global-category filter doesn't silently empty the LLM tab.
+- `taxonomy.ts`, `mapping.ts`, `prompt.ts`, `report-summary.ts`, `schema.ts` — supporting modules for the `pipeline.ts` model call (enum lists, output schema, prompt assembly, request payload).
 
 Extension guidance:
 - Add a new provider by creating `providers/<slug>.ts` and registering it in

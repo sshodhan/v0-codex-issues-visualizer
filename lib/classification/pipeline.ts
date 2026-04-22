@@ -6,6 +6,19 @@ import { buildClassificationUserTurn } from "@/lib/classification/report-summary
 import { CLASSIFICATION_SCHEMA, evidenceQuotesAreSubstrings, validateEnumFields } from "@/lib/classification/schema"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 import { recordClassification } from "@/lib/storage/derivations"
+import {
+  synthesizeObservationReportText,
+  type ClassificationCandidate,
+} from "@/lib/classification/candidate"
+
+// Re-exported so existing call sites (lib/scrapers/index.ts,
+// app/api/observations/[id]/classify/route.ts, etc.) keep importing
+// from "@/lib/classification/pipeline" unchanged. The definitions live
+// in ./candidate.ts so backfill-candidates.ts and its node:test suite
+// can import them without dragging in the rest of this file's `@/*`
+// dependency graph.
+export { synthesizeObservationReportText }
+export type { ClassificationCandidate }
 
 type AdminClient = ReturnType<typeof createAdminClient>
 
@@ -48,23 +61,6 @@ export const classifyInputSchema = z.object({
 })
 
 export type ClassificationInput = z.infer<typeof classifyInputSchema>
-
-export interface ClassificationCandidate {
-  observationId: string
-  title: string
-  reportText: string
-  // Regex-derived structured context forwarded to classifyReport's
-  // user-turn builder. The classifier schema (classifyInputSchema above)
-  // already accepts both fields; we are enriching the prompt payload, not
-  // changing the response contract. Absent when the fingerprint extraction
-  // didn't find the relevant tokens.
-  env?: Record<string, string>
-  repro?: {
-    count?: number
-    last_seen?: string
-    workspace_hash_if_shared?: string
-  }
-}
 
 export interface ClassificationQueueResult {
   attempted: number
@@ -223,25 +219,6 @@ export async function classifyReport(
       prior_classification_id: smallModelClassificationId,
     },
   }
-}
-
-export function synthesizeObservationReportText(input: {
-  title: string
-  content?: string | null
-  url?: string | null
-  sourceSlug?: string | null
-}) {
-  const lines = [
-    `Observed issue from ${input.sourceSlug ?? "unknown-source"}:`,
-    `Title: ${input.title}`,
-  ]
-  if (input.content && input.content.trim().length > 0) {
-    lines.push(`Content: ${input.content.trim()}`)
-  }
-  if (input.url) {
-    lines.push(`URL: ${input.url}`)
-  }
-  return lines.join("\n")
 }
 
 export async function hasExistingClassification(
