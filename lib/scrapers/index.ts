@@ -19,6 +19,11 @@ import {
   recordImpact,
 } from "@/lib/storage/derivations"
 import { attachToCluster } from "@/lib/storage/clusters"
+import {
+  processObservationClassificationQueue,
+  synthesizeObservationReportText,
+  type ClassificationCandidate,
+} from "@/lib/classification/pipeline"
 
 export {
   scrapeReddit,
@@ -69,8 +74,8 @@ type AdminClient = ReturnType<typeof createAdminClient>
 async function persistIssueRecord(
   supabase: AdminClient,
   issue: Partial<Issue>,
-): Promise<boolean> {
-  if (!issue.source_id || !issue.external_id || !issue.title) return false
+): Promise<{ observationId: string; title: string; reportText: string; isNewObservation: boolean } | null> {
+  if (!issue.source_id || !issue.external_id || !issue.title) return null
 
   // 3.1a Evidence — detect pre-existing observation so we can distinguish
   // "first sighting" from "rescrape with edits". Select before insert so
@@ -93,7 +98,7 @@ async function persistIssueRecord(
     upvotes: issue.upvotes ?? 0,
     comments_count: issue.comments_count ?? 0,
   })
-  if (!observationId) return false
+  if (!observationId) return null
 
   // Revision capture: if the observation already existed and any of
   // title/content/author have changed, append to observation_revisions.
@@ -159,7 +164,17 @@ async function persistIssueRecord(
   // 3.1c Aggregation
   await attachToCluster(supabase, observationId, issue.title)
 
-  return true
+  return {
+    observationId,
+    title: issue.title,
+    reportText: synthesizeObservationReportText({
+      title: issue.title,
+      content: issue.content ?? null,
+      url: issue.url ?? null,
+      sourceSlug: issue.source_slug ?? null,
+    }),
+    isNewObservation: !existing,
+  }
 }
 
 async function refreshMaterializedViews(supabase: AdminClient): Promise<void> {
@@ -171,6 +186,7 @@ export async function runAllScrapers(): Promise<RunSummary> {
   const supabase = createAdminClient()
   const errors: string[] = []
   const bySource: RunSummary["bySource"] = []
+  const classificationCandidates: ClassificationCandidate[] = []
   let totalFound = 0
   let totalAdded = 0
 
@@ -202,8 +218,17 @@ export async function runAllScrapers(): Promise<RunSummary> {
         let added = 0
 
         for (const issue of issues) {
-          const success = await persistIssueRecord(supabase, issue)
-          if (success) added++
+          const persisted = await persistIssueRecord(supabase, issue)
+          if (persisted) {
+            added++
+            if (persisted.isNewObservation) {
+              classificationCandidates.push({
+                observationId: persisted.observationId,
+                title: persisted.title,
+                reportText: persisted.reportText,
+              })
+            }
+          }
         }
 
         if (log) {
@@ -253,6 +278,17 @@ export async function runAllScrapers(): Promise<RunSummary> {
 
   await Promise.all(sourceRuns)
 
+  const classificationResults = await processObservationClassificationQueue(
+    supabase,
+    classificationCandidates,
+  )
+  errors.push(
+    ...classificationResults.failures.map(
+      (failure) =>
+        `Classification failed for observation ${failure.observationId} (${failure.title}): ${failure.reason}`,
+    ),
+  )
+
   // Rebuild materialized views at cron end so the dashboard picks up the new
   // scrape in one step. See docs/ARCHITECTURE.md v10 §3.1c.
   await refreshMaterializedViews(supabase)
@@ -292,17 +328,35 @@ export async function runScraper(slug: string): Promise<RunSummary> {
 
   const issues = dedupeIssues(await scraper(source, categories))
   let added = 0
+  const classificationCandidates: ClassificationCandidate[] = []
   for (const issue of issues) {
-    const success = await persistIssueRecord(supabase, issue)
-    if (success) added++
+    const persisted = await persistIssueRecord(supabase, issue)
+    if (persisted) {
+      added++
+      if (persisted.isNewObservation) {
+        classificationCandidates.push({
+          observationId: persisted.observationId,
+          title: persisted.title,
+          reportText: persisted.reportText,
+        })
+      }
+    }
   }
+
+  const classificationResults = await processObservationClassificationQueue(
+    supabase,
+    classificationCandidates,
+  )
 
   await refreshMaterializedViews(supabase)
 
   return {
     total: issues.length,
     added,
-    errors: [],
+    errors: classificationResults.failures.map(
+      (failure) =>
+        `Classification failed for observation ${failure.observationId} (${failure.title}): ${failure.reason}`,
+    ),
     bySource: [{ source: source.slug, found: issues.length, added, status: "success" }],
   }
 }
