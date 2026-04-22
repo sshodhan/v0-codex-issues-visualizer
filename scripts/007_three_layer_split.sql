@@ -13,9 +13,49 @@
 -- This migration assumes user has authorized a full repull (no data is
 -- preserved from the old `issues` / `bug_report_classifications` tables).
 -- Run in a transaction.
+--
+-- Safe to apply on either (a) a fresh database or (b) a database previously
+-- seeded by 001–006 ("original setup"). The cleanup block below drops legacy
+-- policies on `sources`, `categories`, and `scrape_logs` that survive the
+-- cutover (the tables themselves are not dropped, so their 002-era policies
+-- would otherwise collide with the new `public_read_*` names created in the
+-- RLS section at the bottom of this file).
 -- ============================================================================
 
 begin;
+
+-- ----------------------------------------------------------------------------
+-- 0) Legacy policy cleanup (001/002 artifacts on reference tables)
+--
+-- 001 created policies like "Allow public read sources" and
+-- "Service role full access sources"; 002 replaced those with
+-- "public_read_sources" + "service_insert_sources"/"service_update_sources"/
+-- "service_delete_sources". Tables `sources`, `categories`, `scrape_logs` are
+-- kept across the cutover, so their policies are not dropped by the
+-- `drop table` calls below and must be removed explicitly before the RLS
+-- block re-creates a `public_read_*` family under the same names.
+-- ----------------------------------------------------------------------------
+
+drop policy if exists "Allow public read sources" on sources;
+drop policy if exists "Allow public read categories" on categories;
+drop policy if exists "Allow public read scrape_logs" on scrape_logs;
+drop policy if exists "Service role full access sources" on sources;
+drop policy if exists "Service role full access categories" on categories;
+drop policy if exists "Service role full access scrape_logs" on scrape_logs;
+
+drop policy if exists "public_read_sources" on sources;
+drop policy if exists "public_read_categories" on categories;
+drop policy if exists "public_read_scrape_logs" on scrape_logs;
+
+drop policy if exists "service_insert_sources" on sources;
+drop policy if exists "service_update_sources" on sources;
+drop policy if exists "service_delete_sources" on sources;
+drop policy if exists "service_insert_categories" on categories;
+drop policy if exists "service_update_categories" on categories;
+drop policy if exists "service_delete_categories" on categories;
+drop policy if exists "service_insert_scrape_logs" on scrape_logs;
+drop policy if exists "service_update_scrape_logs" on scrape_logs;
+drop policy if exists "service_delete_scrape_logs" on scrape_logs;
 
 -- ----------------------------------------------------------------------------
 -- 1) Drop old objects (clean slate)
@@ -326,18 +366,16 @@ create unique index idx_mv_observation_current_pk on mv_observation_current (obs
 create index idx_mv_observation_current_canonical on mv_observation_current (is_canonical, published_at desc);
 create index idx_mv_observation_current_cluster on mv_observation_current (cluster_id);
 
-create materialized view mv_dashboard_stats as
-select
-  (select count(*) from mv_observation_current where is_canonical) as total_issues,
-  (select jsonb_object_agg(coalesce(sentiment, 'unknown'), cnt) from (
-     select sentiment, count(*) as cnt from mv_observation_current where is_canonical group by sentiment
-   ) s) as sentiment_breakdown,
-  (select jsonb_agg(jsonb_build_object('name', src.name, 'slug', src.slug, 'count', sc.cnt)) from (
-     select source_id, count(*) as cnt from mv_observation_current where is_canonical group by source_id
-   ) sc join sources src on src.id = sc.source_id) as source_breakdown,
-  (select jsonb_agg(jsonb_build_object('name', cat.name, 'slug', cat.slug, 'color', cat.color, 'count', cc.cnt)) from (
-     select category_id, count(*) as cnt from mv_observation_current where is_canonical and category_id is not null group by category_id
-   ) cc join categories cat on cat.id = cc.category_id) as category_breakdown;
+-- mv_dashboard_stats was created here in an earlier revision as a
+-- pre-aggregated shortcut for /api/stats, but /api/stats never read it —
+-- the route scans mv_observation_current directly for the richer fields
+-- (category/sentiment breakdown, priority matrix, realtime insights,
+-- competitive mentions) and computes the simple aggregates in the same
+-- loop. Rebuilding a second MV every cron saved nothing and added
+-- refresh cost, so it's dropped. The defensive
+-- `drop materialized view if exists mv_dashboard_stats cascade` at the
+-- top of this file still runs in case an earlier revision of 007 was
+-- applied to a DB.
 
 create materialized view mv_trend_daily as
 select
@@ -363,7 +401,6 @@ security definer
 as $$
 begin
   refresh materialized view concurrently mv_observation_current;
-  refresh materialized view mv_dashboard_stats;
   refresh materialized view mv_trend_daily;
 end;
 $$;
@@ -503,7 +540,7 @@ $$;
 grant execute on function record_impact(uuid, text, int, jsonb) to service_role;
 
 create or replace function record_competitor_mention(
-  obs_id uuid, comp text, window text, sent numeric, conf numeric, lex_ver text, alg_ver text
+  obs_id uuid, comp text, win_text text, sent numeric, conf numeric, lex_ver text, alg_ver text
 ) returns uuid
 language plpgsql
 security definer
@@ -511,7 +548,7 @@ as $$
 declare row_id uuid;
 begin
   insert into competitor_mentions (observation_id, competitor, sentence_window, sentiment_score, confidence, lexicon_version, algorithm_version)
-  values (obs_id, comp, window, sent, conf, lex_ver, alg_ver)
+  values (obs_id, comp, win_text, sent, conf, lex_ver, alg_ver)
   returning id into row_id;
   return row_id;
 end;

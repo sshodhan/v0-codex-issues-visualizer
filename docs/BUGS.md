@@ -3,6 +3,7 @@
 _Generated: 2026-04-20 from two independent senior-engineer end-to-end reviews._
 _Last reviewed: 2026-04-20 on branch `claude/review-pr-11-SPlkP` (after PR #11 + stacked improvements)._
 _Updated: 2026-04-21 on branch `claude/review-edge-cases-sCBSO` — clustering feature (PR #12) edge cases from two independent follow-up reviews._
+_Updated: 2026-04-22 on branch `claude/update-database-scripts-rTTAl` — DB-analyst holistic migration review added P0-11, P1-14–P1-17, P2-6, P2-7._
 
 Each entry includes priority, a one-sentence description, the exact file:line
 reference, and a minimal fix sketch. Priorities follow the standard
@@ -380,6 +381,18 @@ compute quotas are exhausted quickly.
 
 ---
 
+### P0-11: `/api/stats?as_of=<T>` silently truncates at PostgREST's 1000-row RPC cap
+
+**File:** `app/api/stats/route.ts:71-78`
+
+**Problem:** In as_of mode the route calls `supabase.rpc("observation_current_as_of", { ts })` and treats the returned array as the full canonical set. PostgREST's default response limit is 1000 rows; once the as_of point has more than 1000 canonical observations, the response is silently truncated. Every downstream aggregate — sentiment breakdown, source breakdown, category breakdown, trend sparkline, priority matrix, realtime insights, competitive mentions — undercounts without any error or `truncated: true` flag in the response. Live mode reads `mv_observation_current` via `from(...).select("*")`, which paginates internally, so the bug is as_of-only — which is exactly the mode analysts use to audit past states.
+
+**Fix sketch:** Either (a) page the RPC call with `.range(offset, offset+999)` in a loop until a short page is returned, (b) move the time-bounded query into a server-side SQL function that returns the already-aggregated KPI shape so the row count never hits the cap, or (c) detect `rows.length === 1000` and return `truncated: true` + `limit_reached: 1000` so the UI can surface the warning. (b) is the durable fix; (c) closes the silent-wrong-answer window in one line.
+
+**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+
+---
+
 ## P1 — Significant quality or correctness loss
 
 ### P1-1: Error state, empty state, and "no env vars" all render identically
@@ -691,6 +704,76 @@ alternative remains valid if Algolia relevance tuning degrades.
 
 ---
 
+### P1-14: `/api/classifications/stats` full-scans `classifications` on every 60s dashboard tick
+
+**File:** `app/api/classifications/stats/route.ts:29-32`
+
+**Problem:** The classifier KPI card refresh (`hooks/use-dashboard-data.ts:119`) calls `/api/classifications/stats` every 60 seconds. The route issues `select id, category, severity, status, needs_human_review, observation_id from classifications` with no filter, no limit, and no index that could help a full scan. Compute scales linearly with total classifications count; once the table reaches a few hundred thousand rows this becomes the dominant consumer of Supabase free-tier compute quota. The later in-memory join to `classification_reviews` and `mv_observation_current` adds two more round-trips that scale the same way.
+
+**Fix sketch:** Either (a) build a small `mv_classification_kpi` materialized view refreshed in the same cron that rebuilds `mv_observation_current` (total / byCategory / bySeverity / byStatus / needsReviewCount / traceableCount / bySentiment), (b) add a Next.js route-level cache (`Cache-Control: s-maxage=60, stale-while-revalidate=120`), or (c) move the aggregation into a SQL function returning the shape directly. (a) + (b) together is the durable fix.
+
+**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+
+---
+
+### P1-15: `/api/stats` live mode pulls the full canonical set on every dashboard refresh
+
+**File:** `app/api/stats/route.ts:80-85`
+
+**Problem:** The live-mode branch does `supabase.from("mv_observation_current").select("*").eq("is_canonical", true)` with no limit. The Priority Matrix, realtime insights, and competitive-mentions computations need the full canonical set, but the six numeric aggregates (total / sentiment / source / category / trend buckets) do not — and the dashboard refreshes every 60 seconds per open tab. At 100k canonical observations this is 100k rows over the wire per dashboard hit per analyst. The same route in as_of mode funnels through a 1000-row RPC cap (P0-11), so the two modes will report different numbers for identical time ranges at scale.
+
+**Fix sketch:** Split the route into two reads: (a) a pre-aggregated row (either a KPI MV or a SQL function) for the numeric cards and trend, (b) a bounded read (top-N by impact, most-recent-N by published_at) for the Priority Matrix and realtime feeds. Cache (a) with `Cache-Control: s-maxage=60, stale-while-revalidate=120`. This also collapses most of P0-11's blast radius by making the as_of path return the same pre-aggregated shape rather than a full-row dump.
+
+**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+
+---
+
+### P1-16: `ingestion_artifacts` is always empty — no provider populates `_raw`
+
+**File:** `lib/scrapers/index.ts:124-132` and all six providers under `lib/scrapers/providers/`
+
+**Problem:** `persistIssueRecord` writes to `ingestion_artifacts` only when `issue._raw !== undefined`. Grepping `lib/scrapers/providers/` shows no provider sets `_raw`, so the table is permanently empty. This weakens the replay contract in `docs/ARCHITECTURE.md` v10 §§5.1, 7.4 — "reconstruct an exact past observation without re-hitting the upstream API" is not actually achievable today, because no raw payload is stored. Replay works for derivation drift (algorithm bumps), but not for upstream source disappearance or for debugging provider parsing bugs after the fact.
+
+**Fix sketch:** Add `_raw: <originalResponsePayload>` in each of the six providers' result-assembly loops. The raw payload is already in memory at the point the `Issue` object is constructed, so this is a handful of lines per provider. Validate downstream by running a single-source scrape, then `select count(*) from ingestion_artifacts where source_id = '<X>'` — it should equal the row count added in that scrape.
+
+**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+
+---
+
+### P1-17: `record_observation_revision` read-modify-write race on `revision_number`
+
+**File:** `scripts/007_three_layer_split.sql:444-459`
+
+**Problem:** The RPC computes the next revision number as `coalesce(max(revision_number), 0) + 1` against `observation_revisions` and then inserts. Two concurrent callers for the same `observation_id` can both read `max = N`, both attempt to insert `N+1`, and the second collides on the `unique (observation_id, revision_number)` constraint. The caller sees a 23505 error, the revision is dropped on the floor, and `persistIssueRecord` swallows it via the `console.error` fallback in `lib/storage/evidence.ts:56`. In the current 6-hourly cron cadence the window is narrow, but a manually-triggered full-repull that fans out six provider workers in parallel can race within the same observation (cross-source `external_id` reuse) inside a second.
+
+**Fix sketch:** Serialize the next-number computation inside the INSERT:
+
+```sql
+create or replace function record_observation_revision(obs_id uuid, payload jsonb)
+returns uuid
+language plpgsql security definer as $$
+declare rev_id uuid;
+begin
+  insert into observation_revisions (observation_id, revision_number, title, content, author)
+  select obs_id,
+         coalesce(max(revision_number), 0) + 1,
+         payload->>'title',
+         payload->>'content',
+         payload->>'author'
+  from observation_revisions
+  where observation_id = obs_id
+  returning id into rev_id;
+  return rev_id;
+end;
+$$;
+```
+
+The single-statement INSERT + SELECT holds a row-level lock on the max-matching row for the duration; concurrent callers serialize on it rather than racing. Alternative: advisory lock on `hashtextextended(obs_id::text, 0)` around the existing logic.
+
+**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+
+---
+
 ## P2 — Polish / UX gaps
 
 ### P2-1: Sortable table headers are not keyboard-accessible
@@ -802,6 +885,30 @@ count-only leaderboard.
 
 ---
 
+### P2-6: Scrapers emit `relevance_reason` but it is no longer stored anywhere
+
+**File:** `lib/scrapers/providers/reddit.ts:75`, `lib/scrapers/providers/hackernews.ts:76`, `lib/types.ts:251`
+
+**Problem:** `relevance_reason` was added to the `issues` table in migration 005 so an operator could debug why a given post survived `isLikelyCodexIssue` + the scoped-terms filter. Migration 007 dropped `issues`; no new table carries the field. The Reddit and HackerNews providers still set `relevance_reason` on the in-memory `Issue` object, but the orchestrator at `lib/scrapers/index.ts:69-157` never forwards it to any storage call, and `observations` has no column for it. Post-cutover, debugging a false-positive match means re-running the filter in a REPL against the captured `title + content` — the original `relevanceReason` string the filter produced is gone.
+
+**Fix sketch:** Either (a) stop emitting `relevance_reason`: remove the field from `Issue` (`lib/types.ts:251`), stop setting it in the two providers, and drop the `relevanceReason` path out of `lib/scrapers/relevance.ts`; or (b) add it as an optional column on `observations` and thread it through `record_observation` (append-only, so first-sight wins, which matches how the field was historically used). (a) is the lower-churn path since the field was only used for ad-hoc debugging.
+
+**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+
+---
+
+### P2-7: `docs/ARCHITECTURE.md` still has pre-split sections describing `bug_report_classifications` and the `issues` table
+
+**File:** `docs/ARCHITECTURE.md:168-186` (§3.2 duplicate classification-flow block), `docs/ARCHITECTURE.md:263-278` (§4.2 canonical-filter language)
+
+**Problem:** §3.2 documents the LLM classification flow twice — lines 148-166 describe the post-split writes to `classifications` + `classification_reviews`, while lines 168-186 still describe writing to the dropped `bug_report_classifications` table. §4.2 discusses "the full `issues` table" and "five other aggregates on this route still query `issues`", neither of which is true after 007 — `/api/stats` now uniformly reads `mv_observation_current` with `.eq("is_canonical", true)`. An engineer reading the doc top-to-bottom will receive contradictory instructions.
+
+**Fix sketch:** Delete the duplicate §3.2 block (lines 168-186). Rewrite §4.2 to describe the post-split read pattern: one scan of `mv_observation_current` filtered to `is_canonical`, aggregates computed in the API route or (once P1-14/P1-15 land) from a pre-aggregated MV.
+
+**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+
+---
+
 ## Summary table
 
 | ID     | Priority | Status              | Area           | File                                      | One-liner                                      |
@@ -816,6 +923,7 @@ count-only leaderboard.
 | P0-8   | P0       | addressed-in-PR-#12 | Data integrity | `shared.ts:311` + `scripts/005_*.sql:16`  | TS now uses MD5 to match SQL backfill — cluster keys converge |
 | P0-9   | P0       | addressed-in-PR-#12 | Data integrity | `scripts/005_*.sql:19,21`                 | Backfill regex now uses single-backslash `\s+` and matches whitespace |
 | P0-10  | P0       | addressed-in-PR-#12 | Concurrency    | `lib/scrapers/index.ts:30-99`             | Partial unique index + atomic RPC + 23505 fall-through close all three races |
+| P0-11  | P0       | still-open          | Replay / KPI correctness | `app/api/stats/route.ts:71-78` | as_of mode silently truncates at PostgREST 1000-row RPC cap; KPIs undercount |
 | P1-1   | P1       | still-open          | UX / errors    | `app/page.tsx:37`                         | Error and empty state look identical           |
 | P1-2   | P1       | still-open          | UX / signal    | `app/page.tsx:142-175`                    | KPIs are all-time totals, no delta / window    |
 | P1-3   | P1       | still-open          | Data quality   | `app/page.tsx:176,185`                    | Category KPI uses fragile display-name match   |
@@ -829,11 +937,17 @@ count-only leaderboard.
 | P1-11  | P1       | superseded-by-three-layer-split | Data integrity | `scripts/002_*.sql:48`               | `canonical_observation_id` lives on `clusters`, not self-FK on evidence |
 | P1-12  | P1       | superseded-by-three-layer-split | Data quality | `lib/scrapers/shared.ts:317`          | Clustering no longer has SQL counterpart — Unicode fix is TS-only, tracked as follow-up |
 | P1-13  | P1       | addressed-in-PR-#12 | Schema         | `scripts/002_*.sql:47`                    | `cluster_key` is now NOT NULL + partial unique index on canonical rows |
+| P1-14  | P1       | still-open          | Performance    | `app/api/classifications/stats/route.ts:29` | Full-scan of `classifications` every 60s dashboard tick |
+| P1-15  | P1       | still-open          | Performance    | `app/api/stats/route.ts:80-85`            | Live mode pulls full canonical set on every refresh |
+| P1-16  | P1       | still-open          | Replayability  | `lib/scrapers/index.ts:124` + providers   | `ingestion_artifacts` empty — no provider sets `_raw` |
+| P1-17  | P1       | still-open          | Concurrency    | `scripts/007_three_layer_split.sql:444`   | `record_observation_revision` races on `max(revision_number)` |
 | P2-1   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
 | P2-2   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
 | P2-3   | P2       | still-open          | Copy           | `app/page.tsx:254`                        | Footer omits Stack Overflow, Discussions, OpenAI Community |
 | P2-4   | P2       | still-open          | UI correctness | `components/dashboard/issues-table.tsx:137` | Chip label reads "Cluster:" but renders category label (predates PR #12) |
 | P2-5   | P2       | addressed           | Prioritization | `app/page.tsx` + dashboard components     | Story-first priority framing (category + sentiment + representative issues) replaces count-centric KPI ranking |
+| P2-6   | P2       | still-open          | Debuggability  | `lib/scrapers/providers/reddit.ts:75` + `.../hackernews.ts:76` | `relevance_reason` emitted but never persisted after 007 drop |
+| P2-7   | P2       | still-open          | Docs           | `docs/ARCHITECTURE.md:168,263`            | Zombie pre-split sections still describe `bug_report_classifications` and `issues` |
 
 ## Discovered during PR #11 review (not yet prioritised)
 
