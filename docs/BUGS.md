@@ -548,11 +548,15 @@ issues with `severity_hint = "negative"` and `impact_score >= 6`, or add a
 separate Vercel cron job that pulls unclassified high-impact issues and submits
 them.
 
-**Status:** _still-open_. `lib/scrapers/index.ts` still finishes at the
-upsert and never calls `/api/classify`. Note that `impact_score >= 6`
-as a trigger is now sentiment-inflated (PR #11 kept the 1.5× boost),
-which will bias the triage queue toward negative-sentiment posts — a
-feature in some sense, but worth stating explicitly when this lands.
+**Status:** _addressed_. The scraper orchestrator now enqueues every
+newly-observed observation through `processObservationClassificationQueue`
+(`lib/classification/pipeline.ts`) at the end of each ingest batch,
+reusing the same internal helper `/api/classify` uses. Dedupe check
+against `classifications.observation_id` skips already-classified rows.
+See ARCHITECTURE.md §3.1d and §3.2. A new on-demand endpoint
+`POST /api/observations/:id/classify` also lets dashboard users force
+a pass from the SignalLayers UI (GET returns the existing persisted
+classification without a model call).
 
 ---
 
@@ -930,7 +934,7 @@ count-only leaderboard.
 | P1-4   | P1       | still-open          | UX             | `hooks/use-dashboard-data.ts:122`         | Full-text search wired but unreachable from UI |
 | P1-5   | P1       | still-open          | Performance    | `lib/scrapers/index.ts:76-82`             | Per-row upsert loop, N round-trips per scrape  |
 | P1-6   | P1       | addressed           | Coverage       | `lib/scrapers/providers/github-discussions.ts` | GitHub Discussions + OpenAI Community scrapers |
-| P1-7   | P1       | still-open          | Feature        | `lib/scrapers/index.ts` (absent)          | Classifier never auto-fed from scraper output  |
+| P1-7   | P1       | addressed           | Feature        | `lib/scrapers/index.ts` + `lib/classification/pipeline.ts` | Scraper batch now enqueues classification via `processObservationClassificationQueue`; on-demand endpoint `/api/observations/[id]/classify` added for the UI |
 | P1-8   | P1       | addressed           | Coverage       | `lib/scrapers/providers/hackernews.ts:15-27` | HN query now uses `optionalWords` (OR)       |
 | P1-9   | P1       | superseded-by-three-layer-split | Data model | `lib/scrapers/index.ts:45-54`         | `frequency_count` replaced by `cluster_members` append-only membership |
 | P1-10  | P1       | superseded-by-three-layer-split | Data model | `lib/scrapers/index.ts:45-54`         | Evidence is append-only; rebalance is explicit `lib/storage/clusters.ts` call |
@@ -954,7 +958,7 @@ count-only leaderboard.
 | ID     | Priority | Status       | Area           | File                                      | One-liner                                      |
 |--------|----------|--------------|----------------|-------------------------------------------|------------------------------------------------|
 | N-1    | P1       | addressed    | UI drift       | `components/dashboard/realtime-insights.tsx:39` | Card description advertised "negative sentiment" as a weight — no longer true after PR #13 dropped the `negativeRatio*3` term. Copy now reads "volume + momentum + impact + source diversity"; see commit on `claude/fix-dashboard-urgency-card-eC2S4`. |
-| N-2    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:90-131`           | `keyword_presence` is returned, tested, and never consumed. Reviewer recommendation: drop from return type + delete test in a follow-up (simplest), or persist as a column if a consumer lands. Status quo invites future contributors to "fix" the field and break the tests. |
+| N-2    | P2       | addressed    | Scoring        | `lib/scrapers/shared.ts` + `lib/scrapers/bug-fingerprint.ts` | `keyword_presence` now persisted on both `sentiment_scores.keyword_presence` and `bug_fingerprints.keyword_presence` and surfaced in the SignalLayers panel as an advisory chip. Not yet fed into urgency/impact — tracked as an optional follow-up. |
 | N-3    | P2       | addressed    | Scoring        | `lib/scrapers/shared.ts`                  | Valence scoring now tokenizes (`lowerText.match(/[a-z']+/g)`) instead of `.includes()`, so `"bad"` no longer matches `"badge"` and `"fast"` no longer matches `"breakfast"`. Closed as a side effect of the PR #10 lexicon-unification merge. |
 | N-4    | P2       | still-open   | Scoring        | All providers                             | `impact_score` engagement inputs (reactions, likes, answers, points, score) are unit-mismatched across sources — SO's `answer_count` is fed into the "comments" slot, etc. |
 | N-5    | P3       | still-open   | Ops            | `scripts/003_*.sql`                       | Two migrations share the `003_` prefix (`003_add_stackoverflow_source.sql`, `003_create_bug_report_classifications.sql`). Tolerable but fragile for ordered runners. |

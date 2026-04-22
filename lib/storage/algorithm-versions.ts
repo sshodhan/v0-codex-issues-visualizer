@@ -20,6 +20,12 @@ export const CURRENT_VERSIONS = {
   classification: "v1",
   observation_embedding: "v1",
   semantic_cluster_label: "v1",
+  // v1 of the regex bug-fingerprint extractor. Produces error codes, top
+  // stack frame, env tokens, and repro counters from title + body. Feeds
+  // into a compound cluster key label that splits over-aggregated
+  // semantic clusters when they contain reports with distinct root
+  // causes. See scripts/013_bug_fingerprints.sql.
+  bug_fingerprint: "v1",
 } as const
 
 export type AlgorithmKind = keyof typeof CURRENT_VERSIONS

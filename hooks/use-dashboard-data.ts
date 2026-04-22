@@ -37,10 +37,27 @@ export interface DashboardStats {
   priorityMatrix: Array<{
     id: string
     title: string
+    content?: string | null
+    url?: string | null
     impact_score: number
     frequency_count: number
     sentiment: string
     category: { name: string; color: string } | null
+    fingerprint?: {
+      error_code: string | null
+      top_stack_frame: string | null
+      top_stack_frame_hash: string | null
+      cli_version: string | null
+      os: string | null
+      shell: string | null
+      editor: string | null
+      model_id: string | null
+      repro_markers: number
+      keyword_presence: number
+      llm_subcategory: string | null
+      llm_primary_tag: string | null
+      algorithm_version: string | null
+    } | null
   }>
   realtimeInsights: Array<{
     category: { name: string; slug: string; color: string }
@@ -109,6 +126,22 @@ export interface Issue {
   published_at: string
   source: { name: string; slug: string; icon: string } | null
   category: { name: string; slug: string; color: string } | null
+  // v3 bug-fingerprint projection — forwarded by /api/issues via
+  // mv_observation_current. Null when the fingerprint backfill hasn't
+  // reached this row yet.
+  error_code?: string | null
+  top_stack_frame?: string | null
+  top_stack_frame_hash?: string | null
+  cli_version?: string | null
+  fp_os?: string | null
+  fp_shell?: string | null
+  fp_editor?: string | null
+  model_id?: string | null
+  repro_markers?: number | null
+  fp_keyword_presence?: number | null
+  llm_subcategory?: string | null
+  llm_primary_tag?: string | null
+  fingerprint_algorithm_version?: string | null
 }
 
 export function useDashboardStats(options?: {

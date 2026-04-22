@@ -131,7 +131,8 @@ A scrape run is structured as three sequential passes over the captured records.
 3. `categorizeIssue` → `recordCategory()` — writes to `category_assignments`.
 4. `calculateImpactScore` → `recordImpact()` — writes to `impact_scores`, preserving the inputs (upvotes, comments, sentiment label) in `inputs_jsonb` so the score can be recomputed from the same captured evidence.
 5. `scoreMentionSentiment` per competitor phrase (`lib/analytics/competitive.ts`) → `recordCompetitorMention()` — one row per mention window in `competitor_mentions`, stamped with `lexicon_version` + `algorithm_version`. This replaces the query-time recomputation that previously lived in `/api/stats`.
-6. Rescoring the entire corpus against a new algorithm is a normal insert job (insert derivation rows at version N+1); the old rows stay for reproducibility.
+6. `extractBugFingerprint` (`lib/scrapers/bug-fingerprint.ts`) → `recordBugFingerprint()` — regex extraction of `error_code`, `top_stack_frame`, `cli_version`, `os`/`shell`/`editor`, `model_id`, `repro_markers`, `keyword_presence`. Produces a `cluster_key_compound` label (`title:<h>|err:<code>|frame:<fh>`) for audit; the label is display-only and does not drive cluster membership. See migration `013_bug_fingerprints.sql`.
+7. Rescoring the entire corpus against a new algorithm is a normal insert job (insert derivation rows at version N+1); the old rows stay for reproducibility.
 
 #### 3.1c Cluster (writes to aggregation layer only)
 
@@ -158,15 +159,19 @@ A scrape run is structured as three sequential passes over the captured records.
 
 ### 3.2 LLM classification flow
 
-1. Client/backend posts report payload to `/api/classify`.
+1. The classifier is invoked in three places, all of which share the same reusable helper in `lib/classification/pipeline.ts` (`classifyReport`):
+   - `/api/classify` (public) for external callers.
+   - `processObservationClassificationQueue` inside the scraper orchestrator (`lib/scrapers/index.ts`) runs after every ingest batch so new observations are classified automatically (closes BUGS.md P1-7).
+   - `/api/observations/[id]/classify` (on-demand) backs the SignalLayers UI — GET returns the latest persisted classification + regex fingerprint without a model call; POST forces a fresh classifier pass for the observation.
 2. Server builds bounded context (`report_text`, env, repro, transcript/tool/log tails).
 3. OpenAI Responses API is called with strict JSON-schema response format (`temperature: 0.2`).
-4. If `confidence < 0.7`, route retries once on the larger model. Each retry inserts its own row into `classifications` with `prior_classification_id` pointing at the previous attempt — every LLM call is preserved as evidence of classifier drift and retry behavior.
+4. If `confidence < 0.7`, the helper retries once on the larger model. Each retry inserts its own row into `classifications` with `prior_classification_id` pointing at the previous attempt — every LLM call is preserved as evidence of classifier drift and retry behavior.
 5. Boundary validation runs:
    - enum validation,
    - `evidence_quotes` substring validation against request payload,
    - hard review rules (critical/safety/low confidence/sensitive mentions).
 6. Output is returned and stored in `classifications` as normalized fields + raw JSON via `lib/storage/derivations.ts` → `recordClassification()`. Rows in `classifications` are immutable after insert.
+7. **Relationship to `bug_fingerprints` (§3.1b #6).** The LLM classifier and the regex fingerprint run independently. No code path writes classifier output back to `bug_fingerprints` — `mv_observation_current` joins the latest `classifications` row per observation at MV-refresh time instead. This keeps each layer single-source-of-truth, removes denormalization drift, and makes the cluster-key label deterministic (regex only). The SignalLayers UI renders the two layers side-by-side: "Regex signals" from the fingerprint, "LLM insights" from `classifications`.
 
 ### 3.3 Reviewer flow
 
@@ -210,6 +215,15 @@ Layout:
   and `lib/analytics/competitors.ts`. `buildIssueClusterKey` +
   `normalizeTitleForCluster` have moved to `lib/storage/clusters.ts` (see §4.7).
   See `docs/SCORING.md` for the current signal contract.
+- `lib/scrapers/bug-fingerprint.ts` — deterministic regex extractor that
+  produces a `BugFingerprint` (error code, top stack frame + line-stable
+  hash, CLI version, OS/shell/editor, model id, repro markers,
+  keyword_presence). `buildCompoundClusterKey(title, fingerprint)`
+  produces a display/audit label (`title:<h>|err:<code>|frame:<fh>`)
+  that is persisted on `bug_fingerprints.cluster_key_compound` — it does
+  NOT drive physical cluster membership. The key is pure regex: the LLM
+  classifier never contributes to it, so cluster-key derivations stay
+  deterministic and replayable. See migration `013_bug_fingerprints.sql`.
 - `lib/scrapers/providers/{reddit,hackernews,github,github-discussions,stackoverflow,openai-community}.ts` —
   one provider per file. Each owns its source-specific query and mapping into
   a `CapturedRecord` shape (evidence-layer fields only). `github-discussions`
@@ -221,9 +235,9 @@ Layout:
 The only module allowed to write to the database. Enforces the three-layer boundary at the module level; complements the DB-level RLS grants described in §5.6.
 
 - `evidence.ts` — `recordObservation(record)`, `recordRevision(observationId, changes)`, `recordEngagementSnapshot(observationId, upvotes, comments)`, `recordIngestionArtifact(key, payload)`. All calls go through `SECURITY DEFINER` RPCs; no direct table writes.
-- `derivations.ts` — `recordSentiment(observationId, result)`, `recordCategory`, `recordImpact`, `recordCompetitorMention`, `recordClassification(payload, priorId?)`, `recordClassificationReview(classificationId, review)`. Each pulls the current `algorithm_version` from `algorithm-versions.ts` and stamps the row.
+- `derivations.ts` — `recordSentiment(observationId, result)`, `recordCategory`, `recordImpact`, `recordCompetitorMention`, `recordBugFingerprint(observationId, payload)`, `recordClassification(payload, priorId?)`, `recordClassificationReview(classificationId, review)`. Each pulls the current `algorithm_version` from `algorithm-versions.ts` and stamps the row. `recordBugFingerprint` only takes regex-derived signals — the LLM classifier's output is not denormalized onto `bug_fingerprints` (see §3.2).
 - `clusters.ts` — `attachToCluster(observationId, title)`, `detachFromCluster(observationId)`, `promoteCanonical(clusterId)`. Owns `buildClusterKey` + `normalizeTitleForCluster` (migrated from `lib/scrapers/shared.ts`). Since SQL no longer writes to clusters, the old TS↔SQL hash-parity requirement is obsolete.
-- `algorithm-versions.ts` — central `CURRENT_VERSIONS` registry (the single source of truth for the derivation version every enrich pass stamps on its writes). Current state: `sentiment: "v2"`, `category: "v2"`, `impact: "v2"`, `competitor_mention: "v2"` (all bumped together in `scripts/011_algorithm_v2_bump.sql` after the eye-test tuning), `classification: "v1"`. Bumping here is the only way to trigger a new derivation row shape — the registry file is authoritative; 007's seed + delta migrations (011+) must stay consistent with it.
+- `algorithm-versions.ts` — central `CURRENT_VERSIONS` registry (the single source of truth for the derivation version every enrich pass stamps on its writes). Current state: `sentiment: "v2"`, `category: "v2"`, `impact: "v2"`, `competitor_mention: "v2"` (all bumped together in `scripts/011_algorithm_v2_bump.sql` after the eye-test tuning), `classification: "v1"`, `observation_embedding: "v1"` and `semantic_cluster_label: "v1"` (shipped in `scripts/012_semantic_clustering.sql`), `bug_fingerprint: "v1"` (shipped in `scripts/013_bug_fingerprints.sql`). Bumping here is the only way to trigger a new derivation row shape — the registry file is authoritative; 007's seed + delta migrations (011+) must stay consistent with it.
 
 ### 4.8 `lib/classification/`
 
@@ -443,6 +457,8 @@ Every derived signal is a row stamped with `algorithm_version` and `computed_at`
   - `(id, classification_id, status, category, severity, needs_human_review, reviewer_notes, reviewed_by, reviewed_at)`.
   - A reviewer who revises their decision inserts a second row; the first remains for audit.
   - Effective state for a classification is the most recent review (subquery `ORDER BY reviewed_at DESC LIMIT 1`).
+- `bug_fingerprints (observation_id, algorithm_version, error_code, top_stack_frame, top_stack_frame_hash, cli_version, os, shell, editor, model_id, repro_markers, keyword_presence, cluster_key_compound, computed_at)` — deterministic regex extractor output (migration `013_bug_fingerprints.sql`). Written by `lib/scrapers/index.ts` on every ingest. Immutable per `(observation_id, algorithm_version)`. `cluster_key_compound` (`title:<h>|err:<code>|frame:<fh>`) is a *display/audit* label — physical clustering is owned by the semantic pass (§5.3). The LLM classifier's output is NOT denormalized here; `mv_observation_current` joins `classifications` directly so there is exactly one source of truth per layer (regex here, LLM there).
+- `observation_embeddings` — see migration `012_semantic_clustering.sql`; feeds semantic cluster attachment.
 
 ### 5.3 Aggregation layer
 

@@ -239,12 +239,15 @@ Windsurf" currently logs +1 to Cursor _and_ +1 to Windsurf.
 
 | Signal             | Computed in                        | Stored in                         | Consumed by |
 |--------------------|------------------------------------|-----------------------------------|-------------|
-| `sentiment`        | `analyzeSentiment`                 | `issues.sentiment`                | KPI cards, trend chart, priority matrix color, urgency `negativeRatio`, competitive net sentiment |
-| `sentiment_score`  | `analyzeSentiment`                 | `issues.sentiment_score`          | Issues table sort option |
-| `keyword_presence` | `analyzeSentiment`                 | **not stored**                    | **no consumer** — returned but dropped |
-| `impact_score`     | `calculateImpactScore`             | `issues.impact_score`             | Priority matrix Y-axis, issues table sort, urgency `avgImpact`, top-sample ranking |
+| `sentiment`        | `analyzeSentiment`                 | `sentiment_scores.label`          | KPI cards, trend chart, priority matrix color, urgency `negativeRatio`, competitive net sentiment |
+| `sentiment_score`  | `analyzeSentiment`                 | `sentiment_scores.score`          | Issues table sort option |
+| `keyword_presence` | `analyzeSentiment`                 | `sentiment_scores.keyword_presence` + `bug_fingerprints.keyword_presence` | SignalLayers panel, potential triage gate |
+| `impact_score`     | `calculateImpactScore`             | `impact_scores.score`             | Priority matrix Y-axis, issues table sort, urgency `avgImpact`, top-sample ranking |
 | `urgencyScore`     | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card |
 | `negativeRatio`    | `computeRealtimeInsights`          | computed per request, not stored  | Realtime insights card (display) |
+| `error_code` / `top_stack_frame` / `top_stack_frame_hash` / `cli_version` / `os` / `shell` / `editor` / `model_id` / `repro_markers` | `extractBugFingerprint` (`lib/scrapers/bug-fingerprint.ts`) | `bug_fingerprints` (algorithm_version = "v1") | SignalLayers panel, priority-matrix tooltip roll-ups, issues-table chips, compound cluster-key label |
+| `cluster_key_compound` | `buildCompoundClusterKey(title, fingerprint)` | `bug_fingerprints.cluster_key_compound` | SignalLayers "Cluster key" line — display/audit only, not a physical cluster key. Physical cluster membership is owned by the semantic pass in `lib/storage/semantic-clusters.ts`. |
+| `llm_subcategory` / `llm_primary_tag` / other classifier fields | `classifyReport` (`lib/classification/pipeline.ts`) | `classifications` (joined into `mv_observation_current` at MV refresh) | SignalLayers LLM layer, priority-matrix tooltip subcategory counts, issues-table subcategory chip |
 
 
 ## 8. Dashboard interpretation contract
@@ -283,12 +286,36 @@ Do/Don’t examples:
 
 ## 9. Known limitations (summary)
 
-1. `keyword_presence` is a returned-but-unconsumed signal. Pick one:
-   remove from the return type, persist as a column and index it, or wire
-   it into `calculateImpactScore` / urgency. Leaving it as-is invites
-   future contributors to assume it's already used.
+1. `keyword_presence` is now persisted on both `sentiment_scores` and `bug_fingerprints` and surfaced in the SignalLayers panel, but no analytics (urgency, impact) consume it yet — it's an advisory chip only.
 2. Valence words use substring (not whole-word) matching.
 3. Engagement inputs to `impact_score` are unit-mismatched across sources.
 4. Stored `impact_score` is permanently sentiment-inflated.
 5. `computeCompetitiveMentions` attributes sentiment to every co-mentioned
    competitor (see **P0-4**).
+6. Bug-fingerprint extraction is regex-only and tuned for Codex-style reports. Extraction hit rate on forum bodies (Reddit / HN / SO) is expected to be modest — `error_code` around 20–30%, `top_stack_frame` around 8–15% — so the SignalLayers panel falls back to env tokens (`os`, `shell`, `editor`, `model_id`) and the LLM layer for most rows. Monitor the dry-run report from `scripts/013_backfill_fingerprints.ts` for actual rates.
+
+## 10. Bug-fingerprint contract (algorithm v1)
+
+- **Purpose**: extract concrete differentiators from title + body so two
+  similar-sounding reports with different root causes are visibly distinct
+  on the dashboard, without waiting for the LLM classifier.
+- **Scope**: deterministic regex only. The LLM classifier's output is a
+  *separate* layer (`classifications`) and is never merged into the
+  fingerprint row or the compound cluster-key label.
+- **Compound cluster-key label**: `title:<h>|err:<code>|frame:<fh>` —
+  pure function of title + regex fingerprint. Persisted on
+  `bug_fingerprints.cluster_key_compound` for audit. Physical cluster
+  membership is owned by the semantic-clustering pass (embeddings +
+  title-hash fallback) in `lib/storage/semantic-clusters.ts`; the label
+  is display/audit only.
+- **False-positive guards** (closed during the senior-reviewer pass):
+  - HTTP status requires an explicit `http` / `status` / `response`
+    prefix so `"waited 500ms"` is not tagged `HTTP_500`.
+  - Exit codes require `exit code N` / `exited with N` / `exit status N`
+    so `"exited 12 minutes ago"` is not tagged `EXIT_12`.
+  - Python exception names require a nearby `Traceback` / `File "..."`
+    context so prose mentions of `ConnectionError` don't shadow a more
+    specific HTTP code in the same body.
+  - Stack-frame hash drops the `:line` suffix so a one-line shift
+    between Codex releases doesn't fragment an otherwise-identical
+    signal; the line number is retained in the display string only.
