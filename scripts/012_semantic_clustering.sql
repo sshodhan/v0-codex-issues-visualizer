@@ -18,6 +18,23 @@ create table if not exists observation_embeddings (
 create index if not exists idx_observation_embeddings_obs
   on observation_embeddings (observation_id, computed_at desc);
 
+-- The algorithm_versions.kind check constraint from scripts/007 only allows
+-- the original derivation kinds. Widen it so the two new semantic kinds below
+-- can be inserted.
+alter table algorithm_versions
+  drop constraint if exists algorithm_versions_kind_check;
+alter table algorithm_versions
+  add constraint algorithm_versions_kind_check
+  check (kind in (
+    'sentiment',
+    'category',
+    'impact',
+    'competitor_mention',
+    'classification',
+    'observation_embedding',
+    'semantic_cluster_label'
+  ));
+
 insert into algorithm_versions(kind, version, current_effective, notes)
 values
   ('observation_embedding', 'v1', true, 'OpenAI embeddings for semantic clustering'),
