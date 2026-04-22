@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { Suspense, useMemo, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { AsOfBanner } from "@/components/dashboard/as-of-banner"
@@ -11,7 +11,7 @@ import { HeroInsight, computeHeroInsight } from "@/components/dashboard/hero-ins
 import { 
   EmptyState, 
   ErrorState,
-  DashboardSkeleton 
+  DashboardSkeleton,
 } from "@/components/dashboard/dashboard-states"
 import { SentimentChart } from "@/components/dashboard/sentiment-chart"
 import { SourceChart } from "@/components/dashboard/source-chart"
@@ -32,7 +32,8 @@ import {
 } from "@/hooks/use-dashboard-data"
 import { formatDistanceToNow } from "date-fns"
 
-export default function DashboardPage() {
+// Inner component that uses useSearchParams (requires Suspense boundary)
+function DashboardContent() {
   const searchParams = useSearchParams()
   const asOfRaw = searchParams.get("as_of")
 
@@ -422,5 +423,14 @@ export default function DashboardPage() {
         </div>
       </footer>
     </div>
+  )
+}
+
+// Default export wraps content in Suspense to support useSearchParams during static build
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<DashboardSkeleton />}>
+      <DashboardContent />
+    </Suspense>
   )
 }
