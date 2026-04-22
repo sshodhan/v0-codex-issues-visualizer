@@ -4,6 +4,7 @@ _Generated: 2026-04-20 from two independent senior-engineer end-to-end reviews._
 _Last reviewed: 2026-04-20 on branch `claude/review-pr-11-SPlkP` (after PR #11 + stacked improvements)._
 _Updated: 2026-04-21 on branch `claude/review-edge-cases-sCBSO` — clustering feature (PR #12) edge cases from two independent follow-up reviews._
 _Updated: 2026-04-22 on branch `claude/update-database-scripts-rTTAl` — DB-analyst holistic migration review added P0-11, P1-14–P1-17, P2-6, P2-7._
+_Updated: 2026-04-22 on branch `claude/review-stale-bugs-wLNj1` — stale-bug sweep after the PR #33–#45 merges. Flipped P0-2, P0-4, P0-11, P1-1, P1-3, P1-7, P1-16 to `addressed` (the first six had silently shipped; P0-11 is fixed on this branch)._
 
 Each entry includes priority, a one-sentence description, the exact file:line
 reference, and a minimal fix sketch. Priorities follow the standard
@@ -88,12 +89,15 @@ in `CATEGORY_PATTERNS`). Commit `3b6637f` widened
 (`crashes`, `crashed`, `crashing`, `failed`, `failing`, `failures`,
 `regressions`, etc.).
 
-**Status:** _partial_. The topic-vs-valence conflation is fixed at the
-sentiment layer, but `keyword_presence` is returned from `analyzeSentiment`
-and never read by any provider, API route, or UI component — it is dead
-data today. See `docs/SCORING.md` §"Known limitations" for the options
-(remove, store as a column, wire into urgency). Either resolution closes
-this item; holding as _partial_ until a decision lands.
+**Status:** _addressed_ (2026-04-22). The "dead data" premise is gone.
+All six providers pass `keyword_presence` through on the `Issue` object
+(`lib/scrapers/providers/*.ts`), `lib/scrapers/index.ts:144` forwards it
+into `record_observation`, `lib/storage/derivations.ts:17,24` persists it
+to `sentiment_scores.keyword_presence`, and
+`app/api/admin/backfill-derivations/route.ts:200,216` +
+`app/admin/page.tsx:79` read it. Whether to surface it on the urgency
+pipeline is now a scoring question, not a dead-code question — tracked
+separately in `docs/SCORING.md`.
 
 ---
 
@@ -193,10 +197,19 @@ co-mentioned competitor — not directly, and not through any fallback.
 `CompetitiveMentions` card renders the weighted coverage/confidence summary
 with tooltip definitions so the metrics are not dead payload.
 
-**Status:** _still-open_. `lib/analytics/competitive.ts:55-92` still loops
-`for (const [competitor] of Object.entries(COMPETITOR_KEYWORDS))` and
-attributes sentiment to every matched competitor. PR #11 and its stack did
-not touch this file. Fix sketch still applies.
+**Status:** _addressed_ (confirmed 2026-04-22). Previous Status line
+claimed the loop at `competitive.ts:55-92` unconditionally attributed
+sentiment to every keyword-mapped competitor; verification on this
+branch shows the loop body calls `aggregateCompetitorSentimentForIssue`
+(`lib/analytics/competitive.ts:312,321`), which early-returns `null` when
+the issue contains no mention of that competitor's phrases
+(`lib/analytics/competitive.ts:257`). Zero-evidence mention windows
+return `sentiment: null` and do not increment per-competitor
+positive/negative/neutral counters
+(`lib/analytics/competitive.ts:265-273, 351-355`). The v7 fallback-
+sentiment back-channel is gone (`lib/analytics/competitive.ts:317-320`
+comment confirms the deliberate non-passthrough of `issue.sentiment`).
+The doc's earlier contradictory Status line has been reconciled.
 
 ---
 
@@ -389,7 +402,23 @@ compute quotas are exhausted quickly.
 
 **Fix sketch:** Either (a) page the RPC call with `.range(offset, offset+999)` in a loop until a short page is returned, (b) move the time-bounded query into a server-side SQL function that returns the already-aggregated KPI shape so the row count never hits the cap, or (c) detect `rows.length === 1000` and return `truncated: true` + `limit_reached: 1000` so the UI can surface the warning. (b) is the durable fix; (c) closes the silent-wrong-answer window in one line.
 
-**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+**Resolution:** Option (a) landed on branch `claude/review-stale-bugs-wLNj1` (2026-04-22). `app/api/stats/route.ts:82-102` now pages the RPC via `.range(offset, offset + PAGE_SIZE - 1)` in a loop, terminating when a short page is returned. The KPI result set is therefore the full time-bounded canonical set regardless of size. Option (b) (pre-aggregated shape) remains the durable fix and converges with P1-15's proposed split — leaving as a separate follow-up.
+
+**Known follow-up:** `/api/issues/route.ts:100-102` has the exact same unpaged RPC pattern and is still affected in as_of mode. Not fixed in this pass to keep scope tight; tracked as P0-11b below. When that fix lands, both routes should share a `fetchObservationCurrentAsOf(supabase, asOf)` helper so the paging policy lives in one place.
+
+**Status:** _addressed_ (for `/api/stats`, 2026-04-22). P0-11b tracks the same bug in `/api/issues`.
+
+---
+
+### P0-11b: `/api/issues?as_of=<T>` silently truncates at PostgREST's 1000-row RPC cap
+
+**File:** `app/api/issues/route.ts:100-138`
+
+**Problem:** Same silent-wrong-answer pattern as P0-11, in the sibling route. `supabase.rpc("observation_current_as_of", { ts })` is called with no `.range()`, the returned array is filtered and sorted in memory, and `count = rows.length` is returned to the caller. Once the time-bounded canonical set exceeds 1000 rows, the list view and its total count both silently undercount. Live mode reads `mv_observation_current` with `count: "exact"` so the bug is as_of-only — the exact mode analysts use to audit past states.
+
+**Fix sketch:** Mirror the P0-11 resolution — page via `.range(offset, offset + PAGE_SIZE - 1)` until a short page is returned. Better: extract a shared `fetchObservationCurrentAsOf(supabase, asOf)` helper under `lib/storage/` that both `/api/stats` and `/api/issues` call, so the paging policy lives in one place.
+
+**Status:** _still-open_ (carved out from P0-11 on 2026-04-22).
 
 ---
 
@@ -413,9 +442,12 @@ error from a legitimately empty database.
 returned but unused in `page.tsx`) and render a distinct error banner with the
 HTTP status or message.
 
-**Status:** _still-open_. `useDashboardStats` still returns `isError`
-(`hooks/use-dashboard-data.ts:100-103`), but `app/page.tsx` destructures
-only `{ stats, isLoading, refresh }` (line 37). Fix sketch still applies.
+**Status:** _addressed_ (confirmed 2026-04-22). `app/page.tsx:66` now
+destructures `isError: statsError` from `useDashboardStats` and renders
+a dedicated `<ErrorState title="Failed to load dashboard" ... showSettings />`
+at `app/page.tsx:268-274` before falling through to `<EmptyState>` at
+`:275-279`. Error, empty, and loading now render as three distinct
+states.
 
 ---
 
@@ -459,11 +491,14 @@ stats.categoryBreakdown.find((c) => c.slug === "feature-request")?.count || 0
 stats.categoryBreakdown.find((c) => c.slug === "bug")?.count || 0
 ```
 
-**Status:** _still-open_. `app/page.tsx:176,185` still match on
-`c.name === "Feature Request"` / `c.name === "Bug"`. Note: for the slug
-fix to work end-to-end, `app/api/stats/route.ts` must also start
-returning `slug` in `categoryBreakdown` (it currently only emits
-`{ name, count, color }`).
+**Status:** _addressed_ (confirmed 2026-04-22). The hardcoded
+display-name lookups are gone. `app/page.tsx` no longer has
+`c.name === "Feature Request"` or `c.name === "Bug"` anywhere; the KPI
+section was rewritten (`app/page.tsx:120-200`) to build `kpiSummary`
+from `stats.priorityMatrix`, grouping by `item.category?.name` and
+ranking by an urgency proxy rather than hardcoded category names.
+Category-specific cards still render by name but the names flow from
+the data, not a hand-maintained string.
 
 ---
 
@@ -548,11 +583,17 @@ issues with `severity_hint = "negative"` and `impact_score >= 6`, or add a
 separate Vercel cron job that pulls unclassified high-impact issues and submits
 them.
 
-**Status:** _still-open_. `lib/scrapers/index.ts` still finishes at the
-upsert and never calls `/api/classify`. Note that `impact_score >= 6`
-as a trigger is now sentiment-inflated (PR #11 kept the 1.5× boost),
-which will bias the triage queue toward negative-sentiment posts — a
-feature in some sense, but worth stating explicitly when this lands.
+**Status:** _addressed_ (confirmed 2026-04-22). Commit `49a2816`
+("Bridge scraper ingestion to internal classification pipeline") and
+`12d2bb0` ("Add semantic clustering with embedding fallback path")
+wired the scraper loop to the classification pipeline. The orchestrator
+now imports `processObservationClassificationQueue` from
+`@/lib/classification/pipeline` (`lib/scrapers/index.ts:23`), builds a
+`ClassificationCandidate[]` while persisting observations
+(`:196,232,338,344`), and flushes the queue at the end of each scrape
+run (`:288,353`). The previous `/api/classify` HTTP hop is no longer
+the integration surface — classifications flow through an in-process
+pipeline instead.
 
 ---
 
@@ -736,7 +777,13 @@ alternative remains valid if Algolia relevance tuning degrades.
 
 **Fix sketch:** Add `_raw: <originalResponsePayload>` in each of the six providers' result-assembly loops. The raw payload is already in memory at the point the `Issue` object is constructed, so this is a handful of lines per provider. Validate downstream by running a single-source scrape, then `select count(*) from ingestion_artifacts where source_id = '<X>'` — it should equal the row count added in that scrape.
 
-**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+**Status:** _addressed_ (confirmed 2026-04-22). All six providers now
+set `_raw` on the `Issue` object: `reddit.ts:78`, `github.ts:82`,
+`hackernews.ts:80`, `stackoverflow.ts:94`, `openai-community.ts:121`,
+`github-discussions.ts:131`. The gate at `lib/scrapers/index.ts:129`
+(`if (issue._raw !== undefined)`) now fires on every observation, so
+`ingestion_artifacts` is populated and the replay contract in
+`docs/ARCHITECTURE.md` v10 §§5.1, 7.4 holds end-to-end.
 
 ---
 
@@ -914,23 +961,24 @@ count-only leaderboard.
 | ID     | Priority | Status              | Area           | File                                      | One-liner                                      |
 |--------|----------|---------------------|----------------|-------------------------------------------|------------------------------------------------|
 | P0-1   | P0       | addressed           | Data quality   | `lib/scrapers/providers/reddit.ts:27`     | Reddit query uses scoped Codex phrases only    |
-| P0-2   | P0       | addressed           | Sentiment      | `lib/scrapers/shared.ts`                  | Canonical lexicon + tokenized match (topic nouns no longer conflated) |
+| P0-2   | P0       | addressed           | Sentiment      | `lib/scrapers/shared.ts` + `derivations.ts` | Canonical lexicon + tokenized match; `keyword_presence` now persisted via `sentiment_scores` |
 | P0-3   | P0       | addressed           | Analytics      | `shared.ts` + `realtime.ts`               | Double-count removed; impact now owns sentiment |
-| P0-4   | P0       | addressed           | Analytics      | `lib/analytics/competitive.ts`            | Mention-window sentiment + null propagation (no fallback channel) |
+| P0-4   | P0       | addressed           | Analytics      | `lib/analytics/competitive.ts`            | Mention-window sentiment + null propagation (no fallback channel) — reconciled 2026-04-22 |
 | P0-5   | P0       | addressed-in-PR-#12 | Data model     | `index.ts` + `002_*.sql:46`               | `frequency_count` now bumped atomically via RPC; canonical-filtered aggregates |
 | P0-6   | P0       | superseded-by-three-layer-split | Performance | `app/api/stats/route.ts`             | Replaced by `mv_dashboard_stats` + `mv_trend_daily` + `mv_observation_current` reads |
 | P0-7   | P0       | addressed-in-PR-#12 | Analytics      | `app/api/stats/route.ts:27-90`            | All stats aggregates + default issues list now canonical-filtered |
 | P0-8   | P0       | addressed-in-PR-#12 | Data integrity | `shared.ts:311` + `scripts/005_*.sql:16`  | TS now uses MD5 to match SQL backfill — cluster keys converge |
 | P0-9   | P0       | addressed-in-PR-#12 | Data integrity | `scripts/005_*.sql:19,21`                 | Backfill regex now uses single-backslash `\s+` and matches whitespace |
 | P0-10  | P0       | addressed-in-PR-#12 | Concurrency    | `lib/scrapers/index.ts:30-99`             | Partial unique index + atomic RPC + 23505 fall-through close all three races |
-| P0-11  | P0       | still-open          | Replay / KPI correctness | `app/api/stats/route.ts:71-78` | as_of mode silently truncates at PostgREST 1000-row RPC cap; KPIs undercount |
-| P1-1   | P1       | still-open          | UX / errors    | `app/page.tsx:37`                         | Error and empty state look identical           |
+| P0-11  | P0       | addressed (stats) / still-open (issues as P0-11b) | Replay / KPI correctness | `app/api/stats/route.ts:82-102` | as_of mode now pages the RPC via `.range()`; `/api/issues` still unpaged |
+| P0-11b | P0       | still-open          | Replay / KPI correctness | `app/api/issues/route.ts:100-138` | Same 1000-row cap truncation in list route's as_of branch |
+| P1-1   | P1       | addressed           | UX / errors    | `app/page.tsx:268-274`                    | Dedicated `<ErrorState>` distinct from `<EmptyState>` |
 | P1-2   | P1       | still-open          | UX / signal    | `app/page.tsx:142-175`                    | KPIs are all-time totals, no delta / window    |
-| P1-3   | P1       | still-open          | Data quality   | `app/page.tsx:176,185`                    | Category KPI uses fragile display-name match   |
+| P1-3   | P1       | addressed           | Data quality   | `app/page.tsx:120-200`                    | Hardcoded `c.name === "..."` match removed; KPI now grouped from `priorityMatrix` |
 | P1-4   | P1       | still-open          | UX             | `hooks/use-dashboard-data.ts:122`         | Full-text search wired but unreachable from UI |
 | P1-5   | P1       | still-open          | Performance    | `lib/scrapers/index.ts:76-82`             | Per-row upsert loop, N round-trips per scrape  |
 | P1-6   | P1       | addressed           | Coverage       | `lib/scrapers/providers/github-discussions.ts` | GitHub Discussions + OpenAI Community scrapers |
-| P1-7   | P1       | still-open          | Feature        | `lib/scrapers/index.ts` (absent)          | Classifier never auto-fed from scraper output  |
+| P1-7   | P1       | addressed           | Feature        | `lib/scrapers/index.ts:23,288,353`        | Scraper now flushes to `processObservationClassificationQueue` |
 | P1-8   | P1       | addressed           | Coverage       | `lib/scrapers/providers/hackernews.ts:15-27` | HN query now uses `optionalWords` (OR)       |
 | P1-9   | P1       | superseded-by-three-layer-split | Data model | `lib/scrapers/index.ts:45-54`         | `frequency_count` replaced by `cluster_members` append-only membership |
 | P1-10  | P1       | superseded-by-three-layer-split | Data model | `lib/scrapers/index.ts:45-54`         | Evidence is append-only; rebalance is explicit `lib/storage/clusters.ts` call |
@@ -939,7 +987,7 @@ count-only leaderboard.
 | P1-13  | P1       | addressed-in-PR-#12 | Schema         | `scripts/002_*.sql:47`                    | `cluster_key` is now NOT NULL + partial unique index on canonical rows |
 | P1-14  | P1       | still-open          | Performance    | `app/api/classifications/stats/route.ts:29` | Full-scan of `classifications` every 60s dashboard tick |
 | P1-15  | P1       | still-open          | Performance    | `app/api/stats/route.ts:80-85`            | Live mode pulls full canonical set on every refresh |
-| P1-16  | P1       | still-open          | Replayability  | `lib/scrapers/index.ts:124` + providers   | `ingestion_artifacts` empty — no provider sets `_raw` |
+| P1-16  | P1       | addressed           | Replayability  | `lib/scrapers/providers/*.ts`              | All six providers now set `_raw`; `ingestion_artifacts` is populated |
 | P1-17  | P1       | still-open          | Concurrency    | `scripts/007_three_layer_split.sql:444`   | `record_observation_revision` races on `max(revision_number)` |
 | P2-1   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:247` | Sort headers not keyboard-accessible         |
 | P2-2   | P2       | still-open          | Accessibility  | `components/dashboard/issues-table.tsx:207` | Slider has no aria-label                     |
@@ -954,7 +1002,7 @@ count-only leaderboard.
 | ID     | Priority | Status       | Area           | File                                      | One-liner                                      |
 |--------|----------|--------------|----------------|-------------------------------------------|------------------------------------------------|
 | N-1    | P1       | addressed    | UI drift       | `components/dashboard/realtime-insights.tsx:39` | Card description advertised "negative sentiment" as a weight — no longer true after PR #13 dropped the `negativeRatio*3` term. Copy now reads "volume + momentum + impact + source diversity"; see commit on `claude/fix-dashboard-urgency-card-eC2S4`. |
-| N-2    | P2       | still-open   | Scoring        | `lib/scrapers/shared.ts:90-131`           | `keyword_presence` is returned, tested, and never consumed. Reviewer recommendation: drop from return type + delete test in a follow-up (simplest), or persist as a column if a consumer lands. Status quo invites future contributors to "fix" the field and break the tests. |
+| N-2    | P2       | addressed    | Scoring        | `lib/storage/derivations.ts:17-24`        | `keyword_presence` is now persisted to the `sentiment_scores` table via `record_sentiment`; all six providers emit it and the admin backfill route reads it. No longer dead data. Whether to surface it on the urgency layer remains a SCORING.md question, not a dead-code question. |
 | N-3    | P2       | addressed    | Scoring        | `lib/scrapers/shared.ts`                  | Valence scoring now tokenizes (`lowerText.match(/[a-z']+/g)`) instead of `.includes()`, so `"bad"` no longer matches `"badge"` and `"fast"` no longer matches `"breakfast"`. Closed as a side effect of the PR #10 lexicon-unification merge. |
 | N-4    | P2       | still-open   | Scoring        | All providers                             | `impact_score` engagement inputs (reactions, likes, answers, points, score) are unit-mismatched across sources — SO's `answer_count` is fed into the "comments" slot, etc. |
 | N-5    | P3       | still-open   | Ops            | `scripts/003_*.sql`                       | Two migrations share the `003_` prefix (`003_add_stackoverflow_source.sql`, `003_create_bug_report_classifications.sql`). Tolerable but fragile for ordered runners. |

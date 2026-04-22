@@ -80,13 +80,26 @@ export async function GET(request: NextRequest) {
   // downstream aggregation loop is shared.
   let rows: any[]
   if (asOf) {
-    const { data, error } = await supabase.rpc("observation_current_as_of", {
-      ts: asOf.toISOString(),
-    })
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    // PostgREST caps RPC responses at 1000 rows by default. Without paging,
+    // once the as_of point has >1000 canonical observations every KPI would
+    // silently undercount. Page via .range() until a short page comes back.
+    const PAGE_SIZE = 1000
+    const collected: any[] = []
+    let offset = 0
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { data, error } = await supabase
+        .rpc("observation_current_as_of", { ts: asOf.toISOString() })
+        .range(offset, offset + PAGE_SIZE - 1)
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      const page = (data || []) as any[]
+      collected.push(...page)
+      if (page.length < PAGE_SIZE) break
+      offset += PAGE_SIZE
     }
-    rows = (data || []).filter((r: any) => r.is_canonical === true)
+    rows = collected.filter((r: any) => r.is_canonical === true)
   } else {
     const { data: allRows } = await supabase
       .from("mv_observation_current")
