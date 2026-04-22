@@ -223,6 +223,154 @@ test("/api/classifications returns all reviews in live mode", () => {
   assert.equal(result.reviewFilter.maxReviewedAt, null)
 })
 
+interface BaselineClassification {
+  id: string
+  category: string | null
+  severity: string | null
+  status: string | null
+  needs_human_review: boolean | null
+  created_at: string
+}
+
+interface ClassificationReview {
+  classification_id: string
+  category: string | null
+  severity: string | null
+  status: string | null
+  needs_human_review: boolean | null
+  reviewed_at: string
+}
+
+function filterForClassificationList(
+  rows: BaselineClassification[],
+  reviews: ClassificationReview[],
+  asOfIso: string | null,
+) {
+  const asOf = asOfIso ? new Date(asOfIso) : null
+  const filteredRows = asOf
+    ? rows.filter((row) => new Date(row.created_at) <= asOf)
+    : rows
+  const ids = new Set(filteredRows.map((row) => row.id))
+  const filteredReviews = (asOf
+    ? reviews.filter((review) => new Date(review.reviewed_at) <= asOf)
+    : reviews
+  ).filter((review) => ids.has(review.classification_id))
+
+  const latestReviewByClassification = new Map<string, ClassificationReview>()
+  const byReviewedAtDesc = filteredReviews
+    .slice()
+    .sort((a, b) => new Date(b.reviewed_at).getTime() - new Date(a.reviewed_at).getTime())
+  for (const review of byReviewedAtDesc) {
+    if (!latestReviewByClassification.has(review.classification_id)) {
+      latestReviewByClassification.set(review.classification_id, review)
+    }
+  }
+
+  return filteredRows.map((row) => {
+    const latest = latestReviewByClassification.get(row.id)
+    return {
+      id: row.id,
+      effective_status: latest?.status ?? row.status,
+      effective_category: latest?.category ?? row.category,
+      effective_severity: latest?.severity ?? row.severity,
+      effective_needs_human_review:
+        latest?.needs_human_review ?? row.needs_human_review,
+    }
+  })
+}
+
+function aggregateClassificationStatsFromEffectiveRows(
+  effectiveRows: Array<{
+    effective_status: string | null
+    effective_category: string | null
+    effective_severity: string | null
+    effective_needs_human_review: boolean | null
+  }>,
+) {
+  const byCategory: Record<string, number> = {}
+  const bySeverity: Record<string, number> = {}
+  const byStatus: Record<string, number> = {}
+  let needsReviewCount = 0
+
+  for (const row of effectiveRows) {
+    byCategory[row.effective_category || "unknown"] =
+      (byCategory[row.effective_category || "unknown"] || 0) + 1
+    bySeverity[row.effective_severity || "unknown"] =
+      (bySeverity[row.effective_severity || "unknown"] || 0) + 1
+    byStatus[row.effective_status || "unknown"] =
+      (byStatus[row.effective_status || "unknown"] || 0) + 1
+    if (row.effective_needs_human_review) needsReviewCount++
+  }
+
+  return {
+    total: effectiveRows.length,
+    needsReviewCount,
+    byCategory,
+    bySeverity,
+    byStatus,
+  }
+}
+
+test("/api/classifications/stats matches /api/classifications effective replay state for as_of", () => {
+  const asOf = "2026-04-20T13:00:00.000Z"
+  const rows: BaselineClassification[] = [
+    {
+      id: "c1",
+      category: "bug",
+      severity: "high",
+      status: "new",
+      needs_human_review: true,
+      created_at: "2026-04-20T11:00:00.000Z",
+    },
+    {
+      id: "c2",
+      category: "feature",
+      severity: "low",
+      status: "new",
+      needs_human_review: false,
+      created_at: "2026-04-20T12:00:00.000Z",
+    },
+    {
+      id: "c3",
+      category: "question",
+      severity: "low",
+      status: "new",
+      needs_human_review: false,
+      created_at: "2026-04-20T14:00:00.000Z",
+    },
+  ]
+  const reviews: ClassificationReview[] = [
+    {
+      classification_id: "c1",
+      category: "bug",
+      severity: "critical",
+      status: "triaged",
+      needs_human_review: false,
+      reviewed_at: "2026-04-20T12:30:00.000Z",
+    },
+    {
+      classification_id: "c2",
+      category: "feature",
+      severity: "medium",
+      status: "triaged",
+      needs_human_review: true,
+      reviewed_at: "2026-04-20T13:30:00.000Z",
+    },
+  ]
+
+  const effectiveRows = filterForClassificationList(rows, reviews, asOf)
+  const statsFromList = aggregateClassificationStatsFromEffectiveRows(effectiveRows)
+
+  assert.equal(statsFromList.total, 2, "rows created after as_of must be excluded")
+  assert.equal(
+    statsFromList.byStatus.triaged,
+    1,
+    "reviews after as_of must not affect effective status",
+  )
+  assert.equal(statsFromList.byStatus.new, 1)
+  assert.equal(statsFromList.needsReviewCount, 0)
+})
+
 // Simulates the /api/stats query building logic
 function buildStatsQuery(params: {
   as_of?: string

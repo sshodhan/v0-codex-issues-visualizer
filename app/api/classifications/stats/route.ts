@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 
 // Aggregates over classifications joined with their latest review (effective
@@ -23,12 +23,44 @@ interface ReviewRow {
   reviewed_at: string
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = await createClient()
+  const searchParams = request.nextUrl.searchParams
 
-  const { data: classificationData, error } = await supabase
+  // Parse as_of parameter for point-in-time replay
+  const asOfRaw = searchParams.get("as_of")
+  let asOf: Date | null = null
+  if (asOfRaw) {
+    const parsed = new Date(asOfRaw)
+    if (Number.isNaN(parsed.getTime())) {
+      return NextResponse.json(
+        {
+          error: "Invalid as_of",
+          message: "as_of must be a valid ISO8601 timestamp",
+        },
+        { status: 400 },
+      )
+    }
+    if (parsed.getTime() > Date.now() + 60_000) {
+      return NextResponse.json(
+        {
+          error: "Invalid as_of",
+          message: "as_of cannot be in the future",
+        },
+        { status: 400 },
+      )
+    }
+    asOf = parsed
+  }
+
+  let classificationQuery = supabase
     .from("classifications")
     .select("id, category, severity, status, needs_human_review, observation_id")
+  if (asOf) {
+    classificationQuery = classificationQuery.lte("created_at", asOf.toISOString())
+  }
+
+  const { data: classificationData, error } = await classificationQuery
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
@@ -48,7 +80,7 @@ export async function GET() {
     })
   }
 
-  const { data: reviewData } = await supabase
+  let reviewQuery = supabase
     .from("classification_reviews")
     .select("classification_id, status, category, severity, needs_human_review, reviewed_at")
     .in(
@@ -56,6 +88,11 @@ export async function GET() {
       rows.map((r) => r.id),
     )
     .order("reviewed_at", { ascending: false })
+  if (asOf) {
+    reviewQuery = reviewQuery.lte("reviewed_at", asOf.toISOString())
+  }
+
+  const { data: reviewData } = await reviewQuery
 
   const latestReviewByClassification = new Map<string, ReviewRow>()
   for (const r of (reviewData || []) as ReviewRow[]) {
