@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   EMPTY_FINGERPRINT,
   buildCompoundClusterKey,
+  computeCompoundKey,
   extractBugFingerprint,
 } from "./bug-fingerprint.ts"
 import { buildTitleClusterKey } from "../storage/cluster-key.ts"
@@ -270,4 +271,107 @@ test("stack-frame hash is stable across one-line shifts of the same file", () =>
   })
   assert.equal(fpA.top_stack_frame_hash, fpB.top_stack_frame_hash)
   assert.notEqual(fpA.top_stack_frame, fpB.top_stack_frame)
+})
+
+// ---------------------------------------------------------------------------
+// computeCompoundKey — single read-time source of truth for the label
+// ---------------------------------------------------------------------------
+
+function makeMockSupabase(
+  observation: { title?: string } | null,
+  fingerprint: Record<string, unknown> | null,
+) {
+  return {
+    from(table: string) {
+      if (table === "observations") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: observation, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === "bug_fingerprints") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => ({
+                limit: () => ({
+                  maybeSingle: async () => ({ data: fingerprint, error: null }),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
+      throw new Error(`unexpected table ${table}`)
+    },
+  } as any
+}
+
+test("computeCompoundKey derives label from observations + latest bug_fingerprints row", async () => {
+  const supabase = makeMockSupabase(
+    { title: "Codex crashes on startup" },
+    {
+      error_code: "ENOENT",
+      top_stack_frame: "src/cli.ts:14",
+      top_stack_frame_hash: "abc123def456",
+      cli_version: "1.2.3",
+      os: "macos",
+      shell: "zsh",
+      editor: "vscode",
+      model_id: "gpt-5-mini",
+      repro_markers: 2,
+      keyword_presence: 4,
+    },
+  )
+
+  const key = await computeCompoundKey(supabase, "00000000-0000-0000-0000-000000000001")
+  assert.ok(key)
+  assert.ok(key!.includes("|err:ENOENT"))
+  assert.ok(key!.includes("|frame:abc123def456"))
+  assert.ok(key!.startsWith("title:"))
+})
+
+test("computeCompoundKey degrades to title-only when no fingerprint row exists", async () => {
+  const supabase = makeMockSupabase({ title: "Codex crashes on startup" }, null)
+  const key = await computeCompoundKey(supabase, "00000000-0000-0000-0000-000000000002")
+  assert.ok(key)
+  assert.equal(key, buildTitleClusterKey("Codex crashes on startup"))
+  assert.ok(!key!.includes("|err:"))
+  assert.ok(!key!.includes("|frame:"))
+})
+
+test("computeCompoundKey returns null when observation is missing", async () => {
+  const supabase = makeMockSupabase(null, null)
+  const key = await computeCompoundKey(supabase, "00000000-0000-0000-0000-000000000003")
+  assert.equal(key, null)
+})
+
+test("computeCompoundKey matches buildCompoundClusterKey for the same inputs (one source of truth)", async () => {
+  const title = "Codex hangs in CI"
+  const fingerprint = extractBugFingerprint({
+    title,
+    content: 'File "/src/agent/loop.py", line 42, in step\nEACCES: permission denied',
+  })
+  const supabase = makeMockSupabase(
+    { title },
+    {
+      error_code: fingerprint.error_code,
+      top_stack_frame: fingerprint.top_stack_frame,
+      top_stack_frame_hash: fingerprint.top_stack_frame_hash,
+      cli_version: fingerprint.cli_version,
+      os: fingerprint.os,
+      shell: fingerprint.shell,
+      editor: fingerprint.editor,
+      model_id: fingerprint.model_id,
+      repro_markers: fingerprint.repro_markers,
+      keyword_presence: fingerprint.keyword_presence,
+    },
+  )
+
+  const computed = await computeCompoundKey(supabase, "00000000-0000-0000-0000-000000000004")
+  const built = buildCompoundClusterKey(title, fingerprint)
+  assert.equal(computed, built)
 })

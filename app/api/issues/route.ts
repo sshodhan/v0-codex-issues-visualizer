@@ -59,6 +59,19 @@ export async function GET(request: NextRequest) {
   const sentiment = searchParams.get("sentiment")
   const days = searchParams.get("days")
   const search = searchParams.get("q")
+  // Compound-key drill-down (outcome A). Two accepted forms:
+  //   * full label `title:<h>|err:ENOENT|frame:<fh>` — exact match.
+  //     Issue-table chips send this so the user drills into rows sharing
+  //     the exact same title+error+frame.
+  //   * error-only prefix `err:ENOENT` — substring match against
+  //     cluster_key_compound. Used by the fingerprint surge card where
+  //     the natural "drill in" unit is the error code, not a title+frame
+  //     pair. Treated as a distinct sub-form because title-rooted labels
+  //     always start with "title:" (never with "err:"), so the two
+  //     shapes never collide.
+  const compoundKeyRaw = searchParams.get("compound_key")
+  const compoundKey = compoundKeyRaw?.trim() || null
+  const compoundKeyIsErrorOnly = compoundKey !== null && compoundKey.startsWith("err:")
   const sortByRaw = searchParams.get("sortBy") || "impact_score"
   const sortByAliased = SORT_ALIASES[sortByRaw] ?? sortByRaw
   const sortBy = ALLOWED_SORT.has(sortByAliased) ? sortByAliased : "impact_score"
@@ -125,6 +138,11 @@ export async function GET(request: NextRequest) {
         (r.content && r.content.toLowerCase().includes(searchLower))
       )
     }
+    if (compoundKey) {
+      rows = compoundKeyIsErrorOnly
+        ? rows.filter((r: any) => (r.cluster_key_compound ?? "").includes(compoundKey))
+        : rows.filter((r: any) => r.cluster_key_compound === compoundKey)
+    }
 
     // Sort
     rows.sort((a: any, b: any) => {
@@ -161,6 +179,15 @@ export async function GET(request: NextRequest) {
     if (search) {
       const escaped = search.replace(/[%_]/g, (m) => `\\${m}`)
       query = query.or(`title.ilike.%${escaped}%,content.ilike.%${escaped}%`)
+    }
+
+    if (compoundKey) {
+      if (compoundKeyIsErrorOnly) {
+        const escaped = compoundKey.replace(/[%_]/g, (m) => `\\${m}`)
+        query = query.ilike("cluster_key_compound", `%${escaped}%`)
+      } else {
+        query = query.eq("cluster_key_compound", compoundKey)
+      }
     }
 
     const result = await query

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
-import { extractBugFingerprint, buildCompoundClusterKey } from "@/lib/scrapers/bug-fingerprint"
+import { extractBugFingerprint, computeCompoundKey } from "@/lib/scrapers/bug-fingerprint"
 import {
   classifyReport,
   ClassificationValidationError,
@@ -92,7 +92,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
           classified_at: existingClassification.created_at,
         }
       : null,
-    compound_key: buildCompoundClusterKey(row.title, regex),
+    compound_key: (await computeCompoundKey(supabase as any, parsed.data.id)) ?? null,
   })
 }
 
@@ -155,8 +155,24 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   try {
     // classifyReport owns validation, escalation, hard review rules, and
     // the write to `classifications`. We reuse it rather than replicate.
+    // Thread regex-derived env/repro into the classifier so the user-turn
+    // payload carries structured context beyond title+body. The classifier
+    // schema already accepts both fields (see classifyInputSchema in
+    // lib/classification/pipeline.ts); we are enriching the prompt, not
+    // changing the contract.
+    const env: Record<string, string> = {}
+    if (regex.cli_version) env.cli_version = regex.cli_version
+    if (regex.os) env.os = regex.os
+    if (regex.shell) env.shell = regex.shell
+    if (regex.editor) env.editor = regex.editor
+    if (regex.model_id) env.model_id = regex.model_id
     result = await classifyReport(
-      { report_text: reportText, observation_id: parsed.data.id },
+      {
+        report_text: reportText,
+        observation_id: parsed.data.id,
+        env: Object.keys(env).length > 0 ? env : undefined,
+        repro: regex.repro_markers > 0 ? { count: regex.repro_markers } : undefined,
+      },
       { supabase: admin },
     )
   } catch (error) {
@@ -181,8 +197,10 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   // those values onto `bug_fingerprints` — mv_observation_current joins
   // `classifications` directly, so dashboards pick up the new
   // subcategory / tags / etc. on the next materialized-view refresh.
-  // The compound-key label is pure regex for the same reason.
-  const compoundKey = buildCompoundClusterKey(row.title, regex)
+  // The compound-key label is pure regex for the same reason; we read
+  // it through `computeCompoundKey` so there's a single read-time
+  // source of truth (outcome E).
+  const compoundKey = (await computeCompoundKey(supabase as any, parsed.data.id)) ?? null
 
   return NextResponse.json({
     regex,

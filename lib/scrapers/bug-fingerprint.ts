@@ -297,6 +297,81 @@ export function buildCompoundClusterKey(title: string, fp: BugFingerprint | null
   return `${base}|${parts.join("|")}`
 }
 
+// ---------------------------------------------------------------------------
+// Single read-time source of truth for the compound cluster-key label.
+// ---------------------------------------------------------------------------
+// The scraper's ingest pass is the only writer to `bug_fingerprints.
+// cluster_key_compound` (persisted via `buildCompoundClusterKey` above).
+// All *read* sites — the on-demand classify GET/POST route, the signal-
+// layers UI, and any future drill-down surface — go through
+// `computeCompoundKey(supabase, observationId)` so the label is derived
+// in exactly one place.
+//
+// The helper reads `observations.title` (first-sighting evidence) and
+// the latest `bug_fingerprints` row for the observation, then invokes
+// the same pure builder. We deliberately do NOT read from
+// `mv_observation_current` here so the label is available for
+// observations that exist in the evidence layer but whose MV row has
+// not been refreshed yet (post-ingest, pre-cron-end).
+
+type CompoundKeyReader = {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (column: string, value: string) => {
+        maybeSingle?: () => Promise<{ data: any; error: any }>
+        order?: (column: string, opts: { ascending: boolean }) => {
+          limit: (n: number) => {
+            maybeSingle: () => Promise<{ data: any; error: any }>
+          }
+        }
+      }
+    }
+  }
+}
+
+export async function computeCompoundKey(
+  supabase: CompoundKeyReader,
+  observationId: string,
+): Promise<string | null> {
+  const obsQuery = supabase
+    .from("observations")
+    .select("title")
+    .eq("id", observationId)
+  const obsResult = obsQuery.maybeSingle ? await obsQuery.maybeSingle() : { data: null, error: null }
+  const title = obsResult?.data?.title as string | undefined
+  if (!title) return null
+
+  const fpQuery = supabase
+    .from("bug_fingerprints")
+    .select(
+      "error_code, top_stack_frame, top_stack_frame_hash, cli_version, os, shell, editor, model_id, repro_markers, keyword_presence",
+    )
+    .eq("observation_id", observationId)
+  let fpResult: { data: any; error: any } = { data: null, error: null }
+  if (fpQuery.order) {
+    fpResult = await fpQuery.order("computed_at", { ascending: false }).limit(1).maybeSingle()
+  } else if (fpQuery.maybeSingle) {
+    fpResult = await fpQuery.maybeSingle()
+  }
+
+  const fp = fpResult?.data
+    ? {
+        error_code: fpResult.data.error_code ?? null,
+        top_stack_frame: fpResult.data.top_stack_frame ?? null,
+        top_stack_frame_hash: fpResult.data.top_stack_frame_hash ?? null,
+        cli_version: fpResult.data.cli_version ?? null,
+        os: (fpResult.data.os as BugFingerprintOs) ?? null,
+        shell: (fpResult.data.shell as BugFingerprintShell) ?? null,
+        editor: (fpResult.data.editor as BugFingerprintEditor) ?? null,
+        model_id: fpResult.data.model_id ?? null,
+        repro_markers: Number(fpResult.data.repro_markers ?? 0),
+        keyword_presence: Number(fpResult.data.keyword_presence ?? 0),
+      }
+    : null
+
+  return buildCompoundClusterKey(title, fp)
+}
+
 // Re-exported for callers that want the normalized title without the
 // hashing step (e.g. the backfill script's diagnostic output).
 export { normalizeTitleForCluster }
