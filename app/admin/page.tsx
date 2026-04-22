@@ -102,6 +102,30 @@ interface SampleKey {
   cluster_key: string
 }
 
+interface ClassifyBackfillStats {
+  pendingCandidates: number
+  defaultLimit: number
+  maxLimit: number
+  minImpactScore: number
+  openaiConfigured: boolean
+}
+
+interface ClassifyBackfillFailure {
+  observationId: string
+  title: string
+  reason: string
+}
+
+interface ClassifyBackfillBatchResult {
+  dryRun: boolean
+  candidates: number
+  classified: number
+  skipped: number
+  failed: number
+  failures: ClassifyBackfillFailure[]
+  refreshedMvs: boolean
+}
+
 export default function AdminPage() {
   const [secret, setSecret] = useState("")
 
@@ -142,6 +166,7 @@ export default function AdminPage() {
 
       <main className="container mx-auto space-y-6 py-6">
         <BackfillPanel secret={secret} />
+        <ClassifyBackfillPanel secret={secret} />
         <ClusteringPanel secret={secret} />
       </main>
     </div>
@@ -828,6 +853,506 @@ function ClusteringPanel({ secret }: { secret: string }) {
                         </TableCell>
                         <TableCell className="font-mono text-xs">
                           {k.cluster_key}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ============================================================================
+// Classify-backfill panel (LLM — BUGS.md N-10)
+// ============================================================================
+
+// Daily cron caps at 10 obs/run — right for steady-state, wrong for an
+// initial backlog (10k rows ≈ 3 years at that rate). This panel's
+// "Run until done" loop is the catch-up path: it pages through
+// /api/admin/classify-backfill until pending reaches 0. Budget is
+// ~$0.04 per observation at gpt-5-mini rates, so a 1k backlog is ~$40.
+function ClassifyBackfillPanel({ secret }: { secret: string }) {
+  const [stats, setStats] = useState<ClassifyBackfillStats | null>(null)
+  const [statsError, setStatsError] = useState<string | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+
+  const [limit, setLimit] = useState(10)
+  const [running, setRunning] = useState<null | "dryRun" | "batch" | "loop">(null)
+  const [dryRunPreview, setDryRunPreview] =
+    useState<{ pendingCandidates: number; wouldProcess: number } | null>(null)
+  const [lastBatch, setLastBatch] = useState<ClassifyBackfillBatchResult | null>(
+    null,
+  )
+  const [loopTotals, setLoopTotals] = useState({
+    classified: 0,
+    skipped: 0,
+    failed: 0,
+    batches: 0,
+  })
+  const [failures, setFailures] = useState<ClassifyBackfillFailure[]>([])
+  const [runError, setRunError] = useState<string | null>(null)
+  const [refreshedMvs, setRefreshedMvs] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const loadStats = async () => {
+    setStatsLoading(true)
+    setStatsError(null)
+    try {
+      const res = await fetch("/api/admin/classify-backfill", {
+        headers: authHeaders(secret),
+      })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const data = (await res.json()) as ClassifyBackfillStats
+      setStats(data)
+      setLimit((current) =>
+        current === 10 || !Number.isFinite(current) ? data.defaultLimit : current,
+      )
+    } catch (e) {
+      setStatsError(e instanceof Error ? e.message : String(e))
+      logClientError(e, "admin-classify-backfill-stats-failed")
+    } finally {
+      setStatsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadStats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secret])
+
+  const resetBeforeRun = () => {
+    setDryRunPreview(null)
+    setLastBatch(null)
+    setFailures([])
+    setLoopTotals({ classified: 0, skipped: 0, failed: 0, batches: 0 })
+    setRunError(null)
+    setRefreshedMvs(false)
+  }
+
+  const runDryRun = async () => {
+    if (running) return
+    setRunning("dryRun")
+    resetBeforeRun()
+    try {
+      const res = await fetch("/api/admin/classify-backfill", {
+        method: "POST",
+        headers: authHeaders(secret),
+        body: JSON.stringify({ dryRun: true, limit }),
+      })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const data = (await res.json()) as {
+        pendingCandidates: number
+        wouldProcess: number
+      }
+      setDryRunPreview({
+        pendingCandidates: data.pendingCandidates,
+        wouldProcess: data.wouldProcess,
+      })
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e))
+      logClientError(e, "admin-classify-backfill-dryrun-failed")
+    } finally {
+      setRunning(null)
+    }
+  }
+
+  const runOneBatch = async () => {
+    if (running) return
+    setRunning("batch")
+    resetBeforeRun()
+    try {
+      const res = await fetch("/api/admin/classify-backfill", {
+        method: "POST",
+        headers: authHeaders(secret),
+        body: JSON.stringify({ limit }),
+      })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const data = (await res.json()) as ClassifyBackfillBatchResult
+      setLastBatch(data)
+      setFailures(data.failures ?? [])
+      setRefreshedMvs(data.refreshedMvs)
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e))
+      logClientError(e, "admin-classify-backfill-batch-failed")
+    } finally {
+      setRunning(null)
+      await loadStats()
+    }
+  }
+
+  const runUntilDone = async () => {
+    if (running) return
+    setRunning("loop")
+    resetBeforeRun()
+
+    const abort = new AbortController()
+    abortRef.current = abort
+    let consecutiveErrors = 0
+    const collectedFailures: ClassifyBackfillFailure[] = []
+    let finalRefreshedMvs = false
+
+    try {
+      // Use the stats count as an upper bound on iterations so a
+      // pathological server always-returns-nonzero bug can't run
+      // forever. /ceil(limit, pending) + slack is generous.
+      let safetyIterations = stats
+        ? Math.ceil(stats.pendingCandidates / Math.max(1, limit)) + 5
+        : 200
+
+      while (!abort.signal.aborted && safetyIterations-- > 0) {
+        // Last known pending count: once we've processed a batch we
+        // use the previous batch's candidates to infer when to set
+        // refreshMvs=true. Simpler heuristic: request count before
+        // firing each batch; refresh when it's the final non-empty
+        // batch.
+        const pendingRes = await fetch("/api/admin/classify-backfill", {
+          method: "POST",
+          signal: abort.signal,
+          headers: authHeaders(secret),
+          body: JSON.stringify({ dryRun: true, limit }),
+        })
+        if (!pendingRes.ok) {
+          throw new Error(await explainAdminFailure(pendingRes))
+        }
+        const pendingData = (await pendingRes.json()) as {
+          pendingCandidates: number
+        }
+        if (pendingData.pendingCandidates === 0) break
+
+        const isFinalBatch = pendingData.pendingCandidates <= limit
+
+        const res = await fetch("/api/admin/classify-backfill", {
+          method: "POST",
+          signal: abort.signal,
+          headers: authHeaders(secret),
+          body: JSON.stringify({ limit, refreshMvs: isFinalBatch }),
+        })
+        if (!res.ok) {
+          consecutiveErrors += 1
+          const msg = await explainAdminFailure(res)
+          if (consecutiveErrors >= 3) {
+            throw new Error(`Aborted after 3 consecutive errors: ${msg}`)
+          }
+          await new Promise((r) => setTimeout(r, 1000 * consecutiveErrors))
+          continue
+        }
+        consecutiveErrors = 0
+        const data = (await res.json()) as ClassifyBackfillBatchResult
+        setLastBatch(data)
+        setLoopTotals((t) => ({
+          classified: t.classified + data.classified,
+          skipped: t.skipped + data.skipped,
+          failed: t.failed + data.failed,
+          batches: t.batches + 1,
+        }))
+        if (data.failures?.length) {
+          collectedFailures.push(...data.failures)
+          setFailures([...collectedFailures])
+        }
+        if (data.refreshedMvs) finalRefreshedMvs = true
+
+        // No-op batch means everything this round was already
+        // classified; nothing to page further.
+        if (data.candidates === 0) break
+
+        // Spacing keeps rate-limit clusters at bay between batches.
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      setRefreshedMvs(finalRefreshedMvs)
+    } catch (e) {
+      if ((e as { name?: string }).name !== "AbortError") {
+        setRunError(e instanceof Error ? e.message : String(e))
+        logClientError(e, "admin-classify-backfill-loop-failed")
+      }
+    } finally {
+      abortRef.current = null
+      setRunning(null)
+      await loadStats()
+    }
+  }
+
+  const abort = () => abortRef.current?.abort()
+
+  const openaiOk = stats?.openaiConfigured ?? false
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle>Classify backfill (LLM)</CardTitle>
+            <CardDescription>
+              Routes high-impact unclassified canonical observations through
+              the LLM pipeline. Each run is capped to fit Vercel&apos;s 60s
+              function limit; loop until &quot;pending&quot; reaches 0 to clear
+              a backlog. Costs ~$0.04 per observation at gpt-5-mini rates. On
+              Hobby keep per-batch limit ≤ 15 so ~3-5s/call stays under the
+              timeout. Avoid running while the 03:00 UTC cron tick may be
+              active — overlapping runs can race on the dedupe check (BUGS.md
+              N-9).
+            </CardDescription>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={loadStats}
+            disabled={statsLoading || running !== null}
+          >
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${statsLoading ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {statsError && (
+          <Alert variant="destructive">
+            <AlertTitle>Failed to load stats</AlertTitle>
+            <AlertDescription>{statsError}</AlertDescription>
+          </Alert>
+        )}
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-md border p-3">
+            <div className="text-xs text-muted-foreground">
+              Pending candidates
+            </div>
+            <div className="text-xl font-semibold tabular-nums">
+              {stats ? stats.pendingCandidates.toLocaleString() : "—"}
+            </div>
+          </div>
+          <div className="rounded-md border p-3">
+            <div className="text-xs text-muted-foreground">Default limit</div>
+            <div className="text-xl font-semibold tabular-nums">
+              {stats ? stats.defaultLimit : "—"}
+            </div>
+          </div>
+          <div className="rounded-md border p-3">
+            <div className="text-xs text-muted-foreground">
+              Min impact score
+            </div>
+            <div className="text-xl font-semibold tabular-nums">
+              {stats ? stats.minImpactScore : "—"}
+            </div>
+          </div>
+          <div className="rounded-md border p-3">
+            <div className="text-xs text-muted-foreground">OpenAI key</div>
+            <div className="text-xl font-semibold">
+              {stats ? (openaiOk ? "configured" : "missing") : "—"}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label
+              htmlFor="classify-limit"
+              className="mb-1 block text-xs text-muted-foreground"
+            >
+              Batch limit
+            </label>
+            <Input
+              id="classify-limit"
+              type="number"
+              min={1}
+              max={stats?.maxLimit ?? 100}
+              value={limit}
+              onChange={(e) => {
+                const next = Number(e.target.value)
+                if (Number.isFinite(next)) {
+                  setLimit(
+                    Math.max(1, Math.min(next, stats?.maxLimit ?? 100)),
+                  )
+                }
+              }}
+              className="h-9 w-24"
+              disabled={running !== null}
+            />
+          </div>
+          <Button
+            variant="outline"
+            onClick={runDryRun}
+            disabled={running !== null}
+          >
+            {running === "dryRun" ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <TestTube2 className="mr-2 h-4 w-4" />
+            )}
+            Dry run
+          </Button>
+          <Button
+            onClick={runOneBatch}
+            disabled={running !== null || !openaiOk}
+          >
+            {running === "batch" ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="mr-2 h-4 w-4" />
+            )}
+            Run one batch
+          </Button>
+          <Button
+            variant="default"
+            onClick={runUntilDone}
+            disabled={running !== null || !openaiOk}
+          >
+            {running === "loop" ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="mr-2 h-4 w-4" />
+            )}
+            Run until done
+          </Button>
+          {running === "loop" && (
+            <Button variant="destructive" onClick={abort}>
+              <Square className="mr-2 h-4 w-4" />
+              Stop
+            </Button>
+          )}
+        </div>
+
+        {dryRunPreview && (
+          <Alert>
+            <AlertTitle>Dry run preview</AlertTitle>
+            <AlertDescription>
+              {dryRunPreview.pendingCandidates.toLocaleString()} pending
+              candidate
+              {dryRunPreview.pendingCandidates === 1 ? "" : "s"}. The next
+              batch would process{" "}
+              {dryRunPreview.wouldProcess.toLocaleString()} at the current
+              limit. No tokens spent.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {lastBatch && running !== "loop" && (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">Candidates</div>
+              <div className="font-mono text-lg tabular-nums">
+                {lastBatch.candidates.toLocaleString()}
+              </div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">Classified</div>
+              <div className="font-mono text-lg tabular-nums">
+                {lastBatch.classified.toLocaleString()}
+              </div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">Skipped</div>
+              <div className="font-mono text-lg tabular-nums">
+                {lastBatch.skipped.toLocaleString()}
+              </div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">Failed</div>
+              <div className="font-mono text-lg tabular-nums">
+                {lastBatch.failed.toLocaleString()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {(running === "loop" || loopTotals.batches > 0) && (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">Batches</div>
+              <div className="font-mono text-lg tabular-nums">
+                {loopTotals.batches.toLocaleString()}
+              </div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">
+                Total classified
+              </div>
+              <div className="font-mono text-lg tabular-nums">
+                {loopTotals.classified.toLocaleString()}
+              </div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">Total skipped</div>
+              <div className="font-mono text-lg tabular-nums">
+                {loopTotals.skipped.toLocaleString()}
+              </div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-xs text-muted-foreground">Total failed</div>
+              <div className="font-mono text-lg tabular-nums">
+                {loopTotals.failed.toLocaleString()}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {runError && (
+          <Alert variant="destructive">
+            <AlertTitle>Run failed</AlertTitle>
+            <AlertDescription>{runError}</AlertDescription>
+          </Alert>
+        )}
+
+        {refreshedMvs && running === null && (
+          <Alert>
+            <AlertTitle>Dashboard refreshed</AlertTitle>
+            <AlertDescription>
+              mv_observation_current has been rebuilt. The AI Classifications
+              tab now reflects the new rows.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {stats && stats.pendingCandidates === 0 && running === null && (
+          <Alert>
+            <AlertTitle>All caught up</AlertTitle>
+            <AlertDescription>
+              0 pending. No high-impact canonical observations currently need
+              classification.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {failures.length > 0 && (
+          <Collapsible>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                Failures ({failures.length})
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-2">
+              <div className="overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Observation</TableHead>
+                      <TableHead>Title</TableHead>
+                      <TableHead>Reason</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {failures.map((f) => (
+                      <TableRow key={f.observationId}>
+                        <TableCell className="font-mono text-xs">
+                          {f.observationId}
+                        </TableCell>
+                        <TableCell
+                          className="max-w-[320px] truncate"
+                          title={f.title}
+                        >
+                          {f.title}
+                        </TableCell>
+                        <TableCell
+                          className="max-w-[360px] truncate text-xs text-muted-foreground"
+                          title={f.reason}
+                        >
+                          {f.reason}
                         </TableCell>
                       </TableRow>
                     ))}
