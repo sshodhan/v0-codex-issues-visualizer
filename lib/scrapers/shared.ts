@@ -66,7 +66,14 @@ export function analyzeSentiment(text: string): {
   score: number
   keyword_presence: number
 } {
-  const lowerText = text.toLowerCase()
+  // Normalize U+2019 (right single quotation mark, the "curly" apostrophe) to
+  // the ASCII apostrophe before tokenizing. Web/iOS text overwhelmingly uses
+  // the curly form, and the tokenizer regex [a-z']+ only matches straight
+  // apostrophes — without this normalization, titles like "can’t connect" or
+  // "doesn’t work" would tokenize wrong and the v2 lexicon entries for
+  // "can't"/"won't"/"cannot" plus the "doesn't work" regex would never fire
+  // on realistic input.
+  const lowerText = text.toLowerCase().replace(/’/g, "'")
   const tokens = lowerText.match(/[a-z']+/g) ?? []
 
   let positiveCount = 0
@@ -80,6 +87,11 @@ export function analyzeSentiment(text: string): {
   // Multi-word negative phrases the tokenizer cannot see directly.
   if (/\bdoesn'?t\s+work\b/.test(lowerText)) negativeCount++
   if (/\bnot\s+working\b/.test(lowerText)) negativeCount++
+  // v2 additions (eye-test Pattern B). `keeps` alone over-triggers — we only
+  // catch the `keeps <V-ing>` complaint pattern from titles like
+  // "Keeps Opening up the Configuration Page".
+  if (/\bdoes\s+not\s+work\b/.test(lowerText)) negativeCount++
+  if (/\bkeeps\s+(?:prompting|opening|asking|showing|failing|crashing|happening|popping)\b/.test(lowerText)) negativeCount++
 
   const keyword_presence = calculateKeywordPresence(text)
 
@@ -113,6 +125,11 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "stack trace", weight: 2 },
     { phrase: "exception", weight: 2, wholeWord: true },
     { phrase: "regression", weight: 3, wholeWord: true },
+    { phrase: "issue", weight: 1, wholeWord: true },
+    { phrase: "fails", weight: 2, wholeWord: true },
+    { phrase: "unable to", weight: 2 },
+    { phrase: "can't", weight: 1, wholeWord: true },
+    { phrase: "cannot", weight: 1, wholeWord: true },
   ],
   performance: [
     { phrase: "slow", weight: 2, wholeWord: true },
@@ -133,6 +150,8 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "missing feature", weight: 2 },
     { phrase: "enhancement", weight: 2, wholeWord: true },
     { phrase: "roadmap", weight: 1, wholeWord: true },
+    { phrase: "support for", weight: 2 },
+    { phrase: "when will", weight: 1 },
   ],
   documentation: [
     { phrase: "docs", weight: 2, wholeWord: true },
@@ -142,6 +161,10 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "guide", weight: 2, wholeWord: true },
     { phrase: "example", weight: 1, wholeWord: true },
     { phrase: "unclear", weight: 1, wholeWord: true },
+    { phrase: "review", weight: 2, wholeWord: true },
+    { phrase: "hands-on", weight: 2 },
+    { phrase: "walkthrough", weight: 2, wholeWord: true },
+    { phrase: "how to", weight: 1 },
   ],
   "ux-ui": [
     { phrase: "ui", weight: 1, wholeWord: true },
@@ -160,6 +183,11 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "jetbrains", weight: 2, wholeWord: true },
     { phrase: "connect", weight: 1, wholeWord: true },
     { phrase: "github action", weight: 2 },
+    { phrase: "open-source llms", weight: 3 },
+    { phrase: "open source llms", weight: 3 },
+    { phrase: "github auth", weight: 3 },
+    { phrase: "integrate", weight: 2, wholeWord: true },
+    { phrase: "vs code", weight: 2 },
   ],
   api: [
     { phrase: "api", weight: 3, wholeWord: true },
@@ -226,6 +254,12 @@ export function categorizeIssue(
     return categories.find((c) => c.slug === "other")?.id
   }
 
+  // Threshold stays at 2: v2 expands phrase lists and reweights strong
+  // signals (e.g. `github auth` weight 3, `open-source llms` weight 3,
+  // `hands-on`+`review` sum to 4) so that eye-test rows now classify
+  // without needing the floor to drop. Lowering to 1 let single weight-1
+  // hits (`roadmap`, `example`, `connect`) wrongly pull posts out of Other
+  // on thin evidence — a regression the pre-merge review caught.
   if (top.score < 2) {
     return categories.find((c) => c.slug === "other")?.id
   }
@@ -236,17 +270,33 @@ export function categorizeIssue(
   return categories.find((c) => c.slug === "other")?.id
 }
 
+// v2 authority table (eye-test Pattern A). Applied multiplicatively after the
+// sentiment boost and before the 1-10 clamp. First-party bug-report channels
+// outrank announcement/news channels at identical engagement. See
+// docs/SCORING.md §3. Unknown/undefined slugs fall back to 1.0× so the
+// function stays back-compat with any call site that hasn't been updated.
+const SOURCE_AUTHORITY: Record<string, number> = {
+  github: 1.8,
+  "github-discussions": 1.4,
+  stackoverflow: 1.0,
+  "openai-community": 1.0,
+  reddit: 0.7,
+  hackernews: 0.7,
+}
+
 export function calculateImpactScore(
   upvotes: number,
   comments: number,
-  sentiment: string
+  sentiment: string,
+  sourceSlug?: string
 ): number {
   const engagementScore = Math.min(
     Math.log10((upvotes || 1) + (comments || 1) * 2) * 2,
     8
   )
   const sentimentBoost = sentiment === "negative" ? 1.5 : 1
-  return Math.min(Math.round(engagementScore * sentimentBoost), 10)
+  const authority = sourceSlug ? SOURCE_AUTHORITY[sourceSlug] ?? 1.0 : 1.0
+  return Math.min(Math.round(engagementScore * sentimentBoost * authority), 10)
 }
 
 const DEFAULT_HEADERS: HeadersInit = {

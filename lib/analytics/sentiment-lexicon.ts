@@ -4,16 +4,28 @@
 // callers previously had their own inline word lists that drifted apart; this
 // module is the single source of truth so drift is no longer possible.
 //
-// Constraint: only true *polarity adjectives/verbs expressing opinion* belong
-// here. Topic nouns and problem-describing verbs ("bug", "error", "issue",
-// "problem", "fail", "crash", "broken", "regression", "buggy") are
-// deliberately excluded — they describe what a post is *about*, not how the
-// author feels. Treating them as polarity was P0-2. Those words are still
-// tracked at ingest time via `NEGATIVE_KEYWORD_PATTERNS` in shared.ts and
-// surfaced as `keyword_presence` for urgency-layer consumption.
+// Inclusion rule (refined in v2 after the Pattern-B eye test):
 //
-// Multi-word phrases (e.g. "not working") are handled at the call site via
-// regex.
+//   - Topic NOUNS stay out: "bug", "error", "issue", "problem", "fail",
+//     "crash", "regression". They describe what a post is *about*, not how
+//     the author feels. Treating them as polarity was P0-2. Those words are
+//     still tracked at ingest time via `NEGATIVE_KEYWORD_PATTERNS` in
+//     shared.ts and surfaced as `keyword_presence`.
+//
+//   - Polarity ADJECTIVES / distress VERBS of opinion are in: "unable",
+//     "stuck", "missing", "buggy", "clunky", "painful", "can't", "cannot",
+//     "won't", "refuses". These carry implicit author-polarity in titles
+//     like "Unable to connect GitHub Auth …" that v1 labeled neutral.
+//   - Status/topic words that feel negative but are already tracked in
+//     NEGATIVE_KEYWORD_PATTERNS (→ keyword_presence) stay OUT to avoid
+//     double-counting: "broken", "fails", "failed", "crashes", "errors",
+//     "bugs", "issues", "problems", "regressions".
+//
+// This refinement is why `CURRENT_VERSIONS.sentiment` is "v2" — v1 rows stay
+// in the DB for replay comparison.
+//
+// Multi-word phrases (e.g. "not working", "does not work",
+// "keeps <V-ing>") are handled at the call site in shared.ts via regex.
 export const POSITIVE_WORDS: ReadonlySet<string> = new Set([
   "good", "great", "awesome", "excellent", "fantastic", "helpful", "useful",
   "love", "loved", "loving", "solid", "fine", "improved",
@@ -30,6 +42,16 @@ export const NEGATIVE_WORDS: ReadonlySet<string> = new Set([
   "bad", "awful", "terrible", "worst", "worse", "hate",
   "slow", "slower", "unusable", "frustrating", "disappointing",
   "useless", "annoying",
+  // v2 complaint markers (eye-test Pattern B). We deliberately EXCLUDE
+  // "broken", "fails", and "failed" even though they feel like polarity —
+  // they are already counted as topic/status signal in
+  // shared.ts::NEGATIVE_KEYWORD_PATTERNS (→ keyword_presence), and
+  // double-counting them here would mislabel dev-side "fix the broken
+  // symlink handling" / "test fails intermittently" posts as
+  // user-frustration polarity. Topic nouns stay out of this lexicon; only
+  // polarity verbs/adjectives of distress.
+  "unable", "stuck", "missing",
+  "can't", "cannot", "won't", "refuses", "buggy", "clunky", "painful",
 ])
 
 export const NEGATORS: ReadonlySet<string> = new Set([

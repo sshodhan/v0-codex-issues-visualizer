@@ -136,17 +136,23 @@ async function persistIssueRecord(
     await recordSentiment(supabase, observationId, {
       label: issue.sentiment as SentimentLabel,
       score: issue.sentiment_score ?? 0,
-      keyword_presence: 0,
+      keyword_presence: issue.keyword_presence ?? 0,
     })
   }
   if (issue.category_id) {
     await recordCategory(supabase, observationId, issue.category_id, 1.0)
   }
   if (typeof issue.impact_score === "number") {
+    // inputs_jsonb must be complete enough to recompute the impact score
+    // from captured evidence alone (ARCHITECTURE §3.1b). impact v2 adds
+    // source_slug as a scoring input (authority multiplier), so it is
+    // persisted here — otherwise a v2 row couldn't be replayed without
+    // joining observations → sources.
     await recordImpact(supabase, observationId, issue.impact_score, {
       upvotes: issue.upvotes ?? 0,
       comments_count: issue.comments_count ?? 0,
       sentiment_label: (issue.sentiment ?? "neutral") as SentimentLabel,
+      source_slug: issue.source_slug ?? null,
     })
   }
 

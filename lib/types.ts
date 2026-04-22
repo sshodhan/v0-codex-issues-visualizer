@@ -235,6 +235,15 @@ export interface ScrapeResult {
 export interface Issue {
   id?: string
   source_id: string
+  /**
+   * Optional hint from the provider carrying the source's slug — used by
+   * the enrich pass to thread `source_slug` into `impact_scores.inputs_jsonb`
+   * so impact v2 (source-authority weighted) is recomputable from inputs
+   * per ARCHITECTURE §3.1b. Providers that don't set it fall back to a
+   * lookup via source_id; the impact row still stores the slug to unblock
+   * replay even if that fallback is ever removed.
+   */
+  source_slug?: string
   category_id?: string | null
   external_id: string
   title: string
@@ -243,6 +252,17 @@ export interface Issue {
   author: string | null
   sentiment: SentimentLabel
   sentiment_score: number
+  /**
+   * Topic-noun / status-word hit count (bug/error/crash/fail/regression
+   * tense variants). Independent of polarity; populated by
+   * analyzeSentiment and threaded into the derivation layer's
+   * `sentiment_scores.keyword_presence` column so the urgency layer can
+   * reason about bug-topic density separately from valence.
+   *
+   * Optional for back-compat with any future provider; the enrich pass
+   * treats `undefined` as 0.
+   */
+  keyword_presence?: number
   impact_score: number
   frequency_count?: number
   upvotes: number

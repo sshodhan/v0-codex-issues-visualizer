@@ -41,11 +41,21 @@ export async function recordCategory(
   if (error) console.error("[derivations] record_category failed:", error)
 }
 
+// Every column of `inputs` is persisted as-is into impact_scores.inputs_jsonb
+// and must be sufficient to recompute the score from captured evidence
+// alone (ARCHITECTURE.md §3.1b). `source_slug` was added in impact v2
+// alongside the source-authority multiplier — it is nullable so v1 callers
+// and unknown sources still work.
 export async function recordImpact(
   supabase: AdminClient,
   observationId: string,
   score: number,
-  inputs: { upvotes: number; comments_count: number; sentiment_label: SentimentLabel },
+  inputs: {
+    upvotes: number
+    comments_count: number
+    sentiment_label: SentimentLabel
+    source_slug?: string | null
+  },
 ): Promise<void> {
   const { error } = await supabase.rpc("record_impact", {
     obs_id: observationId,

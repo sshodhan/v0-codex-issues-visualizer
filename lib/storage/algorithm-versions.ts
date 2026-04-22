@@ -7,10 +7,16 @@
 // scripts/007_three_layer_split.sql.
 
 export const CURRENT_VERSIONS = {
-  sentiment: "v1",
-  category: "v1",
-  impact: "v1",
-  competitor_mention: "v1",
+  sentiment: "v2",
+  category: "v2",
+  impact: "v2",
+  // competitor_mention shares the canonical lexicon (sentiment-lexicon.ts).
+  // The sentiment v2 bump added words that are ALSO in NEGATORS (e.g.
+  // "cannot"/"can't"), which changes scoreMentionSentiment's polarity
+  // accounting on identical input — so mention rows written going forward
+  // are no longer apples-to-apples with v1. Bump in lockstep to preserve
+  // replay integrity. See scripts/011_algorithm_v2_bump.sql.
+  competitor_mention: "v2",
   classification: "v1",
 } as const
 
