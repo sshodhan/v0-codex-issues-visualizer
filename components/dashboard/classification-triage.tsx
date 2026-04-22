@@ -31,6 +31,8 @@ import {
 import type { ClassificationRecord, ClassificationStats } from "@/hooks/use-dashboard-data"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
 import { logClientError } from "@/lib/error-tracking/client-logger"
+import { track } from "@vercel/analytics"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface ClassificationTriageProps {
   records: ClassificationRecord[]
@@ -84,6 +86,11 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
     if (clusterFilter === "all") return globallyFilteredRecords
     return globallyFilteredRecords.filter((record) => `${record.effective_category} › ${record.subcategory || "General"}` === clusterFilter)
   }, [globallyFilteredRecords, clusterFilter])
+  const hasAnyRecords = records.length > 0
+  const hasClusters = clusters.length > 0
+  const isPipelineEmpty = !isLoading && !hasAnyRecords
+  const isScopedEmpty = !isLoading && hasAnyRecords && triageRecords.length === 0
+  const emptyStateImpressionRef = useRef<string | null>(null)
 
   // Auto-select first record when cluster filter changes
   const prevClusterFilterRef = useRef(clusterFilter)
@@ -100,6 +107,28 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
       }
     }
   }, [clusterFilter, triageRecords])
+
+  useEffect(() => {
+    const stateKey = isPipelineEmpty ? "pipeline-empty" : isScopedEmpty ? "scoped-empty" : null
+
+    if (!stateKey) {
+      emptyStateImpressionRef.current = null
+      return
+    }
+
+    if (emptyStateImpressionRef.current === stateKey) return
+    emptyStateImpressionRef.current = stateKey
+
+    void track("classification_triage_empty_state_impression", {
+      empty_state: stateKey,
+      active_category: activeCategory,
+      time_days: timeDays,
+      cluster_filter: clusterFilter,
+      has_clusters: hasClusters,
+      records_total: records.length,
+      records_in_scope: globallyFilteredRecords.length,
+    })
+  }, [activeCategory, clusterFilter, globallyFilteredRecords.length, hasClusters, isPipelineEmpty, isScopedEmpty, records.length, timeDays])
 
   const selected = useMemo(
     () => triageRecords.find((record) => record.id === selectedId) || null,
@@ -164,26 +193,51 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
           </div>
         </div>
 
+        {isPipelineEmpty && (
+          <div className="rounded-md border border-dashed bg-muted/30 p-4">
+            <p className="text-sm font-medium">No AI classifications generated yet.</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              This triage queue appears empty because classification output has not been produced for this project yet.
+            </p>
+            <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+              <li>Run the scrape + classification job to ingest fresh source feedback.</li>
+              <li>Backfill classifications for historical feedback so older records show up here.</li>
+            </ul>
+          </div>
+        )}
+
         <div className="space-y-2 rounded-md border p-3">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Top classification clusters</p>
           <div className="flex flex-wrap gap-2">
-            <Button 
-              size="sm" 
-              variant={clusterFilter === "all" ? "default" : "outline"} 
-              onClick={() => {
-                try {
-                  setClusterFilter("all")
-                } catch (error) {
-                  logClientError(error, "ClassificationTriageClusterFilterError", {
-                    clusterFilter,
-                    targetFilter: "all",
-                    context: "All clusters button clicked",
-                  })
-                }
-              }}
-            >
-              All clusters
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    size="sm"
+                    variant={clusterFilter === "all" ? "default" : "outline"}
+                    disabled={!hasClusters}
+                    onClick={() => {
+                      try {
+                        setClusterFilter("all")
+                      } catch (error) {
+                        logClientError(error, "ClassificationTriageClusterFilterError", {
+                          clusterFilter,
+                          targetFilter: "all",
+                          context: "All clusters button clicked",
+                        })
+                      }
+                    }}
+                  >
+                    All clusters
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {!hasClusters && (
+                <TooltipContent>
+                  Cluster filters are disabled until classification output is available.
+                </TooltipContent>
+              )}
+            </Tooltip>
             {clusters.map((cluster) => (
               <Button
                 key={cluster.name}
@@ -202,8 +256,10 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
 
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading classifications...</p>
-        ) : triageRecords.length === 0 ? (
+        ) : isScopedEmpty ? (
           <p className="text-sm text-muted-foreground">No classifier records in this scope. Adjust global sliders or cluster filter.</p>
+        ) : isPipelineEmpty ? (
+          <p className="text-sm text-muted-foreground">Run a scrape + classification job, then refresh this queue.</p>
         ) : (
           <div className="overflow-x-auto rounded-md border">
             <Table>
