@@ -139,6 +139,12 @@ export interface Cluster {
   cluster_key: string
   canonical_observation_id: string
   status: string
+  label: string | null
+  label_rationale: string | null
+  label_confidence: number | null
+  label_model: string | null
+  label_algorithm_version: string | null
+  labeling_updated_at: string | null
   created_at: string
 }
 

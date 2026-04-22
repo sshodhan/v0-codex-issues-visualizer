@@ -6,15 +6,10 @@ import {
   buildClusterKey,
   detachFromCluster,
 } from "@/lib/storage/clusters"
+import { runSemanticClusteringForBatch } from "@/lib/storage/semantic-clusters"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 export const maxDuration = 60
-
-// Operator surface for the clustering subsystem (lib/storage/clusters.ts,
-// RPCs attach_to_cluster / detach_from_cluster). Attach-only rebuild is
-// idempotent via the partial unique index idx_cluster_members_active;
-// redetach first exists for the rare case where buildClusterKey itself
-// changes.
 
 const DEFAULT_LIMIT = 500
 const MAX_LIMIT = 2000
@@ -25,6 +20,9 @@ interface RebuildBody {
   cursor?: string | null
   limit?: number
   redetach?: boolean
+  mode?: "title-hash" | "semantic"
+  similarityThreshold?: number
+  minClusterSize?: number
 }
 
 interface DetachBody {
@@ -120,21 +118,20 @@ export async function POST(request: NextRequest) {
     const cursor = body.cursor ?? null
     const limit = Math.max(1, Math.min(body.limit ?? DEFAULT_LIMIT, MAX_LIMIT))
     const redetach = body.redetach === true
+    const mode = body.mode ?? "title-hash"
 
-    // Log first chunk of a rebuild. Redetach mode is the higher-risk
-    // variant (temporarily breaks membership) and is called out.
     if (!cursor) {
       logServer({
         component: "admin-cluster",
         event: "rebuild_started",
         level: "info",
-        data: { limit, redetach },
+        data: { limit, redetach, mode },
       })
     }
 
     let q = supabase
       .from("observations")
-      .select("id, title")
+      .select("id, title, content")
       .order("id", { ascending: true })
       .limit(limit)
     if (cursor) q = q.gt("id", cursor)
@@ -148,6 +145,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         processed: 0,
         attached: 0,
+        semanticAttached: 0,
+        fallbackAttached: 0,
+        fallbackEmbeddingFailures: 0,
         ...(redetach ? { detached: 0 } : {}),
         nextCursor: null,
         done: true,
@@ -157,43 +157,63 @@ export async function POST(request: NextRequest) {
 
     let attached = 0
     let detached = 0
+    let semanticAttached = 0
+    let fallbackAttached = 0
+    let fallbackEmbeddingFailures = 0
     const sampleKeys: Array<{ id: string; title: string; cluster_key: string }> = []
-    const tasks: Promise<unknown>[] = []
 
-    for (const row of rows) {
-      const id = row.id as string
-      const title = (row.title as string) ?? ""
-      const key = buildClusterKey(title)
-      if (sampleKeys.length < SAMPLE_SIZE) {
-        sampleKeys.push({ id, title, cluster_key: key })
-      }
-      if (redetach) {
-        tasks.push(
-          detachFromCluster(supabase, id).then(() => {
-            detached++
-            return attachToCluster(supabase, id, title).then(() => {
+    if (mode === "semantic") {
+      const semanticResult = await runSemanticClusteringForBatch(
+        supabase,
+        rows.map((row) => ({
+          id: row.id as string,
+          title: ((row.title as string) ?? "").trim(),
+          content: (row.content as string | null) ?? null,
+        })),
+        {
+          similarityThreshold: body.similarityThreshold,
+          minClusterSize: body.minClusterSize,
+          redetach,
+        },
+      )
+      semanticAttached = semanticResult.semanticAttached
+      fallbackAttached = semanticResult.fallbackAttached
+      fallbackEmbeddingFailures = semanticResult.embeddingFailures
+      attached = semanticAttached + fallbackAttached
+      detached = redetach ? rows.length : 0
+    } else {
+      const tasks: Promise<unknown>[] = []
+      for (const row of rows) {
+        const id = row.id as string
+        const title = (row.title as string) ?? ""
+        const key = buildClusterKey(title)
+        if (sampleKeys.length < SAMPLE_SIZE) {
+          sampleKeys.push({ id, title, cluster_key: key })
+        }
+        if (redetach) {
+          tasks.push(
+            detachFromCluster(supabase, id).then(() => {
+              detached++
+              return attachToCluster(supabase, id, title).then(() => {
+                attached++
+              })
+            }),
+          )
+        } else {
+          tasks.push(
+            attachToCluster(supabase, id, title).then(() => {
               attached++
-            })
-          }),
-        )
-      } else {
-        tasks.push(
-          attachToCluster(supabase, id, title).then(() => {
-            attached++
-          }),
-        )
+            }),
+          )
+        }
       }
+      await Promise.all(tasks)
     }
-
-    await Promise.all(tasks)
 
     const processed = rows.length
     const lastId = rows[rows.length - 1].id as string
     const done = processed < limit
 
-    // cluster_id / cluster_key / is_canonical / frequency_count all live
-    // in mv_observation_current. Without refresh the dashboard keeps
-    // showing the pre-rebuild cluster assignments until the next cron.
     let refreshedMvs = false
     if (done) {
       const { error: refreshErr } = await supabase.rpc("refresh_materialized_views")
@@ -206,13 +226,25 @@ export async function POST(request: NextRequest) {
         component: "admin-cluster",
         event: "rebuild_completed",
         level: "info",
-        data: { attached, detached: redetach ? detached : undefined, refreshedMvs },
+        data: {
+          mode,
+          attached,
+          semanticAttached,
+          fallbackAttached,
+          fallbackEmbeddingFailures,
+          detached: redetach ? detached : undefined,
+          refreshedMvs,
+        },
       })
     }
 
     return NextResponse.json({
+      mode,
       processed,
       attached,
+      semanticAttached,
+      fallbackAttached,
+      fallbackEmbeddingFailures,
       ...(redetach ? { detached } : {}),
       nextCursor: done ? null : lastId,
       done,
