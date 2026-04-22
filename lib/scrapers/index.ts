@@ -18,7 +18,7 @@ import {
   recordCategory,
   recordImpact,
 } from "@/lib/storage/derivations"
-import { attachToCluster } from "@/lib/storage/clusters"
+import { runSemanticClusteringForBatch } from "@/lib/storage/semantic-clusters"
 import {
   processObservationClassificationQueue,
   synthesizeObservationReportText,
@@ -162,7 +162,14 @@ async function persistIssueRecord(
   }
 
   // 3.1c Aggregation
-  await attachToCluster(supabase, observationId, issue.title)
+  // Semantic pass attempts embedding + vector grouping first, then falls
+  // back deterministically to title-hash clustering if embedding/model
+  // calls fail or no semantic cluster can be formed yet.
+  await runSemanticClusteringForBatch(
+    supabase,
+    [{ id: observationId, title: issue.title, content: issue.content ?? null }],
+    { minClusterSize: 2 },
+  )
 
   return {
     observationId,

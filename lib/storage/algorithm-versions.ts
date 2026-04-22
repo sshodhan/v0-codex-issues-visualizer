@@ -18,6 +18,8 @@ export const CURRENT_VERSIONS = {
   // replay integrity. See scripts/011_algorithm_v2_bump.sql.
   competitor_mention: "v2",
   classification: "v1",
+  observation_embedding: "v1",
+  semantic_cluster_label: "v1",
 } as const
 
 export type AlgorithmKind = keyof typeof CURRENT_VERSIONS
