@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/collapsible"
 import type { ClassificationRecord, ClassificationStats } from "@/hooks/use-dashboard-data"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
+import { logClientError } from "@/lib/error-tracking/client-logger"
 
 interface ClassificationTriageProps {
   records: ClassificationRecord[]
@@ -166,7 +167,21 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
         <div className="space-y-2 rounded-md border p-3">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Top classification clusters</p>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant={clusterFilter === "all" ? "default" : "outline"} onClick={() => setClusterFilter("all")}>
+            <Button 
+              size="sm" 
+              variant={clusterFilter === "all" ? "default" : "outline"} 
+              onClick={() => {
+                try {
+                  setClusterFilter("all")
+                } catch (error) {
+                  logClientError(error, "ClassificationTriageClusterFilterError", {
+                    clusterFilter,
+                    targetFilter: "all",
+                    context: "All clusters button clicked",
+                  })
+                }
+              }}
+            >
               All clusters
             </Button>
             {clusters.map((cluster) => (
