@@ -224,6 +224,17 @@ The deployment runs two Vercel cron entries (configured in `vercel.json`). Both 
 3. `scripts/013_backfill_fingerprints.ts` has run against the corpus so observations have env/repro to thread into the classifier prompt.
 4. `vercel.json` cron paths match the route paths exactly.
 
+**Manual admin triggers**
+
+The classify-backfill flow is also reachable from `/admin` for one-shot bulk runs — necessary because the cron's 10-obs/day cap is tuned for steady-state catch-up, not for clearing an initial backlog (10k rows at 10/day ≈ 3 years). The operator path shares the orchestrator (`lib/classification/run-backfill.ts → runClassifyBackfill`) with the cron but runs behind a different auth gate.
+
+| Path | Auth | Owner | What it does |
+|---|---|---|---|
+| `/api/admin/classify-backfill` (GET) | `x-admin-secret: $ADMIN_SECRET` | `ClassifyBackfillPanel` in `app/admin/page.tsx` | Returns `{ pendingCandidates, defaultLimit, maxLimit, minImpactScore, openaiConfigured }` so the panel can show the count and document the budget shape without spending tokens. |
+| `/api/admin/classify-backfill` (POST) | `x-admin-secret: $ADMIN_SECRET` | `ClassifyBackfillPanel` | Runs one batch through `runClassifyBackfill`. Body: `{ limit?: 1..100, refreshMvs?: true, dryRun?: false }`. `dryRun` returns a count + budget preview with no model calls. The "Run until done" loop pages batches with `refreshMvs: false` on intermediate calls and `true` on the final one so MVs are rebuilt once per catch-up rather than once per batch. |
+
+Both routes write run rows to `scrape_logs(source_id = NULL)` so admin activity is visible in the same audit history as cron activity. Auth boundaries are distinct: `CRON_SECRET` gates Vercel's scheduler surface; `ADMIN_SECRET` gates operator actions from `/admin`. The orchestrator is shared; the auth is not. Also tracked: BUGS.md N-9 documents a dedupe SELECT-INSERT race that grows wider when an admin "Run until done" loop overlaps the 03:00 UTC cron tick — the panel description warns operators to avoid that overlap.
+
 ---
 
 ## 4) Module map and responsibilities
@@ -274,7 +285,9 @@ The only module allowed to write to the database. Enforces the three-layer bound
 
 - `pipeline.ts` — shared server-side classification executor used by `/api/classify`, `/api/observations/:id/classify`, scraper orchestration, and the daily classify-backfill cron. Owns: model-call/retry policy, hard review-rule application, enum/evidence validation, dedupe checks against existing `classifications` rows, and per-observation failure logging.
 - `candidate.ts` — dependency-free types and pure helpers shared by every callsite that builds a `ClassificationCandidate`: `synthesizeObservationReportText`, `buildEnvFromFingerprintColumns`, `buildReproFromFingerprintMarkers`. Kept dependency-free so node:test can import it without resolving `@/*` aliases (see Testability invariant in §4.1). Both the ingest-time builder (`lib/scrapers/index.ts → buildClassificationCandidate`) and the backfill builder (`lib/classification/backfill-candidates.ts → buildBackfillCandidates`) call these helpers — single source of truth for the classifier env/repro contract.
-- `backfill-candidates.ts` — pure projection from `mv_observation_current` row shape to `ClassificationCandidate`, used exclusively by `/api/cron/classify-backfill`. The mv renames the fingerprint os/shell/editor columns to `fp_*` to avoid collisions with observation-level columns; this module rewires them at the boundary.
+- `backfill-candidates.ts` — pure projection from `mv_observation_current` row shape to `ClassificationCandidate`, used by both `/api/cron/classify-backfill` (daily) and `/api/admin/classify-backfill` (operator one-shot). The mv renames the fingerprint os/shell/editor columns to `fp_*` to avoid collisions with observation-level columns; this module rewires them at the boundary.
+- `run-backfill.ts` — shared orchestrator (`runClassifyBackfill`, `countBackfillCandidates`) that owns the `mv_observation_current` query → `buildBackfillCandidates` → `processObservationClassificationQueue` → MV-refresh sequence. The cron route and the admin route each own their own auth + `scrape_logs` lifecycle and delegate the orchestration here. `refreshMvs: false` lets the admin "Run until done" loop skip intermediate MV rebuilds so a 10-batch catch-up triggers one refresh, not ten.
+- `run-backfill-constants.ts` — dep-free constants (`MIN_IMPACT_SCORE`, `BACKFILL_SELECT_COLS`) extracted so `tests/run-backfill.test.ts` can pin them without resolving the `@/*` alias graph. See the Testability invariant below.
 - `taxonomy.ts` — canonical LLM-side enum constants (`CATEGORY_ENUM`, `SEVERITY_ENUM`, etc.). Note: the LLM `CATEGORY_ENUM` is intentionally disjoint from the heuristic `categories.slug` namespace populated by `lib/scrapers/shared.ts → categorizeIssue`. Two separate taxonomies, two separate UI surfaces (heuristic on the dashboard tab, LLM on the AI Classifications tab); `components/dashboard/classification-triage.tsx` carries an explicit guard so a heuristic global-category filter doesn't silently empty the LLM tab.
 - `taxonomy.ts`, `mapping.ts`, `prompt.ts`, `report-summary.ts`, `schema.ts` — supporting modules for the `pipeline.ts` model call (enum lists, output schema, prompt assembly, request payload).
 
