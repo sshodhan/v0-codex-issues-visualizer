@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useEffect, useRef } from "react"
 import { AlertTriangle, ExternalLink, ShieldCheck, ChevronDown, History } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -84,6 +84,22 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
     return globallyFilteredRecords.filter((record) => `${record.effective_category} › ${record.subcategory || "General"}` === clusterFilter)
   }, [globallyFilteredRecords, clusterFilter])
 
+  // Auto-select first record when cluster filter changes
+  const prevClusterFilterRef = useRef(clusterFilter)
+  useEffect(() => {
+    if (prevClusterFilterRef.current !== clusterFilter) {
+      prevClusterFilterRef.current = clusterFilter
+      if (triageRecords.length > 0) {
+        const firstRecord = triageRecords[0]
+        console.log("[v0] Auto-selecting first record in new cluster:", firstRecord.id)
+        setSelectedId(firstRecord.id)
+        setStatusOverride(firstRecord.effective_status)
+        setSeverityOverride(firstRecord.effective_severity)
+        setCategoryOverride(firstRecord.effective_category)
+      }
+    }
+  }, [clusterFilter, triageRecords])
+
   const selected = useMemo(
     () => triageRecords.find((record) => record.id === selectedId) || null,
     [triageRecords, selectedId]
@@ -108,6 +124,9 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
       })
       await onRefresh()
       setNotes("")
+      setSelectedId(null)
+    } catch (error) {
+      console.error("[v0] Failed to submit classification review:", error)
     } finally {
       setIsSubmitting(false)
     }
