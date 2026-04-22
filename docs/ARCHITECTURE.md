@@ -63,7 +63,7 @@ Supabase (Postgres) — three-layer data model
   ├─ Aggregation layer
   │   ├─ clusters                 (canonical_observation_id lives here, not on evidence)
   │   ├─ cluster_members          (detached_at IS NULL = active membership)
-  │   └─ materialized views       (mv_observation_current, mv_dashboard_stats, mv_trend_daily)
+  │   └─ materialized views       (mv_observation_current, mv_trend_daily)
   │                                (refreshed on cron end via refresh_materialized_views())
   │
   └─ Reference tables (unchanged)
@@ -136,7 +136,7 @@ A scrape run is structured as three sequential passes over the captured records.
 2. If no cluster exists for that key, insert one into `clusters` (with this observation as `canonical_observation_id`) and add the membership row.
 3. If a cluster exists, append a `cluster_members` row (`attached_at = now()`, `detached_at = NULL`).
 4. On a title revision that shifts `cluster_key`, the same function updates the membership: stamp `detached_at` on the old row, insert a new one for the new cluster, and re-select a canonical if needed. Because clusters are their own table, rebalancing never touches evidence.
-5. At the end of the scrape run, `/api/cron/scrape` calls the `refresh_materialized_views` RPC, which rebuilds `mv_observation_current`, `mv_dashboard_stats`, and `mv_trend_daily`. All dashboard reads pick up the new scrape after this step.
+5. At the end of the scrape run, `/api/cron/scrape` calls the `refresh_materialized_views` RPC, which rebuilds `mv_observation_current` and `mv_trend_daily`. All dashboard reads pick up the new scrape after this step.
 
 #### 3.1.1 Clustering invariants
 
@@ -189,7 +189,7 @@ A scrape run is structured as three sequential passes over the captured records.
 
 For any dashboard number, the analyst can walk the chain backwards:
 
-1. **Dashboard widget** → the materialized view row it was sourced from (`mv_dashboard_stats`, `mv_trend_daily`, `mv_observation_current`).
+1. **Dashboard widget** → the materialized view row it was sourced from (`mv_observation_current`, `mv_trend_daily`).
 2. **Materialized view** → the derivation rows it aggregates, each stamped with `algorithm_version` and `computed_at`.
 3. **Derivation row** → the `observations` row it was computed against, plus (for classifications) the `classification_reviews` that modified effective state.
 4. **Observation** → the full capture chain: the first-sighting row, any `observation_revisions` entries (OP edits), `engagement_snapshots` over time, and the raw upstream payload in `ingestion_artifacts`.
@@ -450,8 +450,7 @@ The only layer consumed by the dashboard API routes. Every row can be rebuilt fr
 - `clusters (id UUID PK, cluster_key TEXT NOT NULL UNIQUE, canonical_observation_id UUID NOT NULL, status TEXT, created_at TIMESTAMPTZ)`.
 - `cluster_members (cluster_id, observation_id, attached_at, detached_at)` with a partial unique index `(cluster_id, observation_id) WHERE detached_at IS NULL` so an observation can belong to at most one active cluster.
 - Materialized views (refreshed by `refresh_materialized_views()` at `/api/cron/scrape` run end):
-  - `mv_observation_current` — one row per active cluster-canonical observation joined to the latest derivation rows and the latest engagement snapshot. Backs `/api/issues` and the Priority Matrix.
-  - `mv_dashboard_stats` — pre-aggregated totals for `/api/stats` (sentiment breakdown, source breakdown, category breakdown, total). Replaces the six sequential full-table scans.
+  - `mv_observation_current` — one row per active cluster-canonical observation joined to the latest derivation rows and the latest engagement snapshot. Backs `/api/issues`, the Priority Matrix, and `/api/stats` (which computes sentiment / source / category breakdowns in one scan of the canonical set).
   - `mv_trend_daily` — date-bucketed sentiment counts for the trend chart.
 - `frequency_count` is no longer a column; it is a view:
   ```sql
@@ -566,7 +565,7 @@ Real data (live, never seeded):
 - Derivation-layer rows (`sentiment_scores`, `category_assignments`, `impact_scores`, `competitor_mentions`) — written by the enrich pass (`lib/storage/derivations.ts`) against captured evidence. Every row is version-stamped.
 - `classifications` and `classification_reviews` rows — written by `app/api/classify/route.ts` and `app/api/classifications/[id]/route.ts` from the OpenAI Responses API and reviewer actions respectively.
 - Aggregation-layer rows (`clusters`, `cluster_members`) — written by `lib/storage/clusters.ts`.
-- Materialized views (`mv_observation_current`, `mv_dashboard_stats`, `mv_trend_daily`) — rebuilt at the end of each cron run from derivation + aggregation rows.
+- Materialized views (`mv_observation_current`, `mv_trend_daily`) — rebuilt at the end of each cron run from derivation + aggregation rows.
 - `scrape_logs` rows — written by `lib/scrapers/index.ts` per run.
 
 Reference data (seeded once via SQL, required for foreign keys to work):
@@ -649,7 +648,7 @@ The evidence-is-immutable + derivation-is-versioned invariants make any past das
 2. Restrict every derivation read to rows with `computed_at <= T`, picking the max `algorithm_version` that has a row at or before `T`. A `latest_as_of(T)` SQL helper handles the row-number window.
 3. Restrict cluster membership to rows with `attached_at <= T AND (detached_at IS NULL OR detached_at > T)`.
 4. Restrict engagement snapshots to the latest row per observation with `captured_at <= T`.
-5. Rebuild `mv_observation_current` / `mv_dashboard_stats` / `mv_trend_daily` against those time-bounded views (one-shot materialization into a scratch schema; the production MVs are not disturbed).
+5. Rebuild `mv_observation_current` / `mv_trend_daily` against those time-bounded views (one-shot materialization into a scratch schema; the production MVs are not disturbed).
 6. Compare the scratch-schema aggregates to any captured dashboard screenshot or exported KPI — they must match byte-for-byte if nothing upstream was deleted (and upstream deletions don't apply, per the append-only evidence policy).
 
 This is the primary justification for the three-layer split: scoring-algorithm drift (N-6), lexicon updates, competitor-phrase expansions, and reviewer revisions can all happen freely because the derivation layer preserves the full history.
@@ -772,14 +771,18 @@ psql "$DATABASE_URL" -f scripts/007_three_layer_split.sql
 # 3. Run 008 (revokes service_role DML on append-only tables).
 psql "$DATABASE_URL" -f scripts/008_revoke_service_role_dml.sql
 
-# 4. Deploy the app code from commit 87ecf95 or later (app reads
-#    mv_observation_current / mv_dashboard_stats / mv_trend_daily).
+# 4. Run 009 (as_of replay function) and 010 (perf indexes on the MV).
+psql "$DATABASE_URL" -f scripts/009_as_of_functions.sql
+psql "$DATABASE_URL" -f scripts/010_perf_indexes.sql
 
-# 5. Trigger a full repull.
+# 5. Deploy the app code from commit 87ecf95 or later (app reads
+#    mv_observation_current / mv_trend_daily).
+
+# 6. Trigger a full repull.
 curl -X POST "$APP_URL/api/scrape" \
   -H "Authorization: Bearer $CRON_SECRET"
 
-# 6. Verify the materialized views refreshed at the end of the scrape run
+# 7. Verify the materialized views refreshed at the end of the scrape run
 #    and mv_observation_current is populated.
 ```
 
@@ -803,7 +806,6 @@ select count(*) from cluster_members where detached_at is null;
 
 -- Materialized views rebuilt
 select count(*) from mv_observation_current where is_canonical;
-select count(*) from mv_dashboard_stats;
 select count(*) from mv_trend_daily;
 
 -- Last scrape succeeded

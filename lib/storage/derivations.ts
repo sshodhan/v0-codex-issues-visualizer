@@ -69,7 +69,7 @@ export async function recordCompetitorMention(
   const { error } = await supabase.rpc("record_competitor_mention", {
     obs_id: observationId,
     comp: mention.competitor,
-    window: mention.sentence_window,
+    win_text: mention.sentence_window,
     sent: mention.sentiment_score,
     conf: mention.confidence,
     lex_ver: LEXICON_VERSION,

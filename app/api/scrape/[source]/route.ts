@@ -3,7 +3,14 @@ import { runScraper } from "@/lib/scrapers"
 
 export const maxDuration = 60
 
-const ALLOWED_SOURCES = new Set(["reddit", "hackernews", "github", "stackoverflow"])
+const ALLOWED_SOURCES = new Set([
+  "reddit",
+  "hackernews",
+  "github",
+  "github-discussions",
+  "stackoverflow",
+  "openai-community",
+])
 
 export async function POST(
   _request: NextRequest,
