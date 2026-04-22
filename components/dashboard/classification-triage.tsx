@@ -56,15 +56,37 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [clusterFilter, setClusterFilter] = useState<string>("all")
 
+  // The global category filter at the top of the dashboard is a
+  // *heuristic* slug from `categories.slug` (e.g. "bug",
+  // "feature-request"), populated by lib/scrapers/shared.ts →
+  // categorizeIssue. The classification triage queue, however, uses the
+  // *LLM* category enum (e.g. "code-generation-quality",
+  // "tool-use-failure"). The two namespaces are intentionally disjoint
+  // (only "other" overlaps). Without this guard, navigating from the
+  // hero "Review {category}" CTA into this tab silently filters to
+  // zero rows, undermining the cron-backfill payoff.
+  //
+  // If the active category isn't a slug present in the LLM-side data,
+  // ignore it (show all) and surface a notice below.
+  const knownLlmCategorySlugs = useMemo(
+    () => new Set(records.map((record) => record.effective_category.toLowerCase())),
+    [records],
+  )
+  const globalFilterAppliesToLlmTab =
+    activeCategory === "all" || knownLlmCategorySlugs.has(activeCategory)
+  const effectiveCategoryFilter = globalFilterAppliesToLlmTab ? activeCategory : "all"
+
   const globallyFilteredRecords = useMemo(() => {
     const timeCutoff = timeDays > 0 ? subDays(new Date(), timeDays) : null
 
     return records.filter((record) => {
-      const categoryMatch = activeCategory === "all" || record.effective_category.toLowerCase() === activeCategory
+      const categoryMatch =
+        effectiveCategoryFilter === "all" ||
+        record.effective_category.toLowerCase() === effectiveCategoryFilter
       const timeMatch = !timeCutoff || new Date(record.created_at) >= timeCutoff
       return categoryMatch && timeMatch
     })
-  }, [records, activeCategory, timeDays])
+  }, [records, effectiveCategoryFilter, timeDays])
 
   const clusters = useMemo(() => {
     const grouped = new Map<string, { total: number; highRisk: number }>()
@@ -192,6 +214,19 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
             <p className="text-xl font-semibold">{stats?.traceabilityCoverage ?? 0}%</p>
           </div>
         </div>
+
+        {!globalFilterAppliesToLlmTab && hasAnyRecords && (
+          <div className="flex items-start gap-2 rounded-md border border-dashed bg-muted/30 p-3 text-sm text-muted-foreground">
+            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
+            <p>
+              Global category filter <span className="font-medium">"{activeCategory}"</span>{" "}
+              uses the dashboard's heuristic taxonomy (Bug, Feature Request, Performance, …); LLM
+              classifications use a different category enum (code-generation-quality,
+              tool-use-failure, …). Showing all LLM classifications in scope. Use the cluster
+              filter below to narrow.
+            </p>
+          </div>
+        )}
 
         {isPipelineEmpty && (
           <div className="rounded-md border border-dashed bg-muted/30 p-4">
