@@ -15,27 +15,39 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 // only enqueues NEW observations; rows that existed before the classifier
 // was wired up — or whose first attempt errored — silently accreted as
 // "high impact, no LLM signal". This route closes that gap by walking
-// mv_observation_current for the highest-impact unclassified rows and
-// routing them through the same queue with the dedupe guard engaged
-// (reclassifyExisting=false).
+// mv_observation_current for the highest-impact unclassified canonical
+// observations and routing them through the same queue with the dedupe
+// guard engaged (reclassifyExisting=false). Non-canonical members are
+// skipped because cluster-level surfaces (Priority Matrix, AI tab
+// triage) read off the canonical row; classifying members redundantly
+// would burn ~$0.04 each without changing what the dashboard shows.
 //
-// Budget: DEFAULT_LIMIT obs/run, ~$1/run at gpt-5-mini rates. Limit cap
-// is intentionally tight; clearing a 10k-row backlog at the default cap
-// takes ~400 days. Bump --limit (or add a one-shot admin route parallel
-// to /api/admin/backfill-derivations) if the backlog grows.
+// Budget: DEFAULT_LIMIT canonicals/run × ~3-5s/call must fit under
+// Vercel's plan-specific maxDuration (Hobby caps at 60s; Pro at 300s).
+// 10/run leaves headroom on Hobby; bump via ?limit= when on Pro.
+// Clearing a backlog of N canonicals at the default cap takes ~N/10
+// days — long for big backlogs, but the right knob to widen is `?limit=`
+// (or the admin one-shot route tracked as BUGS.md N-9), not the cron's
+// default.
 //
-// Run summary is logged to scrape_logs (source_id=null) so the
-// dashboard's "Last sync" chip surfaces backfill activity alongside
-// scrape activity.
+// Run summary is logged to scrape_logs(source_id=null) so the admin
+// surface and BUGS.md N-10 follow-up can distinguish backfill activity
+// from scrape activity. /api/stats explicitly excludes source_id=null
+// rows from the "Last sync" chip so backfill runs don't masquerade as
+// scrapes.
 //
-// See docs/ARCHITECTURE.md §3.1d and reflection.md item #5.
+// Kill switch: set CLASSIFY_BACKFILL_DISABLED=1 to short-circuit
+// without unsetting OPENAI_API_KEY (which would also break the ingest
+// classifier and the SignalLayers Refresh button).
+//
+// See docs/ARCHITECTURE.md §3.5 (scheduled jobs) and reflection.md #5.
 
-// 5 min upper bound for the full chunk on plans that allow it; on Hobby
-// the route still works — Vercel clamps to plan limits and the dedupe
-// guard keeps a partial run idempotent across retries.
-export const maxDuration = 300
+// Match the existing /api/cron/scrape ceiling so behavior is uniform
+// across crons; Hobby plans clamp to 60 regardless. The dedupe guard
+// keeps a partial-run-then-retry idempotent.
+export const maxDuration = 60
 
-const DEFAULT_LIMIT = 25
+const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 100
 const MIN_IMPACT_SCORE = 6
 
@@ -57,6 +69,13 @@ const SELECT_COLS = [
 ].join(", ")
 
 export async function GET(request: NextRequest) {
+  if (process.env.CLASSIFY_BACKFILL_DISABLED === "1") {
+    return NextResponse.json(
+      { disabled: true, reason: "CLASSIFY_BACKFILL_DISABLED=1" },
+      { status: 503 },
+    )
+  }
+
   const isProduction =
     process.env.VERCEL_ENV === "production" ||
     (!process.env.VERCEL_ENV && process.env.NODE_ENV === "production")
@@ -119,10 +138,17 @@ export async function GET(request: NextRequest) {
       .eq("id", log.id)
   }
 
+  // Restrict to canonical observations only. Cluster-level dashboard
+  // surfaces (Priority Matrix bubbles, AI tab cluster groupings, hero
+  // insight) read off the canonical row; classifying a non-canonical
+  // member would burn ~$0.04 per call without making any of those
+  // surfaces light up. Per-observation classification of members is
+  // still available on demand via /api/observations/[id]/classify.
   const { data: rows, error: queryErr } = await supabase
     .from("mv_observation_current")
     .select(SELECT_COLS)
     .is("llm_classified_at", null)
+    .eq("is_canonical", true)
     .gte("impact_score", MIN_IMPACT_SCORE)
     .order("impact_score", { ascending: false })
     .order("published_at", { ascending: false, nullsFirst: false })

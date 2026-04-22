@@ -342,9 +342,16 @@ export async function GET(request: NextRequest) {
 
   // Last scrape metadata. In as_of mode, bound by started_at <= as_of so a
   // replayed dashboard shows the scrape banner that was current then.
+  //
+  // Excludes source_id IS NULL rows (written by /api/cron/classify-backfill)
+  // — those are LLM-backfill runs, not scrapes. Surfacing them in the
+  // "Last synced" header chip would make the chip claim a sync happened
+  // when no upstream provider was contacted. Backfill activity has its
+  // own surface (BUGS.md N-10 follow-up: admin one-shot panel).
   const lastScrapeQuery = supabase
     .from("scrape_logs")
     .select("*")
+    .not("source_id", "is", null)
     .order("started_at", { ascending: false })
     .limit(1)
   if (asOf) {
