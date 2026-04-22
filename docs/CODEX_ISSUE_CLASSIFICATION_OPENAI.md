@@ -46,3 +46,24 @@ Migration: `scripts/003_create_bug_report_classifications.sql`
 - UI panel: `components/dashboard/classification-triage.tsx`
 
 Traceability is surfaced via source feedback fields (`source_issue_title`, `source_issue_url`, `source_issue_sentiment`) so every classification can be traced to the original web report.
+
+## Layered signal view
+
+The classifier is one of three layers in the per-observation `SignalLayers` panel (`components/dashboard/signal-layers.tsx`), alongside the raw report and the deterministic regex fingerprint (`lib/scrapers/bug-fingerprint.ts`). The panel stacks them top-down so an analyst can see *how* each pass contributes:
+
+1. **Report** — title + truncated body.
+2. **Regex signals** — error code, top stack frame + line-stable hash, CLI version, OS/shell/editor, model id, repro-marker count, keyword-presence count. Deterministic, cheap, always runs at ingest.
+3. **LLM insights** — the full structured output from `classifications` (subcategory, severity, reproducibility, impact, summary, root-cause hypothesis, suggested fix, tags, evidence quotes, model used). Populated automatically by the ingest-time classification pipeline (§3.1d); the CTA below the layer lets a user force a fresh pass.
+
+## Runtime call paths
+
+The same internal helper (`classifyReport` in `lib/classification/pipeline.ts`) backs three entry points:
+
+| Entry point                                | Invoked by                                             | Writes to `classifications`? |
+|--------------------------------------------|--------------------------------------------------------|------------------------------|
+| `POST /api/classify`                       | External callers / ops tools                           | yes                          |
+| `processObservationClassificationQueue`    | Scraper orchestrator, post-batch                       | yes (dedupe-guarded)         |
+| `POST /api/observations/:id/classify`      | SignalLayers "Add / Refresh / Re-run LLM pass" CTA     | yes                          |
+| `GET  /api/observations/:id/classify`      | SignalLayers mount (warm read, no model call)          | no — reads the latest row    |
+
+`classifications` is the single source of truth for the LLM layer. The `bug_fingerprints` derivation deliberately does NOT denormalize classifier fields; `mv_observation_current` joins the latest `classifications` row per observation so dashboards pick up classifier updates on MV refresh without requiring a fingerprint rewrite.

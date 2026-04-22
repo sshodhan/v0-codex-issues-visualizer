@@ -22,6 +22,7 @@ import { ExternalLink, ChevronDown, ChevronUp, Filter } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDistanceToNow } from "date-fns"
 import type { Issue } from "@/hooks/use-dashboard-data"
+import { SignalLayers } from "@/components/dashboard/signal-layers"
 
 interface IssuesTableProps {
   issues: Issue[]
@@ -212,18 +213,43 @@ export function IssuesTable({
                           ) : (
                             <span className="line-clamp-2">{issue.title}</span>
                           )}
-                          {issue.category && (
-                            <Badge
-                              variant="outline"
-                              className="w-fit text-xs"
-                              style={{
-                                borderColor: issue.category.color,
-                                color: issue.category.color,
-                              }}
-                            >
-                              {issue.category.name}
-                            </Badge>
-                          )}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {issue.category && (
+                              <Badge
+                                variant="outline"
+                                className="w-fit text-xs"
+                                style={{
+                                  borderColor: issue.category.color,
+                                  color: issue.category.color,
+                                }}
+                              >
+                                {issue.category.name}
+                              </Badge>
+                            )}
+                            {/*
+                              Error code chips use `outline` (not `destructive`)
+                              so a row with any error doesn't scream red — zone
+                              color in the Priority Matrix is the severity cue,
+                              the table is a scannable list. Cap at 2 chips
+                              per row; the full signal panel lives in the
+                              expanded view.
+                            */}
+                            {issue.error_code && (
+                              <Badge variant="outline" className="font-mono text-[10px] border-destructive/60 text-destructive">
+                                {issue.error_code}
+                              </Badge>
+                            )}
+                            {issue.top_stack_frame && (
+                              <Badge variant="outline" className="font-mono text-[10px]">
+                                {issue.top_stack_frame}
+                              </Badge>
+                            )}
+                            {issue.llm_subcategory && (
+                              <Badge variant="secondary" className="text-[10px]">
+                                {issue.llm_subcategory}
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground">
@@ -260,10 +286,7 @@ export function IssuesTable({
                     {expandedId === issue.id && (
                       <TableRow className="border-border bg-secondary/30">
                         <TableCell colSpan={6} className="p-4">
-                          <div className="flex flex-col gap-2">
-                            <p className="text-sm text-muted-foreground">
-                              {decodeHtmlEntities(issue.content) || "No additional content"}
-                            </p>
+                          <div className="flex flex-col gap-3">
                             <div className="flex items-center gap-4 text-xs text-muted-foreground">
                               <span>Author: {issue.author || "Unknown"}</span>
                               <span>
@@ -281,6 +304,26 @@ export function IssuesTable({
                                 </a>
                               )}
                             </div>
+                            <SignalLayers
+                              observationId={issue.id}
+                              title={issue.title}
+                              content={decodeHtmlEntities(issue.content) || null}
+                              fingerprint={{
+                                error_code: issue.error_code ?? null,
+                                top_stack_frame: issue.top_stack_frame ?? null,
+                                top_stack_frame_hash: issue.top_stack_frame_hash ?? null,
+                                cli_version: issue.cli_version ?? null,
+                                os: issue.fp_os ?? null,
+                                shell: issue.fp_shell ?? null,
+                                editor: issue.fp_editor ?? null,
+                                model_id: issue.model_id ?? null,
+                                repro_markers: issue.repro_markers ?? 0,
+                                keyword_presence: issue.fp_keyword_presence ?? 0,
+                                llm_subcategory: issue.llm_subcategory ?? null,
+                                llm_primary_tag: issue.llm_primary_tag ?? null,
+                                algorithm_version: issue.fingerprint_algorithm_version ?? null,
+                              }}
+                            />
                           </div>
                         </TableCell>
                       </TableRow>

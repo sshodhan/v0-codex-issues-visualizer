@@ -23,6 +23,14 @@ interface PriorityMatrixProps {
     frequency_count: number
     sentiment: string
     category: { name: string; color: string } | null
+    // v3 bug-fingerprint projection — when available, the tooltip
+    // surfaces the dominant error_code so lanes with the same category
+    // name but different root causes read distinctly at a glance.
+    fingerprint?: {
+      error_code?: string | null
+      top_stack_frame?: string | null
+      llm_subcategory?: string | null
+    } | null
   }>
 }
 
@@ -67,16 +75,16 @@ const getDominantSentiment = (
   total: number
 ): { sentiment: SentimentKey; share: number } | null => {
   if (total === 0) return null
-  
+
   const shares = SENTIMENT_ORDER.map((s) => ({
     sentiment: s,
     share: counts[s] / total,
   }))
-  
-  const dominant = shares.reduce((best, curr) => 
+
+  const dominant = shares.reduce((best, curr) =>
     curr.share > best.share ? curr : best
   )
-  
+
   return dominant.share >= 0.3 ? dominant : null
 }
 
@@ -91,6 +99,12 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           sentimentCounts: Record<SentimentKey, number>
           totalFrequency: number
           totalImpact: number
+          // v3 bug-fingerprint aggregates. The priority-matrix tooltip
+          // surfaces the top error codes and LLM subcategories per lane
+          // so two lanes that share a category name but different root
+          // causes read distinctly without requiring a drill-down.
+          errorCodeCounts: Record<string, number>
+          subcategoryCounts: Record<string, number>
         }
       >
     >((acc, item) => {
@@ -103,6 +117,8 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           sentimentCounts: { positive: 0, negative: 0, neutral: 0 },
           totalFrequency: 0,
           totalImpact: 0,
+          errorCodeCounts: {},
+          subcategoryCounts: {},
         }
       }
 
@@ -115,6 +131,26 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
       acc[categoryName].sentimentCounts[sentiment] += 1
       acc[categoryName].totalFrequency += item.frequency_count
       acc[categoryName].totalImpact += item.impact_score
+
+      // v3 fingerprint roll-up: top error codes and LLM subcategories
+      // per lane so the tooltip can read "Top errors: ENOENT (4),
+      // ETIMEDOUT (2)" — differentiating lanes that share a category
+      // name but have distinct root-cause mixes.
+      //
+      // Counts are weighted by cluster frequency so a single canonical
+      // observation representing a 50-report cluster is not
+      // out-shouted by ten singleton canonicals. Matches the existing
+      // priorityScore weighting (65% impact + 35% frequency).
+      const weight = item.frequency_count && item.frequency_count > 0 ? item.frequency_count : 1
+      const fp = item.fingerprint
+      if (fp?.error_code) {
+        acc[categoryName].errorCodeCounts[fp.error_code] =
+          (acc[categoryName].errorCodeCounts[fp.error_code] ?? 0) + weight
+      }
+      if (fp?.llm_subcategory) {
+        acc[categoryName].subcategoryCounts[fp.llm_subcategory] =
+          (acc[categoryName].subcategoryCounts[fp.llm_subcategory] ?? 0) + weight
+      }
 
       return acc
     }, {})
@@ -147,6 +183,16 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           .slice(0, 2)
           .map((issue) => issue.title)
 
+        const topErrorCodes = Object.entries(lane.errorCodeCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([code, count]) => ({ code, count }))
+
+        const topSubcategories = Object.entries(lane.subcategoryCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 2)
+          .map(([sub, count]) => ({ sub, count }))
+
         return {
           x: priorityScore,
           y: index,
@@ -161,6 +207,8 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           zone,
           dominant,
           representativeTitles,
+          topErrorCodes,
+          topSubcategories,
         }
       })
       .sort((a, b) => b.priorityScore - a.priorityScore)
@@ -345,6 +393,38 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
                                 </li>
                               ))}
                             </ul>
+                          </div>
+                        )}
+
+                        {(lane.topErrorCodes?.length ?? 0) > 0 && (
+                          <div className="pt-1 border-t border-border">
+                            <p className="text-xs text-muted-foreground mb-1">Top error codes:</p>
+                            <div className="flex flex-wrap gap-1">
+                              {lane.topErrorCodes.map((e: { code: string; count: number }) => (
+                                <Badge
+                                  key={e.code}
+                                  variant="destructive"
+                                  className="font-mono text-[10px]"
+                                >
+                                  {e.code} · {e.count}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {(lane.topSubcategories?.length ?? 0) > 0 && (
+                          <div className="pt-1 border-t border-border">
+                            <p className="text-xs text-muted-foreground mb-1">LLM subcategories:</p>
+                            <div className="flex flex-wrap gap-1">
+                              {lane.topSubcategories.map(
+                                (s: { sub: string; count: number }) => (
+                                  <Badge key={s.sub} variant="secondary" className="text-[10px]">
+                                    {s.sub} · {s.count}
+                                  </Badge>
+                                ),
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>

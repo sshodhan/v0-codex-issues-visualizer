@@ -1,45 +1,36 @@
-import { createHash } from "node:crypto"
 import type { createAdminClient } from "@/lib/supabase/admin"
+import {
+  buildTitleClusterKey,
+  normalizeTitleForCluster,
+} from "@/lib/storage/cluster-key"
 
-// Clustering is an aggregation-layer concern. Evidence rows are never mutated
-// by attach/detach — only cluster_members is written. See
-// docs/ARCHITECTURE.md v10 §§3.1c, 5.3, 4.7.
+// Aggregation-layer entry points. Physical cluster membership is written
+// by the semantic-clustering pass in lib/storage/semantic-clusters.ts,
+// which calls attachToCluster with a semantic-cluster key. The
+// title-only fallback below is the deterministic path used when the
+// embedding call fails or no semantic cluster can form yet.
+//
+// Key-derivation helpers live in cluster-key.ts so the bug-fingerprint
+// extractor can share normalizeTitleForCluster / buildTitleClusterKey
+// without pulling in the DB-facing RPCs. The bug fingerprint produces a
+// *display/audit* compound key (title|err:<code>|frame:<fh>) that is
+// persisted on bug_fingerprints.cluster_key_compound but is NOT the
+// physical cluster key — physical clustering is owned by the semantic
+// pass (docs/ARCHITECTURE.md v11 §3.1c).
 
 type AdminClient = ReturnType<typeof createAdminClient>
 
-/**
- * Normalize a title for cluster-key derivation. Unicode-aware so non-Latin
- * titles produce stable keys rather than collapsing to an empty bucket
- * (addresses the P1-12 failure mode from the previous design).
- */
-export function normalizeTitleForCluster(title: string): string {
-  return title
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/\p{M}+/gu, "")
-    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-}
+export { buildTitleClusterKey, normalizeTitleForCluster }
 
-/**
- * Deterministic cluster key for a given title. MD5 of the normalized form,
- * prefixed so the column is self-describing. Empty titles collapse to
- * "title:empty" but this is rare once Unicode normalization is in place.
- */
-export function buildClusterKey(title: string): string {
-  const normalized = normalizeTitleForCluster(title)
-  if (!normalized) return "title:empty"
-  const hash = createHash("md5").update(normalized).digest("hex").slice(0, 16)
-  return `title:${hash}`
-}
+// Back-compat alias. New callers should prefer buildTitleClusterKey.
+export const buildClusterKey = buildTitleClusterKey
 
 export async function attachToCluster(
   supabase: AdminClient,
   observationId: string,
   title: string,
 ): Promise<string | null> {
-  const key = buildClusterKey(title)
+  const key = buildTitleClusterKey(title)
   const { data, error } = await supabase.rpc("attach_to_cluster", {
     obs_id: observationId,
     key,

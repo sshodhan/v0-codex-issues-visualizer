@@ -240,14 +240,34 @@ export async function GET(request: NextRequest) {
   }
 
   // Priority Matrix — same canonical rows, project down to the fields the
-  // chart expects. `id` is aliased from observation_id for the UI.
+  // chart expects. `id` is aliased from observation_id for the UI. The
+  // fingerprint block is forwarded so the dashboard can render the
+  // layered regex → LLM signal panel per cluster (see
+  // components/dashboard/signal-layers.tsx).
   const priorityMatrix = rows.map((r: any) => ({
     id: r.observation_id,
     title: r.title,
+    content: r.content ?? null,
+    url: r.url ?? null,
     impact_score: r.impact_score ?? 0,
     frequency_count: r.frequency_count ?? 1,
     sentiment: r.sentiment ?? "neutral",
     category: r.category_id ? categoryById.get(r.category_id) : null,
+    fingerprint: {
+      error_code: r.error_code ?? null,
+      top_stack_frame: r.top_stack_frame ?? null,
+      top_stack_frame_hash: r.top_stack_frame_hash ?? null,
+      cli_version: r.cli_version ?? null,
+      os: r.fp_os ?? null,
+      shell: r.fp_shell ?? null,
+      editor: r.fp_editor ?? null,
+      model_id: r.model_id ?? null,
+      repro_markers: r.repro_markers ?? 0,
+      keyword_presence: r.fp_keyword_presence ?? 0,
+      llm_subcategory: r.llm_subcategory ?? null,
+      llm_primary_tag: r.llm_primary_tag ?? null,
+      algorithm_version: r.fingerprint_algorithm_version ?? null,
+    },
   }))
 
   // 6-day window for realtime insights and competitive mentions. In as_of

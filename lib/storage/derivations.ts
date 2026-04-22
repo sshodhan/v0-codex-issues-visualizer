@@ -88,6 +88,42 @@ export async function recordCompetitorMention(
   if (error) console.error("[derivations] record_competitor_mention failed:", error)
 }
 
+// Bug-fingerprint payload mirrors the BugFingerprint shape in
+// lib/scrapers/bug-fingerprint.ts, plus the compound cluster-key label
+// derived from it at compute time. Persisted for replay / audit.
+//
+// Note: the LLM classifier's output is intentionally NOT denormalized
+// onto this row. `classifications` is the source of truth for
+// subcategory / tags / severity / root_cause_hypothesis, and
+// mv_observation_current joins directly to it so dashboards never see
+// stale LLM fields.
+export interface BugFingerprintPayload {
+  error_code: string | null
+  top_stack_frame: string | null
+  top_stack_frame_hash: string | null
+  cli_version: string | null
+  os: string | null
+  shell: string | null
+  editor: string | null
+  model_id: string | null
+  repro_markers: number
+  keyword_presence: number
+  cluster_key_compound: string | null
+}
+
+export async function recordBugFingerprint(
+  supabase: AdminClient,
+  observationId: string,
+  payload: BugFingerprintPayload,
+): Promise<void> {
+  const { error } = await supabase.rpc("record_bug_fingerprint", {
+    obs_id: observationId,
+    ver: CURRENT_VERSIONS.bug_fingerprint,
+    payload: payload as any,
+  })
+  if (error) console.error("[derivations] record_bug_fingerprint failed:", error)
+}
+
 export interface ClassificationPayload {
   observation_id?: string | null
   prior_classification_id?: string | null

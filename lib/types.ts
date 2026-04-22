@@ -80,6 +80,26 @@ export interface ImpactScore {
   computed_at: string
 }
 
+export interface BugFingerprintRow {
+  id: string
+  observation_id: string
+  algorithm_version: string
+  error_code: string | null
+  top_stack_frame: string | null
+  top_stack_frame_hash: string | null
+  cli_version: string | null
+  os: string | null
+  shell: string | null
+  editor: string | null
+  model_id: string | null
+  repro_markers: number
+  keyword_presence: number
+  llm_subcategory: string | null
+  llm_primary_tag: string | null
+  cluster_key_compound: string | null
+  computed_at: string
+}
+
 export interface CompetitorMention {
   observation_id: string
   competitor: string
@@ -181,6 +201,23 @@ export interface ObservationCurrent {
   impact_score: number | null
   upvotes: number | null
   comments_count: number | null
+  // Bug-fingerprint columns (v3 — see scripts/012_bug_fingerprints_v3.sql).
+  // All nullable: an observation is valid without a fingerprint row, and
+  // during the v3 rollout most rows will have NULL here until the backfill
+  // runs.
+  error_code?: string | null
+  top_stack_frame?: string | null
+  top_stack_frame_hash?: string | null
+  cli_version?: string | null
+  fp_os?: string | null
+  fp_shell?: string | null
+  fp_editor?: string | null
+  model_id?: string | null
+  repro_markers?: number | null
+  fp_keyword_presence?: number | null
+  llm_subcategory?: string | null
+  llm_primary_tag?: string | null
+  fingerprint_algorithm_version?: string | null
   // Joined relations for API responses
   source?: Source
   category?: Category

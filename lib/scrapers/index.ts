@@ -17,6 +17,7 @@ import {
   recordSentiment,
   recordCategory,
   recordImpact,
+  recordBugFingerprint,
 } from "@/lib/storage/derivations"
 import { runSemanticClusteringForBatch } from "@/lib/storage/semantic-clusters"
 import {
@@ -24,6 +25,10 @@ import {
   synthesizeObservationReportText,
   type ClassificationCandidate,
 } from "@/lib/classification/pipeline"
+import {
+  extractBugFingerprint,
+  buildCompoundClusterKey,
+} from "@/lib/scrapers/bug-fingerprint"
 
 export {
   scrapeReddit,
@@ -161,10 +166,39 @@ async function persistIssueRecord(
     })
   }
 
-  // 3.1c Aggregation
-  // Semantic pass attempts embedding + vector grouping first, then falls
-  // back deterministically to title-hash clustering if embedding/model
-  // calls fail or no semantic cluster can be formed yet.
+  // 3.1b bug-fingerprint derivation.
+  //
+  // Deterministic regex extractor that pulls concrete differentiators
+  // (error codes, top stack frame, CLI version, OS, model id, repro
+  // markers, keyword_presence) out of title + body. The fingerprint is
+  // *intentionally decoupled* from the semantic clustering pass below:
+  //   * Semantic clustering answers "which reports are about the same
+  //     thing?" — conceptual grouping via embeddings.
+  //   * The fingerprint answers "what exactly differs between reports
+  //     that sound alike?" — a sub-cluster label inside a semantic
+  //     bucket (e.g. ENOENT vs EACCES crashes on startup).
+  // The compound cluster-key label (title|err|frame) is stored on the
+  // fingerprint row as a durable audit trail. It is the backbone of the
+  // regex-first "layer 2" in the SignalLayers UI; the classifier LLM
+  // pass below becomes "layer 3".
+  const fingerprint = extractBugFingerprint({
+    title: issue.title,
+    content: issue.content ?? null,
+  })
+  const compoundKey = buildCompoundClusterKey(issue.title, fingerprint)
+  await recordBugFingerprint(supabase, observationId, {
+    ...fingerprint,
+    cluster_key_compound: compoundKey,
+  })
+
+  // 3.1c Aggregation — semantic clustering first (embeddings ⇒ attach,
+  // title-hash fallback on failure). Fingerprint sub-clustering is a
+  // read-time concern today: the SignalLayers panel groups cluster
+  // members by `error_code` + `top_stack_frame_hash` client-side so
+  // analysts see the sub-structure without the writer needing to create
+  // physical sub-clusters. If we later decide to promote sub-clusters
+  // to their own rows, the compound key above is the deterministic
+  // split function.
   await runSemanticClusteringForBatch(
     supabase,
     [{ id: observationId, title: issue.title, content: issue.content ?? null }],
