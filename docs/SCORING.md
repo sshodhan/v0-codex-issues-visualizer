@@ -326,3 +326,55 @@ Do/Don’t examples:
   - Stack-frame hash drops the `:line` suffix so a one-line shift
     between Codex releases doesn't fragment an otherwise-identical
     signal; the line number is retained in the display string only.
+
+### 10.1 Priority Matrix actionability contract (scoring compatibility)
+
+Priority Matrix ranking uses an **actionability** score (not raw frequency and
+not the legacy `priorityScore` ordering). The canonical formula is:
+
+```
+actionability =
+  0.55*(impact/10)
++ 0.20*min(freq/10,1)
++ 0.10*(error_code?1:0)
++ 0.08*min(repro_markers/3,1)
++ 0.07*min(max(source_diversity-1,0)/3,1)
+```
+
+Where each term is normalized into `[0,1]` before weighting:
+
+- `impact`: cluster/category impact signal on a 1–10 scale (typically derived
+  from `impact_score` aggregates). Normalize with `impact/10`.
+- `freq`: frequency count in the active window. Normalize and clamp with
+  `min(freq/10,1)` so values above 10 do not overweight volume.
+- `error_code`: binary presence signal from bug-fingerprint extraction
+  (`error_code` exists → `1`, missing → `0`).
+- `repro_markers`: count of reproduction cues from bug-fingerprint extraction.
+  Normalize and clamp with `min(repro_markers/3,1)`.
+- `source_diversity`: number of distinct sources represented in the grouped
+  reports. Convert to a non-baseline bonus via `max(source_diversity-1,0)`,
+  then normalize/clamp with `/3` and `min(...,1)`.
+
+Normalization / clamping contract:
+
+- Inputs that are missing or null are treated as `0` for their term.
+- Each normalized sub-score is clamped to `[0,1]` exactly as shown above.
+- Final `actionability` is the weighted sum of those normalized terms; higher
+  means more actionable for triage ordering.
+
+Backward-compatibility contract:
+
+- `priorityScore` remains in payloads for backward compatibility with existing
+  consumers.
+- **Ordering in the Priority Matrix must use `actionability`** as the primary
+  sort key (descending). `priorityScore` must not be presented as the ranking
+  authority in new UI copy.
+
+Tooltip copy guidance:
+
+- Use “**actionability**” language (for example, “Actionability score” and
+  “Actionability breakdown”), not “priority score”.
+- Break down contributions by dimension: impact, frequency cap, error-code
+  presence, repro markers, and source diversity bonus.
+- Include a short explanatory note that `repro_markers` directly contributes to
+  ranking (8% weight, capped), so this signal is not dead/advisory-only data.
