@@ -129,14 +129,17 @@ test("categorizeIssue v2: 'Unable to connect GitHub Auth' lands in a non-Other b
   assert.equal(categoryId, "cat-int")
 })
 
-test("categorizeIssue v2: threshold lowered — a single phrase hit wins over Other", () => {
-  // v1 required score ≥ 2 (e.g. two weight-1 hits or one weight-2 hit). v2
-  // requires only score ≥ 1, so a lone `roadmap` (weight 1) now classifies.
+test("categorizeIssue v2: a lone weight-1 phrase does NOT win over Other (threshold=2 preserved)", () => {
+  // Pre-merge review caught that lowering the threshold to 1 let single
+  // weight-1 hits (`roadmap`, `example`, `connect`) pull posts out of Other
+  // on thin evidence. We kept the v1 floor of 2 and instead relied on v2's
+  // phrase-list expansion (stronger signals at weights 2–3) to classify
+  // eye-test rows. A solitary `roadmap` is still Other.
   const categoryId = categorizeIssue(
     "is this on the roadmap for q3?",
     CATEGORIES,
   )
-  assert.equal(categoryId, "cat-fr")
+  assert.equal(categoryId, "cat-other")
 })
 
 test("categorizeIssue v2: empty phrase-match still falls back to Other", () => {

@@ -166,7 +166,9 @@ export function scoreMentionSentiment(
   options: CompetitiveMentionsOptions = {}
 ): MentionSentiment {
   const { anchorBrand } = { ...DEFAULT_OPTIONS, ...options }
-  const lower = windowText.toLowerCase()
+  // Normalize U+2019 → ASCII apostrophe (see analyzeSentiment note) so the
+  // tokenizer sees "can't"/"won't" on realistic web input.
+  const lower = windowText.toLowerCase().replace(/’/g, "'")
   const tokens = lower.match(/[a-z']+/g) ?? []
 
   let score = 0

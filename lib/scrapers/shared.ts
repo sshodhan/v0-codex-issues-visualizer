@@ -66,7 +66,14 @@ export function analyzeSentiment(text: string): {
   score: number
   keyword_presence: number
 } {
-  const lowerText = text.toLowerCase()
+  // Normalize U+2019 (right single quotation mark, the "curly" apostrophe) to
+  // the ASCII apostrophe before tokenizing. Web/iOS text overwhelmingly uses
+  // the curly form, and the tokenizer regex [a-z']+ only matches straight
+  // apostrophes — without this normalization, titles like "can’t connect" or
+  // "doesn’t work" would tokenize wrong and the v2 lexicon entries for
+  // "can't"/"won't"/"cannot" plus the "doesn't work" regex would never fire
+  // on realistic input.
+  const lowerText = text.toLowerCase().replace(/’/g, "'")
   const tokens = lowerText.match(/[a-z']+/g) ?? []
 
   let positiveCount = 0
@@ -247,10 +254,13 @@ export function categorizeIssue(
     return categories.find((c) => c.slug === "other")?.id
   }
 
-  // v2: any phrase hit wins over Other. The v1 threshold of 2 was the
-  // proximate cause of the "Other"-heavy distribution observed in the
-  // eye test (11/20 top-ranked rows landed in Other).
-  if (top.score < 1) {
+  // Threshold stays at 2: v2 expands phrase lists and reweights strong
+  // signals (e.g. `github auth` weight 3, `open-source llms` weight 3,
+  // `hands-on`+`review` sum to 4) so that eye-test rows now classify
+  // without needing the floor to drop. Lowering to 1 let single weight-1
+  // hits (`roadmap`, `example`, `connect`) wrongly pull posts out of Other
+  // on thin evidence — a regression the pre-merge review caught.
+  if (top.score < 2) {
     return categories.find((c) => c.slug === "other")?.id
   }
 

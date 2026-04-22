@@ -68,10 +68,11 @@ export async function scrapeStackOverflow(
         if (!isLikelyCodexIssue(content)) continue
         if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
-        const { sentiment, score: sentimentScore } = analyzeSentiment(content)
+        const { sentiment, score: sentimentScore, keyword_presence } = analyzeSentiment(content)
 
         issues.push({
           source_id: source.id,
+          source_slug: source.slug,
           category_id: categorizeIssue(content, categories),
           external_id: String(item.question_id),
           title: normalizedTitle.slice(0, 500),
@@ -80,6 +81,7 @@ export async function scrapeStackOverflow(
           author: item.owner?.display_name || null,
           sentiment,
           sentiment_score: sentimentScore,
+          keyword_presence,
           impact_score: calculateImpactScore(
             item.score || 0,
             item.answer_count || 0,

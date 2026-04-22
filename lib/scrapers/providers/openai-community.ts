@@ -92,7 +92,7 @@ export async function scrapeOpenAICommunity(
         if (!isLikelyCodexIssue(content)) continue
         if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
-        const { sentiment, score: sentimentScore } = analyzeSentiment(content)
+        const { sentiment, score: sentimentScore, keyword_presence } = analyzeSentiment(content)
         // Discourse's native engagement signals: likes on the OP and reply
         // count on the topic. Views is 10×+ inflated vs. likes so we stick
         // with likes for an apples-to-apples comparison across sources.
@@ -104,6 +104,7 @@ export async function scrapeOpenAICommunity(
 
         issues.push({
           source_id: source.id,
+          source_slug: source.slug,
           category_id: categorizeIssue(content, categories),
           external_id: String(topic.id),
           title: normalizedTitle.slice(0, 500),
@@ -112,6 +113,7 @@ export async function scrapeOpenAICommunity(
           author: op?.username || null,
           sentiment,
           sentiment_score: sentimentScore,
+          keyword_presence,
           impact_score: calculateImpactScore(upvotes, replyCount, sentiment, source.slug),
           upvotes,
           comments_count: replyCount,

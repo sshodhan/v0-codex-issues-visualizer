@@ -12,11 +12,14 @@
 //     still tracked at ingest time via `NEGATIVE_KEYWORD_PATTERNS` in
 //     shared.ts and surfaced as `keyword_presence`.
 //
-//   - Polarity ADJECTIVES / distress VERBS are in: "broken", "buggy",
-//     "unable", "stuck", "missing", "fails" (past-tense verb, distinct from
-//     the topic noun "fail"), "painful", "clunky". These carry implicit
-//     author-polarity in titles like "Unable to connect GitHub Auth …" that
-//     v1 labeled neutral.
+//   - Polarity ADJECTIVES / distress VERBS of opinion are in: "unable",
+//     "stuck", "missing", "buggy", "clunky", "painful", "can't", "cannot",
+//     "won't", "refuses". These carry implicit author-polarity in titles
+//     like "Unable to connect GitHub Auth …" that v1 labeled neutral.
+//   - Status/topic words that feel negative but are already tracked in
+//     NEGATIVE_KEYWORD_PATTERNS (→ keyword_presence) stay OUT to avoid
+//     double-counting: "broken", "fails", "failed", "crashes", "errors",
+//     "bugs", "issues", "problems", "regressions".
 //
 // This refinement is why `CURRENT_VERSIONS.sentiment` is "v2" — v1 rows stay
 // in the DB for replay comparison.
@@ -39,8 +42,15 @@ export const NEGATIVE_WORDS: ReadonlySet<string> = new Set([
   "bad", "awful", "terrible", "worst", "worse", "hate",
   "slow", "slower", "unusable", "frustrating", "disappointing",
   "useless", "annoying",
-  // v2 complaint markers (eye-test Pattern B).
-  "unable", "stuck", "broken", "missing", "fails", "failed",
+  // v2 complaint markers (eye-test Pattern B). We deliberately EXCLUDE
+  // "broken", "fails", and "failed" even though they feel like polarity —
+  // they are already counted as topic/status signal in
+  // shared.ts::NEGATIVE_KEYWORD_PATTERNS (→ keyword_presence), and
+  // double-counting them here would mislabel dev-side "fix the broken
+  // symlink handling" / "test fails intermittently" posts as
+  // user-frustration polarity. Topic nouns stay out of this lexicon; only
+  // polarity verbs/adjectives of distress.
+  "unable", "stuck", "missing",
   "can't", "cannot", "won't", "refuses", "buggy", "clunky", "painful",
 ])
 

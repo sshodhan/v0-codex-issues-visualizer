@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import { analyzeSentiment, calculateImpactScore } from "./shared.ts"
+import { NEGATIVE_WORDS, POSITIVE_WORDS } from "../analytics/sentiment-lexicon.ts"
 
 test("analyzeSentiment tokenizes (no substring matches inside unrelated identifiers)", () => {
   // Before P0-2 was closed, "debug" would have substring-matched "bug" in the
@@ -38,13 +39,15 @@ test("analyzeSentiment recognizes the 'doesn't work' / 'not working' multi-word 
 
 // v2: eye-test Pattern B — implicit frustration via lexicon expansion.
 test("analyzeSentiment v2 catches implicit frustration markers", () => {
-  // Row 15 from the eye test.
+  // Row 15 from the eye test (combines "unable" + "keeps opening").
   assert.equal(
     analyzeSentiment("Unable to connect GitHub Auth to OpenAI Codex (Keeps Opening up the Configuration Page)").sentiment,
     "negative",
   )
-  // Other v2 complaint markers.
-  assert.equal(analyzeSentiment("the CLI is broken for me").sentiment, "negative")
+  // Other v2 polarity additions. Note: "broken" is deliberately NOT here —
+  // it stays in NEGATIVE_KEYWORD_PATTERNS (keyword_presence) rather than
+  // NEGATIVE_WORDS, so "the fix is broken" / "the broken symlink" reads
+  // neutral at polarity level, positive/negative at topic level.
   assert.equal(analyzeSentiment("I'm stuck trying to configure the provider").sentiment, "negative")
   assert.equal(analyzeSentiment("this is missing the --resume flag").sentiment, "negative")
   assert.equal(analyzeSentiment("can't get the approval prompt to stop").sentiment, "negative")
@@ -104,4 +107,82 @@ test("calculateImpactScore v2: negative-sentiment 1.5× boost still stacks with 
     negativeGh >= neutralGh,
     `negative github (${negativeGh}) should >= neutral github (${neutralGh}); PR #11 sentiment boost must survive v2`,
   )
+})
+
+// Post-review fixes (second commit on the v2 branch).
+
+test("analyzeSentiment normalizes the curly apostrophe (U+2019) before tokenizing", () => {
+  // Pre-merge senior-engineer review caught that lexicon entries like
+  // "can't"/"won't" and the multi-word "doesn't work" regex would never
+  // fire on realistic web text (iOS autocorrect, most copy-paste) because
+  // the tokenizer regex /[a-z']+/g only matches the ASCII apostrophe.
+  // Fix: normalize ’ → ' at the top of analyzeSentiment.
+  assert.equal(analyzeSentiment("I can’t get this to work at all").sentiment, "negative")
+  assert.equal(analyzeSentiment("it doesn’t work on macOS").sentiment, "negative")
+  assert.equal(analyzeSentiment("the tool won’t stop prompting").sentiment, "negative")
+})
+
+test("analyzeSentiment returns keyword_presence independent of polarity", () => {
+  // Lock the P0-2 invariant: topic/status nouns contribute to
+  // keyword_presence but NOT to polarity. The enrich pass threads this
+  // through into sentiment_scores.keyword_presence (fixed in the same
+  // commit — v1 hardcoded 0 there).
+  const r = analyzeSentiment("bug report: crash and regression in error handling")
+  assert.equal(r.sentiment, "neutral", "topic nouns must not drive polarity")
+  assert.ok(r.keyword_presence >= 3, "bug + crash + regression + error should all hit keyword_presence")
+})
+
+test("sentiment lexicon keeps topic/status nouns OUT of NEGATIVE_WORDS", () => {
+  // Prevents future drift — if someone adds "bug" or "broken" back to
+  // NEGATIVE_WORDS, the polarity/topic split is silently broken and
+  // every bug-report gets wrongly stamped negative. This test locks the
+  // contract.
+  const mustBeAbsent = [
+    "bug", "bugs", "error", "errors", "crash", "crashes",
+    "fail", "failure", "broken", "fails", "failed",
+    "issue", "issues", "problem", "problems", "regression", "regressions",
+  ]
+  for (const word of mustBeAbsent) {
+    assert.ok(
+      !NEGATIVE_WORDS.has(word),
+      `"${word}" must be absent from NEGATIVE_WORDS (tracked via NEGATIVE_KEYWORD_PATTERNS → keyword_presence instead)`,
+    )
+  }
+})
+
+test("sentiment lexicon: polarity verbs of distress are IN NEGATIVE_WORDS (v2)", () => {
+  // Companion to the above — the v2 additions must all be present so a
+  // future refactor doesn't silently drop them.
+  const mustBePresent = ["unable", "stuck", "missing", "can't", "cannot", "won't", "buggy", "clunky", "painful"]
+  for (const word of mustBePresent) {
+    assert.ok(
+      NEGATIVE_WORDS.has(word),
+      `"${word}" must be in NEGATIVE_WORDS (v2 eye-test Pattern B)`,
+    )
+  }
+})
+
+test("sentiment lexicon: positive and negative sets are disjoint", () => {
+  // Sanity: a token should never simultaneously add +1 and −1 to the score.
+  for (const word of POSITIVE_WORDS) {
+    assert.ok(!NEGATIVE_WORDS.has(word), `"${word}" is in both POSITIVE_WORDS and NEGATIVE_WORDS`)
+  }
+})
+
+test("calculateImpactScore v2: PR #11 boost holds at every authority level", () => {
+  // Earlier test covered only github. Lock the invariant for every
+  // authority slug so a future tuning that, say, clamps too aggressively
+  // can't silently kill the negative boost on reddit/hn.
+  const slugs: Array<string | undefined> = [
+    "github", "github-discussions", "stackoverflow", "openai-community",
+    "reddit", "hackernews", undefined,
+  ]
+  for (const slug of slugs) {
+    const neutral = calculateImpactScore(40, 30, "neutral", slug)
+    const negative = calculateImpactScore(40, 30, "negative", slug)
+    assert.ok(
+      negative >= neutral,
+      `PR #11 boost violated at authority="${slug ?? "(unknown)"}": neutral=${neutral} vs negative=${negative}`,
+    )
+  }
 })

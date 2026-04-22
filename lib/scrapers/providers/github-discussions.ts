@@ -108,12 +108,13 @@ export async function scrapeGitHubDiscussions(
         if (!isLikelyCodexIssue(content)) continue
         if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
-        const { sentiment, score: sentimentScore } = analyzeSentiment(content)
+        const { sentiment, score: sentimentScore, keyword_presence } = analyzeSentiment(content)
         const upvotes = node.upvoteCount || 0
         const comments = node.comments?.totalCount || 0
 
         issues.push({
           source_id: source.id,
+          source_slug: source.slug,
           category_id: categorizeIssue(content, categories),
           external_id: node.id,
           title: normalizedTitle.slice(0, 500),
@@ -122,6 +123,7 @@ export async function scrapeGitHubDiscussions(
           author: node.author?.login || null,
           sentiment,
           sentiment_score: sentimentScore,
+          keyword_presence,
           impact_score: calculateImpactScore(upvotes, comments, sentiment, source.slug),
           upvotes,
           comments_count: comments,

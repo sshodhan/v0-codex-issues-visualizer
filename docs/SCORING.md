@@ -68,12 +68,17 @@ provider (reddit | hackernews | github | github-discussions | stackoverflow | op
 
 **Current version: v2** (complaint-marker lexicon; eye-test Pattern B). v1
 kept only explicit valence adjectives (`awful`, `frustrating`, …); v2 adds
-polarity verbs/adjectives of distress that the eye test showed v1 was
-missing: `unable`, `stuck`, `broken`, `missing`, `fails`, `failed`, `can't`,
-`cannot`, `won't`, `refuses`, `buggy`, `clunky`, `painful`. Topic nouns
-(`bug`, `error`, `issue`, `problem`, `crash`, `fail`, `regression`) remain
-out of the polarity lexicon — they feed `keyword_presence` only, per the
-P0-2 split. v1 derivation rows stay in `sentiment_scores` for replay.
+polarity verbs/adjectives of distress: `unable`, `stuck`, `missing`,
+`can't`, `cannot`, `won't`, `refuses`, `buggy`, `clunky`, `painful`.
+Topic/status words (`bug`, `error`, `issue`, `problem`, `crash`, `fail`,
+`regression`, `broken`, `fails`, `failed`) remain OUT of the polarity
+lexicon — they feed `keyword_presence` only, via
+`NEGATIVE_KEYWORD_PATTERNS`. This separation (the P0-2 split) is why v2's
+`broken`/`fails`/`failed` aren't double-counted: they were already in the
+status-word regex set. `analyzeSentiment` also normalizes U+2019 (curly
+apostrophe) to ASCII before tokenizing so `can't`/`doesn't`/`won't` match
+on realistic web text. v1 derivation rows stay in `sentiment_scores` for
+replay.
 
 Two new multi-word patterns in `analyzeSentiment` (shared.ts), alongside
 the existing `doesn't work` / `not working`:

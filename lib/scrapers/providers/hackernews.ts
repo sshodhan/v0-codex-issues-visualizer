@@ -53,10 +53,11 @@ export async function scrapeHackerNews(
       }
       if (isLowValueIssue(normalizedTitle, normalizedContent)) continue
 
-      const { sentiment, score: sentimentScore } = analyzeSentiment(content)
+      const { sentiment, score: sentimentScore, keyword_presence } = analyzeSentiment(content)
 
       issues.push({
         source_id: source.id,
+        source_slug: source.slug,
         category_id: categorizeIssue(content, categories),
         external_id: hit.objectID,
         title: normalizedTitle.slice(0, 500),
@@ -65,6 +66,7 @@ export async function scrapeHackerNews(
         author: hit.author,
         sentiment,
         sentiment_score: sentimentScore,
+        keyword_presence,
         impact_score: calculateImpactScore(
           hit.points || 0,
           hit.num_comments || 0,
