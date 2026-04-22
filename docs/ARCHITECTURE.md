@@ -74,7 +74,7 @@ Supabase (Postgres) — three-layer data model
       └─ scrape_logs
          │
          ├─ API: analytics/query layer
-         │   ├─ /api/issues          (query/filter; supports q, days, source, category)
+         │   ├─ /api/issues          (query/filter; supports q, days, source, sentiment, category, compound_key)
          │   ├─ /api/stats           (dashboard aggregates + realtime + competitive)
          │   ├─ /api/scrape          (trigger all scrapers)
          │   ├─ /api/scrape/[source] (trigger one scraper)
@@ -102,8 +102,15 @@ Dashboard UI (app/page.tsx)
   ├─ realtime urgency insights (now with source diversity)
   ├─ competitive mentions panel
   ├─ issues table (source links)
-  └─ classification triage panel (traceability + reviewer workflow)
+         └─ classification triage panel (traceability + reviewer workflow)
 ```
+
+### API + UX contract (compound sub-cluster filter)
+
+- **API:** `GET /api/issues` supports `compound_key` alongside `days`, `source`, and `sentiment`.
+- **Data semantics:** this filter is applied against `mv_observation_current.cluster_key_compound`.
+- **UX behavior:** selecting error-code chips/buttons in the Issues Table or the Priority Matrix tooltip applies `compound_key`; when active, a dismissible chip is shown in the Issues Table filter bar.
+- **Scope clarification:** this is a read-time sub-cluster filter only; it does **not** alter semantic cluster membership.
 
 ---
 
