@@ -197,11 +197,13 @@ latest_fingerprint as (
 -- LLM classification is owned by `classifications`. Join the most
 -- recent row per observation directly; no denormalized copy lives in
 -- bug_fingerprints, so there is exactly one source of truth per layer.
+-- Note: classifications.tags is text[] (Postgres array), accessed with
+-- 1-indexed [] subscripting — not jsonb `->>`.
 latest_classification as (
   select distinct on (observation_id)
     observation_id,
     subcategory as llm_subcategory,
-    (tags->>0) as llm_primary_tag,
+    tags[1] as llm_primary_tag,
     category as llm_category,
     severity as llm_severity,
     confidence as llm_confidence,
