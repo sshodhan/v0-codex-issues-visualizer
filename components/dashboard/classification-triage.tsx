@@ -65,18 +65,6 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
   }, [records, activeCategory, timeDays])
 
   const clusters = useMemo(() => {
-    console.log("[v0] Classification clusters debug:", {
-      recordsCount: records.length,
-      globallyFilteredCount: globallyFilteredRecords.length,
-      activeCategory,
-      timeDays,
-      sampleRecords: globallyFilteredRecords.slice(0, 3).map(r => ({
-        effective_category: r.effective_category,
-        subcategory: r.subcategory,
-        effective_severity: r.effective_severity
-      }))
-    })
-    
     const grouped = new Map<string, { total: number; highRisk: number }>()
     for (const record of globallyFilteredRecords) {
       const key = `${record.effective_category} › ${record.subcategory || "General"}`
@@ -86,14 +74,11 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
       grouped.set(key, current)
     }
 
-    const result = Array.from(grouped.entries())
+    return Array.from(grouped.entries())
       .map(([name, values]) => ({ name, ...values }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 10)
-    
-    console.log("[v0] Classification clusters computed:", result)
-    return result
-  }, [globallyFilteredRecords, records.length, activeCategory, timeDays])
+  }, [globallyFilteredRecords])
 
   const triageRecords = useMemo(() => {
     if (clusterFilter === "all") return globallyFilteredRecords

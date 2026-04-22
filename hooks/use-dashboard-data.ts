@@ -259,14 +259,6 @@ export function useClassifications(filters?: {
     { refreshInterval: filters?.asOf ? 0 : 60000 } // Disable auto-refresh in replay mode
   )
 
-  console.log("[v0] useClassifications debug:", {
-    url: `/api/classifications?${params.toString()}`,
-    rawData: data,
-    dataLength: data?.data?.length,
-    error,
-    isLoading,
-  })
-
   return {
     classifications: data?.data || [],
     isLoading,

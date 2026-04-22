@@ -64,19 +64,12 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await query
 
-  console.log("[v0] /api/classifications query result:", {
-    dataLength: data?.length,
-    error,
-    sampleData: data?.slice(0, 2)
-  })
-
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
   const rows = data || []
   if (rows.length === 0) {
-    console.log("[v0] /api/classifications returning empty array - no data in classifications table")
     return NextResponse.json({ data: [] })
   }
 
