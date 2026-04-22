@@ -1,6 +1,6 @@
 # Codex Issues Visualizer — Architecture Guide
 
-_Last updated: 2026-04-21 (v10 — three-layer data model: evidence (append-only) + derivation (versioned, immutable) + aggregation (clusters + materialized views). Full schema rewrite: `issues` and `bug_report_classifications` tables removed in favor of `observations`/`observation_revisions`/`engagement_snapshots`/`ingestion_artifacts` + `sentiment_scores`/`category_assignments`/`impact_scores`/`competitor_mentions`/`classifications`/`classification_reviews` + `clusters`/`cluster_members`. Past dashboard readings are reproducible via derivation `computed_at <= T` filters. See `scripts/007_three_layer_split.sql` and `lib/storage/`. Supersedes PR #12 clustering edge cases (P1-9 through P1-12). v9 — issue-clustering / canonical-frequency data model documented, edge cases captured (PR #12); v8 — integrates with PR #11 urgency rework (sentiment weight in impact, not urgency) + `keyword_presence` signal; fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
+_Last updated: 2026-04-22 (v11 — documents the built-in runtime error tracking layer (`lib/error-tracking/*`, `components/global-error-handler.tsx`, and `app/api/log-client-error/route.ts`) and clarifies client-vs-server logging flows. v10 — three-layer data model: evidence (append-only) + derivation (versioned, immutable) + aggregation (clusters + materialized views). Full schema rewrite: `issues` and `bug_report_classifications` tables removed in favor of `observations`/`observation_revisions`/`engagement_snapshots`/`ingestion_artifacts` + `sentiment_scores`/`category_assignments`/`impact_scores`/`competitor_mentions`/`classifications`/`classification_reviews` + `clusters`/`cluster_members`. Past dashboard readings are reproducible via derivation `computed_at <= T` filters. See `scripts/007_three_layer_split.sql` and `lib/storage/`. Supersedes PR #12 clustering edge cases (P1-9 through P1-12). v9 — issue-clustering / canonical-frequency data model documented, edge cases captured (PR #12); v8 — integrates with PR #11 urgency rework (sentiment weight in impact, not urgency) + `keyword_presence` signal; fallback-sentiment backchannel removed, full lexicon unification closes P0-2, window char-cap for unpunctuated blobs, summarizeCompetitiveMentions extracted, regex cache, re-export shim dropped; v7 — backward-compatible nullable sentiment, parameterized anchor brand, canonical competitor/lexicon modules, weighted meta, false-positive regression tests; v6 — mention-level competitive sentiment + transparency metrics; v5 — GitHub Discussions + OpenAI Community sources added; v4 — Stack Overflow source, competitive insights, data provenance section)_
 
 ## 1) Purpose and product goals
 
@@ -164,26 +164,6 @@ A scrape run is structured as three sequential passes over the captured records.
 3. Reviewer selects a row, checks source-link traceability, and updates status/category/severity/notes.
 4. Dashboard sends patch to `PATCH /api/classifications/:id`.
 5. The endpoint **inserts** a new row into `classification_reviews` (via `recordClassificationReview()`) — it never UPDATEs the classification. The LLM baseline stays immutable; every reviewer decision appends, preserving the full audit trail. A reviewer who changes their mind produces a second review row; the first is retained.
-
-### 3.2 LLM classification flow (new)
-
-1. Client/backend posts report payload to `/api/classify`.
-2. Server builds bounded context (`report_text`, env, repro, transcript/tool/log tails).
-3. OpenAI Responses API is called with strict JSON-schema response format (`temperature: 0.2`).
-4. If `confidence < 0.7`, route retries once on larger model.
-5. Boundary validation runs:
-   - enum validation,
-   - `evidence_quotes` substring validation against request payload,
-   - hard review rules (critical/safety/low confidence/sensitive mentions).
-6. Output is returned and optionally stored in `bug_report_classifications` as normalized fields + raw JSON.
-
-### 3.3 Reviewer flow (new)
-
-1. Dashboard fetches queue rows from `GET /api/classifications`.
-2. Dashboard fetches queue KPIs from `GET /api/classifications/stats`.
-3. Reviewer selects a row, checks source-link traceability, and updates status/category/severity/notes.
-4. Dashboard sends patch to `PATCH /api/classifications/:id`.
-5. Record is updated with reviewer metadata (`reviewed_by`, `reviewed_at`, `reviewer_notes`).
 
 ### 3.4 Insight traceability flow
 
@@ -848,3 +828,58 @@ Subsequent schema changes should follow the append-only discipline by default:
 - Algorithm-version bumps → insert rows in `algorithm_versions` with `current_effective = true`; the partial unique index enforces one effective per kind.
 
 The guiding principle: every write path must either (a) flow through a `SECURITY DEFINER` RPC that the service_role has `EXECUTE` on, or (b) target a table where service_role retains direct DML (reference tables and aggregation tables). Never both for the same table.
+
+
+## 12) Error tracking and runtime observability
+
+The app now includes a lightweight, first-party error tracking layer aimed at fast debugging in Vercel Runtime Logs with minimal operational overhead.
+
+### 12.1 Design goals
+
+1. **Catch client failures early** (uncaught errors + unhandled promise rejections).
+2. **Keep logging non-blocking** (logging must never break user flow).
+3. **Separate client and server concerns** (browser reports via API; server logs directly).
+4. **Prefer structured payloads** so logs are grep/search friendly in Vercel.
+
+### 12.2 Runtime flow
+
+```text
+Client runtime (browser)
+  ├─ component/runtime error occurs
+  ├─ GlobalErrorHandler catches error / promise rejection
+  ├─ logClientError(...) builds safe payload
+  └─ POST /api/log-client-error
+          │
+          ▼
+Server runtime (Next.js route)
+  ├─ app/api/log-client-error/route.ts validates/coerces payload
+  ├─ console.error(...) emits structured event
+  └─ Vercel Runtime Logs receives searchable server-side record
+```
+
+### 12.3 Modules and responsibilities
+
+- `lib/error-tracking/client-logger.ts`
+  - `logClientError`, `logReactError`, `logLocalStorageError`, `logAndroidWebViewError`.
+  - Guards browser-only APIs (`window`, `localStorage`) and swallows transport failures.
+- `components/global-error-handler.tsx`
+  - Registers global listeners for `error` and `unhandledrejection`.
+  - Forwards normalized events through `logClientError`.
+- `app/api/log-client-error/route.ts`
+  - Normalizes unknown payloads to safe strings/objects.
+  - Emits server log lines via `console.error` for Vercel ingestion.
+- `lib/error-tracking/server-logger.ts`
+  - `logServer`, `logServerError`, plus `logMathCoach` helper for specialized server event streams.
+
+### 12.4 Operational guidance
+
+- **When in browser/client code:** use `logClientError` helpers.
+- **When in API/middleware/server code:** use `logServer` or `logServerError` directly (no API round-trip needed).
+- **When adding new logging calls:** include stable `component` and `event` names so query filters stay consistent over time.
+
+### 12.5 Known limitations
+
+- This is log-forwarding only (no persistent error warehouse yet).
+- No deduplication/grouping policy is applied in-process.
+- Alerting/integrations (Sentry, Datadog, etc.) are intentionally out of scope for the current simple implementation.
+
