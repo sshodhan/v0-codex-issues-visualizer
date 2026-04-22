@@ -6,6 +6,7 @@ import {
   buildClusterKey,
   detachFromCluster,
 } from "@/lib/storage/clusters"
+import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 export const maxDuration = 60
 
@@ -105,6 +106,12 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       )
     }
+    logServer({
+      component: "admin-cluster",
+      event: "detach_single",
+      level: "info",
+      data: { observationId: body.observationId },
+    })
     await detachFromCluster(supabase, body.observationId)
     return NextResponse.json({ detached: body.observationId })
   }
@@ -113,6 +120,17 @@ export async function POST(request: NextRequest) {
     const cursor = body.cursor ?? null
     const limit = Math.max(1, Math.min(body.limit ?? DEFAULT_LIMIT, MAX_LIMIT))
     const redetach = body.redetach === true
+
+    // Log first chunk of a rebuild. Redetach mode is the higher-risk
+    // variant (temporarily breaks membership) and is called out.
+    if (!cursor) {
+      logServer({
+        component: "admin-cluster",
+        event: "rebuild_started",
+        level: "info",
+        data: { limit, redetach },
+      })
+    }
 
     let q = supabase
       .from("observations")
@@ -171,12 +189,34 @@ export async function POST(request: NextRequest) {
 
     const processed = rows.length
     const lastId = rows[rows.length - 1].id as string
+    const done = processed < limit
+
+    // cluster_id / cluster_key / is_canonical / frequency_count all live
+    // in mv_observation_current. Without refresh the dashboard keeps
+    // showing the pre-rebuild cluster assignments until the next cron.
+    let refreshedMvs = false
+    if (done) {
+      const { error: refreshErr } = await supabase.rpc("refresh_materialized_views")
+      if (refreshErr) {
+        logServerError("admin-cluster", "mv_refresh_failed", refreshErr)
+      } else {
+        refreshedMvs = true
+      }
+      logServer({
+        component: "admin-cluster",
+        event: "rebuild_completed",
+        level: "info",
+        data: { attached, detached: redetach ? detached : undefined, refreshedMvs },
+      })
+    }
+
     return NextResponse.json({
       processed,
       attached,
       ...(redetach ? { detached } : {}),
-      nextCursor: processed < limit ? null : lastId,
-      done: processed < limit,
+      nextCursor: done ? null : lastId,
+      done,
+      refreshedMvs,
       sampleKeys,
     })
   }

@@ -829,6 +829,16 @@ Subsequent schema changes should follow the append-only discipline by default:
 
 The guiding principle: every write path must either (a) flow through a `SECURITY DEFINER` RPC that the service_role has `EXECUTE` on, or (b) target a table where service_role retains direct DML (reference tables and aggregation tables). Never both for the same table.
 
+### 11.7 Admin operator surface (`/admin`)
+
+Algorithm-version bumps need an operator path that does not wait for the scrape cron. The scrape providers only re-capture observations in their current fetch window (~150–500 rows), so the cron's enrich pass only writes new-version rows for those observations — the long tail keeps the old version as its latest derivation forever. Because `mv_observation_current` picks newest-by-`computed_at` regardless of algorithm_version (§5.3), any mixed-version population silently corrupts downstream charts: the 30-day trend compares this-week's new-version scores against last-month's old-version scores as if they were the same metric.
+
+`/admin` (implemented by `app/admin/page.tsx` + `app/api/admin/backfill-derivations/route.ts` + `app/api/admin/cluster/route.ts`) closes this gap. The backfill endpoint walks `observations` in keyset-paginated chunks and writes current-version rows via the same `record_*` RPCs the enrich pass uses, so all derivation-layer invariants from §3.1b and §5.2 are preserved — the admin surface has no privileged write path of its own. Per-kind pre-checks make the pass idempotent at the application layer and resumable at chunk granularity. On the final chunk the route calls `refresh_materialized_views()` so the dashboard immediately reflects the new state; without this step the backfill silently stalls until the next cron tick.
+
+Auth is a single shared `ADMIN_SECRET` checked against an `x-admin-secret` request header. In production the secret is required — a missing env var fails closed with 503 rather than silently opening the endpoints (the admin surface is write-heavy and can trigger full-DB cluster rebuilds). In non-production environments the secret is optional.
+
+A second panel on `/admin` manages clustering: live stats (observations, clusters, active memberships, orphans, top-N by frequency) pulled from `mv_observation_current where is_canonical`, plus a chunked `attach_to_cluster` rebuild. Attach-only is idempotent via the partial unique index (§3.1c); re-detach mode exists for the rare case where the `buildClusterKey` function itself changes.
+
 
 ## 12) Error tracking and runtime observability
 

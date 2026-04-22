@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireAdminSecret } from "@/lib/admin/auth"
+import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 import {
   analyzeSentiment,
   calculateImpactScore,
@@ -76,6 +77,17 @@ export async function POST(request: NextRequest) {
   const limit = Math.max(1, Math.min(body.limit ?? DEFAULT_LIMIT, MAX_LIMIT))
   const dryRun = body.dryRun === true
 
+  // Log the start of an apply run (first chunk only) — critical action
+  // that modifies the derivation layer at scale.
+  if (!dryRun && !cursor) {
+    logServer({
+      component: "admin-backfill",
+      event: "apply_started",
+      level: "info",
+      data: { limit, versions: CURRENT_VERSIONS },
+    })
+  }
+
   const supabase = createAdminClient()
 
   // 1. One-shot per request: load categories + sources slug map.
@@ -124,11 +136,15 @@ export async function POST(request: NextRequest) {
   const lastId = chunkIds[chunkIds.length - 1]
 
   // 3. Latest engagement per observation in this chunk.
+  // PostgREST defaults cap at 1000 rows. With N observations * M snapshots
+  // this truncates silently and later observations fall back to zeroed
+  // inputs, corrupting the v2 impact score. Explicit range raises the cap.
   const engagementRes = await supabase
     .from("engagement_snapshots")
     .select("observation_id, upvotes, comments_count, captured_at")
     .in("observation_id", chunkIds)
     .order("captured_at", { ascending: false })
+    .range(0, 99_999)
   if (engagementRes.error) {
     return NextResponse.json({ error: engagementRes.error.message }, { status: 500 })
   }
@@ -224,19 +240,23 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (competitors.length > 0 && !alreadyV2.competitor_mention.has(id)) {
-      for (const competitor of competitors) {
-        writes.competitor_mention++
-        if (!dryRun) {
-          tasks.push(
-            recordCompetitorMention(supabase, id, {
-              competitor,
-              sentence_window: null,
-              sentiment_score: null,
-              confidence: null,
-            }),
-          )
-        }
+    // Per-(observation, competitor) dedup: the mention table has no
+    // unique constraint at this granularity, so we can't rely on
+    // ON CONFLICT. Per-observation skip would silently drop competitors
+    // added to the lexicon after the initial backfill.
+    for (const competitor of competitors) {
+      const key = `${id}::${competitor}`
+      if (alreadyV2.competitor_mention.has(key)) continue
+      writes.competitor_mention++
+      if (!dryRun) {
+        tasks.push(
+          recordCompetitorMention(supabase, id, {
+            competitor,
+            sentence_window: null,
+            sentiment_score: null,
+            confidence: null,
+          }),
+        )
       }
     }
   }
@@ -246,36 +266,69 @@ export async function POST(request: NextRequest) {
   }
 
   const processed = observations.length
+  const done = processed < limit
+
+  // Refresh MVs on the final chunk of an apply run so the dashboard
+  // actually picks up the new v2 rows. Without this, mv_observation_current
+  // keeps serving pre-backfill state until the next scrape cron tick.
+  let refreshedMvs = false
+  if (done && !dryRun) {
+    const { error: refreshErr } = await supabase.rpc("refresh_materialized_views")
+    if (refreshErr) {
+      logServerError("admin-backfill", "mv_refresh_failed", refreshErr)
+    } else {
+      refreshedMvs = true
+    }
+    logServer({
+      component: "admin-backfill",
+      event: "apply_completed",
+      level: "info",
+      data: { writes, refreshedMvs },
+    })
+  }
+
   return NextResponse.json({
     processed,
     writes,
-    nextCursor: processed < limit ? null : lastId,
-    done: processed < limit,
+    nextCursor: done ? null : lastId,
+    done,
     dryRun,
     versions: CURRENT_VERSIONS,
+    refreshedMvs,
     ...(dryRun ? { sampleDiffs } : {}),
   })
 }
 
+// For sentiment/category/impact the DB enforces unique(observation_id,
+// algorithm_version) so Set<observation_id> is sufficient. For
+// competitor_mention there is no such constraint; we track
+// `${observation_id}::${competitor}` composite keys so re-runs with a
+// newly-added competitor still write the missing row.
 async function loadAlreadyV2(
   supabase: ReturnType<typeof createAdminClient>,
   chunkIds: string[],
 ): Promise<Record<Kind, Set<string>>> {
-  const tables: Record<Kind, string> = {
+  const byObservation: Record<
+    Exclude<Kind, "competitor_mention">,
+    string
+  > = {
     sentiment: "sentiment_scores",
     category: "category_assignments",
     impact: "impact_scores",
-    competitor_mention: "competitor_mentions",
   }
-  const entries = await Promise.all(
-    (Object.entries(tables) as [Kind, string][]).map(async ([kind, table]) => {
+
+  const observationChecks = Promise.all(
+    (Object.entries(byObservation) as Array<
+      [Exclude<Kind, "competitor_mention">, string]
+    >).map(async ([kind, table]) => {
       const { data, error } = await supabase
         .from(table)
         .select("observation_id")
         .in("observation_id", chunkIds)
         .eq("algorithm_version", CURRENT_VERSIONS[kind])
+        .range(0, 99_999)
       if (error) {
-        console.error(`[admin/backfill] precheck ${table} failed:`, error)
+        logServerError("admin-backfill", "precheck_failed", error, { table })
         return [kind, new Set<string>()] as const
       }
       return [
@@ -284,5 +337,34 @@ async function loadAlreadyV2(
       ] as const
     }),
   )
-  return Object.fromEntries(entries) as Record<Kind, Set<string>>
+
+  const mentionCheck = (async () => {
+    const { data, error } = await supabase
+      .from("competitor_mentions")
+      .select("observation_id, competitor")
+      .in("observation_id", chunkIds)
+      .eq("algorithm_version", CURRENT_VERSIONS.competitor_mention)
+      .range(0, 99_999)
+    if (error) {
+      logServerError("admin-backfill", "precheck_failed", error, {
+        table: "competitor_mentions",
+      })
+      return new Set<string>()
+    }
+    return new Set<string>(
+      (data ?? []).map(
+        (r) => `${r.observation_id as string}::${r.competitor as string}`,
+      ),
+    )
+  })()
+
+  const [obsEntries, mentionSet] = await Promise.all([
+    observationChecks,
+    mentionCheck,
+  ])
+
+  return {
+    ...Object.fromEntries(obsEntries),
+    competitor_mention: mentionSet,
+  } as Record<Kind, Set<string>>
 }

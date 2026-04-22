@@ -11,6 +11,16 @@ import {
   TestTube2,
 } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -36,6 +46,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { logClientError } from "@/lib/error-tracking/client-logger"
 
 const CHUNK_SIZE = 500
 
@@ -162,6 +173,7 @@ function BackfillPanel({ secret }: { secret: string }) {
   })
   const [samples, setSamples] = useState<SampleDiff[]>([])
   const [runError, setRunError] = useState<string | null>(null)
+  const [refreshedMvs, setRefreshedMvs] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   const loadStats = async () => {
@@ -176,6 +188,7 @@ function BackfillPanel({ secret }: { secret: string }) {
       setStats(data)
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
+      logClientError(e, "admin-backfill-stats-failed")
     } finally {
       setStatsLoading(false)
     }
@@ -193,6 +206,7 @@ function BackfillPanel({ secret }: { secret: string }) {
     setWrites({ sentiment: 0, category: 0, impact: 0, competitor_mention: 0 })
     setSamples([])
     setRunError(null)
+    setRefreshedMvs(false)
 
     const abort = new AbortController()
     abortRef.current = abort
@@ -224,12 +238,14 @@ function BackfillPanel({ secret }: { secret: string }) {
           setSamples(data.sampleDiffs)
           seenSamples = true
         }
+        if (data.refreshedMvs) setRefreshedMvs(true)
         cursor = data.nextCursor ?? null
         if (data.done) break
       }
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
+        logClientError(e, "admin-backfill-run-failed", { dryRun })
       }
     } finally {
       abortRef.current = null
@@ -377,6 +393,16 @@ function BackfillPanel({ secret }: { secret: string }) {
           </Alert>
         )}
 
+        {refreshedMvs && running === null && (
+          <Alert>
+            <AlertTitle>Dashboard refreshed</AlertTitle>
+            <AlertDescription>
+              mv_observation_current and mv_trend_daily have been rebuilt.
+              The dashboard now reads the current-version derivations.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {samples.length > 0 && (
           <Collapsible>
             <CollapsibleTrigger asChild>
@@ -450,12 +476,14 @@ function ClusteringPanel({ secret }: { secret: string }) {
   const [statsLoading, setStatsLoading] = useState(false)
 
   const [redetach, setRedetach] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const [running, setRunning] = useState(false)
   const [processed, setProcessed] = useState(0)
   const [attached, setAttached] = useState(0)
   const [detached, setDetached] = useState(0)
   const [sampleKeys, setSampleKeys] = useState<SampleKey[]>([])
   const [runError, setRunError] = useState<string | null>(null)
+  const [refreshedMvs, setRefreshedMvs] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   const loadStats = async () => {
@@ -470,6 +498,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
       setStats(data)
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
+      logClientError(e, "admin-cluster-stats-failed")
     } finally {
       setStatsLoading(false)
     }
@@ -480,20 +509,24 @@ function ClusteringPanel({ secret }: { secret: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const runRebuild = async () => {
+  const handleRebuildClick = () => {
     if (running) return
     if (redetach) {
-      const ok = window.confirm(
-        "This temporarily breaks cluster membership during the run. Only use when buildClusterKey itself has changed.",
-      )
-      if (!ok) return
+      setConfirmOpen(true)
+      return
     }
+    void runRebuild()
+  }
+
+  const runRebuild = async () => {
+    setConfirmOpen(false)
     setRunning(true)
     setProcessed(0)
     setAttached(0)
     setDetached(0)
     setSampleKeys([])
     setRunError(null)
+    setRefreshedMvs(false)
 
     const abort = new AbortController()
     abortRef.current = abort
@@ -527,12 +560,14 @@ function ClusteringPanel({ secret }: { secret: string }) {
           setSampleKeys(data.sampleKeys)
           seenSamples = true
         }
+        if (data.refreshedMvs) setRefreshedMvs(true)
         cursor = data.nextCursor ?? null
         if (data.done) break
       }
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
+        logClientError(e, "admin-cluster-rebuild-failed", { redetach })
       }
     } finally {
       abortRef.current = null
@@ -655,7 +690,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
               Re-detach first (only when buildClusterKey changed)
             </label>
           </div>
-          <Button onClick={runRebuild} disabled={running}>
+          <Button onClick={handleRebuildClick} disabled={running}>
             {running ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
@@ -670,6 +705,30 @@ function ClusteringPanel({ secret }: { secret: string }) {
             </Button>
           )}
         </div>
+
+        <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Re-detach every active membership?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This clears current cluster membership for every observation
+                during the run. Dashboards that read cluster_id or
+                frequency_count will show inconsistent state until the rebuild
+                completes. Only use when the buildClusterKey function itself
+                has changed — attach-only rebuild is safe in all other cases.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => void runRebuild()}
+              >
+                Re-detach and rebuild
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {(running || processed > 0) && (
           <div className="space-y-3">
@@ -712,6 +771,16 @@ function ClusteringPanel({ secret }: { secret: string }) {
           <Alert variant="destructive">
             <AlertTitle>Rebuild failed</AlertTitle>
             <AlertDescription>{runError}</AlertDescription>
+          </Alert>
+        )}
+
+        {refreshedMvs && !running && (
+          <Alert>
+            <AlertTitle>Dashboard refreshed</AlertTitle>
+            <AlertDescription>
+              mv_observation_current and mv_trend_daily have been rebuilt.
+              Cluster assignments on the dashboard now reflect this rebuild.
+            </AlertDescription>
           </Alert>
         )}
 
