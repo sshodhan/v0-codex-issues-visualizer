@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { AlertTriangle, ChevronDown, ChevronUp, Sparkles } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -15,16 +15,17 @@ import type { FingerprintSurgeResponse } from "@/hooks/use-dashboard-data"
 // to drive action, not to hedge.
 //
 // Collapses to a single-line header when no fingerprints are surging,
-// expands by default when there is at least one. An analyst can toggle
-// manually either way.
+// expands automatically when surges arrive via an SWR revalidation.
+// An analyst can toggle manually either way.
 
 interface FingerprintSurgeCardProps {
   data?: FingerprintSurgeResponse
   windowHours?: number
   // Called with the surge card's drill-down token. Always starts with
   // `err:` since the card's unit is "error code" not "specific cluster";
-  // /api/issues treats `err:<code>` as a cluster_key_compound substring
-  // match so any title/frame combination sharing the code is returned.
+  // /api/issues treats `err:<code>` as a segment-anchored
+  // cluster_key_compound match so any title/frame combination sharing the
+  // code is returned.
   onFilter: (compoundKey: string) => void
 }
 
@@ -35,19 +36,39 @@ export function FingerprintSurgeCard({
 }: FingerprintSurgeCardProps) {
   const surges = data?.surges ?? []
   const newInWindow = data?.new_in_window ?? []
-  const [open, setOpen] = useState<boolean>(surges.length > 0 || newInWindow.length > 0)
+  const hasAnything = surges.length > 0 || newInWindow.length > 0
+
+  // Start collapsed; auto-expand the first time SWR returns something worth
+  // looking at. Manual toggles after that stick — we don't want the card
+  // re-expanding on every revalidate once the analyst has dismissed it.
+  const [open, setOpen] = useState<boolean>(hasAnything)
+  const [userToggled, setUserToggled] = useState(false)
+  useEffect(() => {
+    if (!userToggled && hasAnything && !open) setOpen(true)
+    // Intentionally does NOT collapse when hasAnything goes false — the
+    // transient empty state during a revalidate shouldn't slam the card
+    // shut on an analyst who just opened it.
+  }, [hasAnything, open, userToggled])
+  const toggle = () => {
+    setUserToggled(true)
+    setOpen((v) => !v)
+  }
+
+  // The SQL function rounds window_hours up to whole days (the MV is
+  // day-granular). Prefer the server's reported `window_days` so copy
+  // matches what the data actually compares.
+  const windowDays = data?.window_days ?? Math.max(1, Math.ceil(windowHours / 24))
+  const windowLabel = windowDays === 1 ? "today vs yesterday" : `last ${windowDays} days`
 
   const headline = useMemo(() => {
     if (surges.length === 0 && newInWindow.length === 0) {
-      return `No fingerprint surges in the last ${windowHours} h — no error codes are spiking.`
+      return `No fingerprint surges — no error codes are spiking (${windowLabel}).`
     }
     if (surges.length === 0) {
-      return `${newInWindow.length} new error code${newInWindow.length === 1 ? "" : "s"} seen in the last ${windowHours} h · click to filter`
+      return `${newInWindow.length} new error code${newInWindow.length === 1 ? "" : "s"} seen (${windowLabel}) · click to filter`
     }
-    return `${surges.length} fingerprint${surges.length === 1 ? "" : "s"} surging in the last ${windowHours} h · click to filter`
-  }, [surges.length, newInWindow.length, windowHours])
-
-  const hasAnything = surges.length > 0 || newInWindow.length > 0
+    return `${surges.length} fingerprint${surges.length === 1 ? "" : "s"} surging (${windowLabel}) · click to filter`
+  }, [surges.length, newInWindow.length, windowLabel])
 
   return (
     <Card className="bg-card border-border">
@@ -75,7 +96,7 @@ export function FingerprintSurgeCard({
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => setOpen((v) => !v)}
+              onClick={toggle}
               aria-label={open ? "Collapse surge details" : "Expand surge details"}
               aria-expanded={open}
             >
@@ -132,7 +153,7 @@ export function FingerprintSurgeCard({
               {newInWindow.length > 0 && (
                 <div className="pt-1 border-t border-border">
                   <p className="mb-1 text-xs text-muted-foreground">
-                    New in window (no activity in the prior {windowHours} h):
+                    New in window (no activity in the prior {windowLabel}):
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {newInWindow.map((row) => (

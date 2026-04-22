@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   EMPTY_FINGERPRINT,
   buildCompoundClusterKey,
+  compoundKeyMatchesErrorCode,
   computeCompoundKey,
   extractBugFingerprint,
 } from "./bug-fingerprint.ts"
@@ -347,6 +348,34 @@ test("computeCompoundKey returns null when observation is missing", async () => 
   const supabase = makeMockSupabase(null, null)
   const key = await computeCompoundKey(supabase, "00000000-0000-0000-0000-000000000003")
   assert.equal(key, null)
+})
+
+// ---------------------------------------------------------------------------
+// compoundKeyMatchesErrorCode — segment-anchored drill-down match
+// ---------------------------------------------------------------------------
+
+test("compoundKeyMatchesErrorCode anchors on pipe delimiters", () => {
+  // Middle position: title:H|err:CODE|frame:FH
+  assert.ok(compoundKeyMatchesErrorCode("title:ab12|err:ENOENT|frame:cd34", "ENOENT"))
+  // Suffix position (no frame): title:H|err:CODE
+  assert.ok(compoundKeyMatchesErrorCode("title:ab12|err:ENOENT", "ENOENT"))
+})
+
+test("compoundKeyMatchesErrorCode rejects prefix false-positives (err:EAC does NOT match EACCES)", () => {
+  // This is the review-surfaced bug the helper exists to prevent.
+  assert.equal(compoundKeyMatchesErrorCode("title:ab12|err:EACCES|frame:cd34", "EAC"), false)
+  assert.equal(compoundKeyMatchesErrorCode("title:ab12|err:EACCES", "EAC"), false)
+})
+
+test("compoundKeyMatchesErrorCode rejects empty inputs and non-matching codes", () => {
+  assert.equal(compoundKeyMatchesErrorCode(null, "ENOENT"), false)
+  assert.equal(compoundKeyMatchesErrorCode("", "ENOENT"), false)
+  assert.equal(compoundKeyMatchesErrorCode("title:ab12|err:ENOENT", ""), false)
+  assert.equal(compoundKeyMatchesErrorCode("title:ab12|err:ENOENT", "EACCES"), false)
+  // Title-only key has no err: segment.
+  assert.equal(compoundKeyMatchesErrorCode("title:ab12", "ENOENT"), false)
+  // Frame-only key (err absent) must not match.
+  assert.equal(compoundKeyMatchesErrorCode("title:ab12|frame:cd34", "ENOENT"), false)
 })
 
 test("computeCompoundKey matches buildCompoundClusterKey for the same inputs (one source of truth)", async () => {

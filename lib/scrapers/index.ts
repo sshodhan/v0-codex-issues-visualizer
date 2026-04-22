@@ -405,11 +405,7 @@ export async function runScraper(slug: string): Promise<RunSummary> {
     if (persisted) {
       added++
       if (persisted.isNewObservation) {
-        classificationCandidates.push({
-          observationId: persisted.observationId,
-          title: persisted.title,
-          reportText: persisted.reportText,
-        })
+        classificationCandidates.push(buildClassificationCandidate(persisted))
       }
     }
   }

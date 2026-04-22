@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { compoundKeyMatchesErrorCode } from "@/lib/scrapers/bug-fingerprint"
 
 const MAX_LIMIT = 250
 const ALLOWED_SORT = new Set([
@@ -63,15 +64,18 @@ export async function GET(request: NextRequest) {
   //   * full label `title:<h>|err:ENOENT|frame:<fh>` — exact match.
   //     Issue-table chips send this so the user drills into rows sharing
   //     the exact same title+error+frame.
-  //   * error-only prefix `err:ENOENT` — substring match against
+  //   * error-only prefix `err:ENOENT` — segment-anchored match against
   //     cluster_key_compound. Used by the fingerprint surge card where
   //     the natural "drill in" unit is the error code, not a title+frame
-  //     pair. Treated as a distinct sub-form because title-rooted labels
-  //     always start with "title:" (never with "err:"), so the two
-  //     shapes never collide.
+  //     pair. Anchored on `|` boundaries so `err:EAC` never matches a row
+  //     whose code is actually `EACCES`. Title-rooted labels always start
+  //     with "title:", so the two shapes never collide.
   const compoundKeyRaw = searchParams.get("compound_key")
   const compoundKey = compoundKeyRaw?.trim() || null
-  const compoundKeyIsErrorOnly = compoundKey !== null && compoundKey.startsWith("err:")
+  // Reject malformed `err:` drill-downs (must be err:<non-empty-code>,
+  // code limited to alphanumerics + underscore so LIKE escaping is moot).
+  const errorCodeFromCompound =
+    compoundKey && /^err:[A-Za-z0-9_]+$/.test(compoundKey) ? compoundKey.slice(4) : null
   const sortByRaw = searchParams.get("sortBy") || "impact_score"
   const sortByAliased = SORT_ALIASES[sortByRaw] ?? sortByRaw
   const sortBy = ALLOWED_SORT.has(sortByAliased) ? sortByAliased : "impact_score"
@@ -139,9 +143,13 @@ export async function GET(request: NextRequest) {
       )
     }
     if (compoundKey) {
-      rows = compoundKeyIsErrorOnly
-        ? rows.filter((r: any) => (r.cluster_key_compound ?? "").includes(compoundKey))
-        : rows.filter((r: any) => r.cluster_key_compound === compoundKey)
+      if (errorCodeFromCompound) {
+        rows = rows.filter((r: any) =>
+          compoundKeyMatchesErrorCode(r.cluster_key_compound, errorCodeFromCompound),
+        )
+      } else {
+        rows = rows.filter((r: any) => r.cluster_key_compound === compoundKey)
+      }
     }
 
     // Sort
@@ -182,9 +190,15 @@ export async function GET(request: NextRequest) {
     }
 
     if (compoundKey) {
-      if (compoundKeyIsErrorOnly) {
-        const escaped = compoundKey.replace(/[%_]/g, (m) => `\\${m}`)
-        query = query.ilike("cluster_key_compound", `%${escaped}%`)
+      if (errorCodeFromCompound) {
+        // Segment-anchored: `%|err:CODE|%` OR `%|err:CODE`. `errorCodeFromCompound`
+        // is already validated against /^[A-Za-z0-9_]+$/ so LIKE metacharacters
+        // (% _) can't appear and no escaping is needed.
+        const middle = `%|err:${errorCodeFromCompound}|%`
+        const suffix = `%|err:${errorCodeFromCompound}`
+        query = query.or(
+          `cluster_key_compound.ilike.${middle},cluster_key_compound.ilike.${suffix}`,
+        )
       } else {
         query = query.eq("cluster_key_compound", compoundKey)
       }

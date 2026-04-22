@@ -166,6 +166,12 @@ export interface FingerprintSurgeNewRow {
 export interface FingerprintSurgeResponse {
   surges: FingerprintSurgeRow[]
   new_in_window: FingerprintSurgeNewRow[]
+  // `window_hours` is the request param echoed back; `window_days` is the
+  // actual comparison unit (the SQL function rounds hours up to whole
+  // calendar days because mv_fingerprint_daily is day-granular). The card
+  // renders copy based on window_days so the UI claim matches the data.
+  window_hours?: number
+  window_days?: number
 }
 
 export function useDashboardStats(options?: {

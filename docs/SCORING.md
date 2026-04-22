@@ -380,3 +380,19 @@ Tooltip copy guidance:
   presence, repro markers, and source diversity bonus.
 - Include a short explanatory note that `repro_markers` directly contributes to
   ranking (8% weight, capped), so this signal is not dead/advisory-only data.
+
+### 10.2 Priority Matrix lane aggregation
+
+The Priority Matrix groups per-cluster canonical rows into **category lanes**
+for display. Within a lane, lane-level `actionability` is the **mean of the
+per-row actionability scores** (not a re-computation from aggregate inputs).
+This keeps the scoring formula in one place (`lib/analytics/actionability.ts`)
+and makes the lane's rank a direct function of the rows it contains.
+
+Practical consequence: a lane with one 0.95-actionability row outranks a lane
+with five 0.70-actionability rows (mean 0.95 vs 0.70). This matches the
+dashboard doctrine that one high-actionability cluster is more promote-able
+than five mid-actionability clusters — volume already feeds `frequency` in
+the per-row score. Ties on mean actionability fall back to the legacy
+`priorityScore` (65% impact + 35% frequency) so the visual regression vs
+pre-PR behavior on lanes without fingerprint signal is minimal.

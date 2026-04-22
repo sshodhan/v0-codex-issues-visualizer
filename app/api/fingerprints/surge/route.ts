@@ -36,7 +36,8 @@ export async function GET(request: NextRequest) {
   // Postgres bigint round-trips as string over the wire in some supabase-js
   // versions; coerce defensively so the downstream delta-sort math doesn't
   // silently compare "10" < "2".
-  const rows: FingerprintSurgeAggregateRow[] = ((data ?? []) as any[]).map((r) => ({
+  const raw = (data ?? []) as any[]
+  const rows: FingerprintSurgeAggregateRow[] = raw.map((r) => ({
     error_code: String(r.error_code),
     now_count: Number(r.now_count) || 0,
     prev_count: Number(r.prev_count) || 0,
@@ -44,6 +45,18 @@ export async function GET(request: NextRequest) {
     sources: Number(r.sources) || 0,
   }))
 
+  // The SQL function rounds window_hours up to whole days for the bucket
+  // comparison (the MV is day-granular). Return that to the client so the
+  // card renders "last N day(s)" copy instead of a misleading hour count.
+  const windowDays =
+    raw.length > 0 && Number(raw[0]?.window_days) > 0
+      ? Number(raw[0].window_days)
+      : Math.max(1, Math.ceil(windowHours / 24))
+
   const payload = selectTopFingerprintSurges(rows)
-  return NextResponse.json({ ...payload, window_hours: windowHours })
+  return NextResponse.json({
+    ...payload,
+    window_hours: windowHours,
+    window_days: windowDays,
+  })
 }

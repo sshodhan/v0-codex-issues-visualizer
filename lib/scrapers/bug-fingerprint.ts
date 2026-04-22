@@ -372,6 +372,34 @@ export async function computeCompoundKey(
   return buildCompoundClusterKey(title, fp)
 }
 
+// ---------------------------------------------------------------------------
+// Segment-anchored match for the err:<code> drill-down filter.
+// ---------------------------------------------------------------------------
+// Compound keys take the form:
+//   title:<h>                        (no fingerprint signal)
+//   title:<h>|err:<code>             (err only)
+//   title:<h>|err:<code>|frame:<fh>  (err + frame)
+//   title:<h>|frame:<fh>             (frame only — no err:)
+//
+// A naive substring check `"|err:EAC"` would false-positive against
+// `title:X|err:EACCES`. We need boundary-aware matching: the `err:` segment
+// ends at either a `|` delimiter or the end of the string.
+//
+// This helper is imported by `/api/issues` (in-memory as_of branch) and is
+// the reference implementation behind the SQL LIKE patterns in the
+// Supabase query branch (`%|err:CODE|%` OR `%|err:CODE`). Keeping both
+// paths pointed at the same semantic reduces drift.
+
+export function compoundKeyMatchesErrorCode(
+  compoundKey: string | null | undefined,
+  errorCode: string,
+): boolean {
+  if (!compoundKey || !errorCode) return false
+  const middle = `|err:${errorCode}|`
+  const suffix = `|err:${errorCode}`
+  return compoundKey.includes(middle) || compoundKey.endsWith(suffix)
+}
+
 // Re-exported for callers that want the normalized title without the
 // hashing step (e.g. the backfill script's diagnostic output).
 export { normalizeTitleForCluster }

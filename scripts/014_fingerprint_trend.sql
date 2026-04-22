@@ -39,6 +39,12 @@ where bf.error_code is not null
   and o.published_at >= now() - interval '60 days'
 group by 1, 2;
 
+-- A UNIQUE index is a prerequisite for `REFRESH MATERIALIZED VIEW
+-- CONCURRENTLY`. The MV's GROUP BY guarantees one row per (day, error_code)
+-- pair, so the unique constraint is free correctness-wise and leaves the
+-- door open for a follow-up patch to switch the refresh to non-blocking.
+create unique index if not exists idx_mv_fingerprint_daily_day_code
+  on mv_fingerprint_daily (day, error_code);
 create index if not exists idx_mv_fingerprint_daily_code_day
   on mv_fingerprint_daily (error_code, day desc);
 create index if not exists idx_mv_fingerprint_daily_day
@@ -65,45 +71,71 @@ grant select on v_cluster_source_diversity to anon, authenticated, service_role;
 -- ----------------------------------------------------------------------------
 -- 3) Read-time surge detection.
 -- ----------------------------------------------------------------------------
--- Compares the current window to the preceding equal-length window at day
--- granularity. Using day buckets (not rolling seconds) keeps the function
--- reading straight off the MV indexes; the cost of the approximation is a
--- single partial-day overlap, which the dashboard card explicitly frames as
--- "in the last <N> h" rather than a sliding window.
+-- Compares the current window to the preceding equal-length window. The MV
+-- is bucketed by day, so windows snap to day granularity: `window_hours` is
+-- rounded up to calendar days (`ceil(hours/24)`), and both `now_count` and
+-- `prev_count` are sums of exactly that many full day-buckets. The result:
+-- a `window_hours=24` call compares today vs yesterday (each 1 day); a
+-- `window_hours=48` call compares the last 2 days vs the prior 2 days; and
+-- so on.
+--
+-- Using full-day buckets (not a rolling seconds window) keeps the function
+-- reading straight off the MV index. The payload carries `window_days` so
+-- the dashboard card can render honest copy ("today vs yesterday") rather
+-- than an approximate "last 24 h" that drifts with the clock.
 --
 -- `prev_count = 0` + `now_count > 0` is the "new in window" signal consumed
 -- by the client (see lib/analytics/fingerprint-surge.ts).
 
 create or replace function fingerprint_surges(window_hours int default 24)
-returns table(error_code text, now_count bigint, prev_count bigint, delta bigint, sources int)
+returns table(
+  error_code text,
+  now_count bigint,
+  prev_count bigint,
+  delta bigint,
+  sources int,
+  window_days int
+)
 language sql
 stable
 as $$
   with bounds as (
     select
-      now() - make_interval(hours => greatest(coalesce(window_hours, 24), 1)) as now_start,
-      now() - make_interval(hours => greatest(coalesce(window_hours, 24), 1) * 2) as prev_start
+      -- ceil(hours/24), floored at 1 — we always compare at least one full
+      -- day on each side.
+      greatest(ceil(coalesce(window_hours, 24)::numeric / 24)::int, 1) as window_days
+  ),
+  horizons as (
+    select
+      b.window_days,
+      -- Anchor both windows to the start of today (UTC). `now_start` is
+      -- today minus (N-1) days → covers N full days ending today.
+      -- `prev_start` is `now_start` minus N days → covers the prior N.
+      date_trunc('day', now()) - make_interval(days => b.window_days - 1) as now_start,
+      date_trunc('day', now()) - make_interval(days => b.window_days * 2 - 1) as prev_start
+    from bounds b
   ),
   agg as (
     select
       m.error_code,
-      sum(case when m.day >= date_trunc('day', b.now_start) then m.cnt else 0 end)::bigint as now_count,
+      sum(case when m.day >= h.now_start then m.cnt else 0 end)::bigint as now_count,
       sum(case
-        when m.day >= date_trunc('day', b.prev_start)
-         and m.day <  date_trunc('day', b.now_start)
+        when m.day >= h.prev_start and m.day < h.now_start
         then m.cnt else 0
       end)::bigint as prev_count,
-      max(m.source_diversity)::int as sources
+      max(m.source_diversity)::int as sources,
+      h.window_days
     from mv_fingerprint_daily m
-    cross join bounds b
-    group by m.error_code
+    cross join horizons h
+    group by m.error_code, h.window_days
   )
   select
     error_code,
     now_count,
     prev_count,
     (now_count - prev_count) as delta,
-    sources
+    sources,
+    window_days
   from agg
   where now_count > 0
   order by delta desc, now_count desc, error_code asc
