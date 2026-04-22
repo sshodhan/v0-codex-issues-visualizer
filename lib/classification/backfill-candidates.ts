@@ -1,7 +1,13 @@
 import {
+  buildEnvFromFingerprintColumns,
+  buildReproFromFingerprintMarkers,
   synthesizeObservationReportText,
   type ClassificationCandidate,
 } from "./candidate.ts"
+// Note: relative `.ts` import is required so node:test
+// (--experimental-strip-types) can resolve this file without a
+// `@/*` alias plugin. Next.js + Turbopack tolerate the suffix on
+// imports as well.
 
 // Subset of mv_observation_current columns the classify-backfill cron
 // pulls. Kept in lock-step with the SELECT in
@@ -33,13 +39,6 @@ export function buildBackfillCandidates(
   slugById: Map<string, string>,
 ): ClassificationCandidate[] {
   return rows.map((row) => {
-    const env: Record<string, string> = {}
-    if (row.cli_version) env.cli_version = row.cli_version
-    if (row.fp_os) env.os = row.fp_os
-    if (row.fp_shell) env.shell = row.fp_shell
-    if (row.fp_editor) env.editor = row.fp_editor
-    if (row.model_id) env.model_id = row.model_id
-
     const sourceSlug = row.source_id ? slugById.get(row.source_id) ?? null : null
 
     return {
@@ -51,11 +50,17 @@ export function buildBackfillCandidates(
         url: row.url,
         sourceSlug,
       }),
-      env: Object.keys(env).length > 0 ? env : undefined,
-      repro:
-        typeof row.repro_markers === "number" && row.repro_markers > 0
-          ? { count: row.repro_markers }
-          : undefined,
+      // mv_observation_current renames the fingerprint os/shell/editor
+      // columns to fp_* (collision avoidance with observation-level
+      // columns); the shared helper accepts either name.
+      env: buildEnvFromFingerprintColumns({
+        cli_version: row.cli_version,
+        os: row.fp_os,
+        shell: row.fp_shell,
+        editor: row.fp_editor,
+        model_id: row.model_id,
+      }),
+      repro: buildReproFromFingerprintMarkers(row.repro_markers),
     }
   })
 }

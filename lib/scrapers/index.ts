@@ -26,6 +26,10 @@ import {
   type ClassificationCandidate,
 } from "@/lib/classification/pipeline"
 import {
+  buildEnvFromFingerprintColumns,
+  buildReproFromFingerprintMarkers,
+} from "@/lib/classification/candidate"
+import {
   extractBugFingerprint,
   buildCompoundClusterKey,
   type BugFingerprint,
@@ -227,28 +231,29 @@ async function persistIssueRecord(
 }
 
 // Build a ClassificationCandidate that forwards regex-derived env + repro
-// context (outcome C). Keeping this in one place so both runAllScrapers and
-// runScraper wire identical payloads into the queue.
+// context (outcome C). Keeping this in one place so both runAllScrapers
+// and runScraper wire identical payloads into the queue. The actual env
+// + repro extraction rules live in lib/classification/candidate.ts so
+// the daily backfill cron's mv-row-based path uses the same logic.
 function buildClassificationCandidate(persisted: {
   observationId: string
   title: string
   reportText: string
   fingerprint: BugFingerprint
 }): ClassificationCandidate {
-  const env: Record<string, string> = {}
   const fp = persisted.fingerprint
-  if (fp.cli_version) env.cli_version = fp.cli_version
-  if (fp.os) env.os = fp.os
-  if (fp.shell) env.shell = fp.shell
-  if (fp.editor) env.editor = fp.editor
-  if (fp.model_id) env.model_id = fp.model_id
-
   return {
     observationId: persisted.observationId,
     title: persisted.title,
     reportText: persisted.reportText,
-    env: Object.keys(env).length > 0 ? env : undefined,
-    repro: fp.repro_markers > 0 ? { count: fp.repro_markers } : undefined,
+    env: buildEnvFromFingerprintColumns({
+      cli_version: fp.cli_version,
+      os: fp.os,
+      shell: fp.shell,
+      editor: fp.editor,
+      model_id: fp.model_id,
+    }),
+    repro: buildReproFromFingerprintMarkers(fp.repro_markers),
   }
 }
 
