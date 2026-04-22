@@ -254,6 +254,13 @@ Windsurf" currently logs +1 to Cursor _and_ +1 to Windsurf.
 
 When turning analytics into dashboard copy, follow this interpretation contract:
 
+### API + UX contract (compound sub-cluster filter)
+
+- **API:** `GET /api/issues` supports `compound_key` alongside `days`, `source`, and `sentiment`.
+- **Data semantics:** this filter is applied against `mv_observation_current.cluster_key_compound`.
+- **UX behavior:** selecting error-code chips/buttons in the Issues Table or the Priority Matrix tooltip applies `compound_key`; when active, a dismissible chip is shown in the Issues Table filter bar.
+- **Scope clarification:** this is a read-time sub-cluster filter only; it does **not** alter semantic cluster membership.
+
 - `frequency_count` is **not** a standalone priority narrative. It is a volume
   descriptor and can overstate urgency if repeated low-impact duplicates dominate
   a cluster.
