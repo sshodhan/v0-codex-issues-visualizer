@@ -154,6 +154,25 @@ function authHeaders(secret: string): HeadersInit {
   return h
 }
 
+// Map failed admin responses to operator-friendly text. 401 and 503 are
+// the secret-config failure modes that benefit the most from plain words
+// pointing at the header input.
+async function explainAdminFailure(res: Response): Promise<string> {
+  if (res.status === 401) {
+    return "Admin secret required — paste it in the x-admin-secret field above."
+  }
+  if (res.status === 503) {
+    return "ADMIN_SECRET is not configured on the server. Set the env var and redeploy."
+  }
+  let body = ""
+  try {
+    body = (await res.text()).slice(0, 200)
+  } catch {
+    // ignore
+  }
+  return body ? `HTTP ${res.status}: ${body}` : `HTTP ${res.status}`
+}
+
 // ============================================================================
 // Backfill panel
 // ============================================================================
@@ -183,7 +202,7 @@ function BackfillPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/backfill-derivations", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
       const data = (await res.json()) as BackfillStats
       setStats(data)
     } catch (e) {
@@ -197,7 +216,7 @@ function BackfillPanel({ secret }: { secret: string }) {
   useEffect(() => {
     loadStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [secret])
 
   const run = async (dryRun: boolean) => {
     if (running) return
@@ -222,8 +241,7 @@ function BackfillPanel({ secret }: { secret: string }) {
           body: JSON.stringify({ cursor, limit: CHUNK_SIZE, dryRun }),
         })
         if (!res.ok) {
-          const body = await res.text()
-          throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`)
+          throw new Error(await explainAdminFailure(res))
         }
         const data = await res.json()
         setProcessed((p) => p + (data.processed as number))
@@ -493,7 +511,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/cluster", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
       const data = (await res.json()) as ClusterStats
       setStats(data)
     } catch (e) {
@@ -507,7 +525,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
   useEffect(() => {
     loadStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [secret])
 
   const handleRebuildClick = () => {
     if (running) return
@@ -547,8 +565,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
           }),
         })
         if (!res.ok) {
-          const body = await res.text()
-          throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`)
+          throw new Error(await explainAdminFailure(res))
         }
         const data = await res.json()
         setProcessed((p) => p + (data.processed as number))

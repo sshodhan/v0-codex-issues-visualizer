@@ -41,6 +41,9 @@ Provider Scrapers (lib/scrapers/providers/*.ts)
 Orchestrator (lib/scrapers/index.ts)
   ├─ runs all providers in parallel
   ├─ writes per-source scrape_logs
+  ├─ synthesizes classification report_text per new observation
+  ├─ enqueues post-batch classification candidates (deduped by observation_id)
+  ├─ classifies/persists each candidate via lib/classification/pipeline.ts
   └─ runScraper(slug) for single-source runs
          │
          ▼
@@ -138,6 +141,14 @@ A scrape run is structured as three sequential passes over the captured records.
 4. On a title revision that shifts `cluster_key`, the same function updates the membership: stamp `detached_at` on the old row, insert a new one for the new cluster, and re-select a canonical if needed. Because clusters are their own table, rebalancing never touches evidence.
 5. At the end of the scrape run, `/api/cron/scrape` calls the `refresh_materialized_views` RPC, which rebuilds `mv_observation_current` and `mv_trend_daily`. All dashboard reads pick up the new scrape after this step.
 
+#### 3.1d Classify bridge (ingest → derivation classification)
+
+1. `persistIssueRecord()` returns per-observation metadata (`observationId`, `title`, and a synthesized `reportText` payload) for newly captured observations.
+2. After ingestion/evidence writes succeed, the orchestrator processes a post-batch queue through `processObservationClassificationQueue()` in `lib/classification/pipeline.ts`.
+3. The queue applies a dedupe guard (`classifications.observation_id`) so already-classified observations are skipped by default; reclassification is opt-in policy.
+4. Each candidate is classified by the same internal helper used by `/api/classify` (`classifyReport()`), avoiding server-side HTTP self-calls.
+5. Failures are isolated per observation (the scrape run continues), emitted through the server logger with `component: "classification-pipeline"`, and surfaced in scrape error summaries.
+
 #### 3.1.1 Clustering invariants
 
 - **Clusters are stored separately from evidence.** Deleting or revising an observation never mutates cluster shape; the orchestrator explicitly detaches/reattaches via `cluster_members`.
@@ -186,7 +197,8 @@ Past readings are reproducible: re-running any aggregate with `computed_at <= T`
 Layout:
 - `lib/scrapers/index.ts` — orchestrator. `runAllScrapers()` (parallel) and
   `runScraper(slug)` (single-source). Owns `scrape_logs` lifecycle and runs the
-  three-pass ingest/enrich/cluster flow, delegating every write to
+  ingest/enrich/cluster flow plus post-batch classification enqueue/processing,
+  delegating every write to
   `lib/storage/{evidence,derivations,clusters}.ts`. Does not touch the database
   directly.
 - `lib/scrapers/shared.ts` — pure functions consumed by the enrich pass:
@@ -212,6 +224,15 @@ The only module allowed to write to the database. Enforces the three-layer bound
 - `derivations.ts` — `recordSentiment(observationId, result)`, `recordCategory`, `recordImpact`, `recordCompetitorMention`, `recordClassification(payload, priorId?)`, `recordClassificationReview(classificationId, review)`. Each pulls the current `algorithm_version` from `algorithm-versions.ts` and stamps the row.
 - `clusters.ts` — `attachToCluster(observationId, title)`, `detachFromCluster(observationId)`, `promoteCanonical(clusterId)`. Owns `buildClusterKey` + `normalizeTitleForCluster` (migrated from `lib/scrapers/shared.ts`). Since SQL no longer writes to clusters, the old TS↔SQL hash-parity requirement is obsolete.
 - `algorithm-versions.ts` — central `CURRENT_VERSIONS` registry (the single source of truth for the derivation version every enrich pass stamps on its writes). Current state: `sentiment: "v2"`, `category: "v2"`, `impact: "v2"`, `competitor_mention: "v2"` (all bumped together in `scripts/011_algorithm_v2_bump.sql` after the eye-test tuning), `classification: "v1"`. Bumping here is the only way to trigger a new derivation row shape — the registry file is authoritative; 007's seed + delta migrations (011+) must stay consistent with it.
+
+### 4.8 `lib/classification/`
+
+- `pipeline.ts` — shared server-side classification executor used by both
+  `/api/classify` and scraper orchestration. Owns: model-call/retry policy,
+  hard review-rule application, enum/evidence validation, synthesized
+  observation report text helper, dedupe checks against existing
+  `classifications` rows, and per-observation failure logging for scrape-driven
+  classification.
 
 Extension guidance:
 - Add a new provider by creating `providers/<slug>.ts` and registering it in
@@ -892,4 +913,3 @@ Server runtime (Next.js route)
 - This is log-forwarding only (no persistent error warehouse yet).
 - No deduplication/grouping policy is applied in-process.
 - Alerting/integrations (Sentry, Datadog, etc.) are intentionally out of scope for the current simple implementation.
-
