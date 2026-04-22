@@ -21,8 +21,9 @@ import {
 // window_hours is clamped: 1h as a sanity floor, 720h (30d) as a ceiling
 // because the MV only covers 60 days.
 export async function GET(request: NextRequest) {
-  const raw = Number(request.nextUrl.searchParams.get("window_hours"))
-  const windowHours = Number.isFinite(raw) && raw > 0 ? Math.min(Math.max(raw, 1), 720) : 24
+  const rawHours = Number(request.nextUrl.searchParams.get("window_hours"))
+  const windowHours =
+    Number.isFinite(rawHours) && rawHours > 0 ? Math.min(Math.max(rawHours, 1), 720) : 24
 
   const supabase = await createClient()
   const { data, error } = await supabase.rpc("fingerprint_surges", {
@@ -36,8 +37,8 @@ export async function GET(request: NextRequest) {
   // Postgres bigint round-trips as string over the wire in some supabase-js
   // versions; coerce defensively so the downstream delta-sort math doesn't
   // silently compare "10" < "2".
-  const raw = (data ?? []) as any[]
-  const rows: FingerprintSurgeAggregateRow[] = raw.map((r) => ({
+  const rpcRows = (data ?? []) as any[]
+  const rows: FingerprintSurgeAggregateRow[] = rpcRows.map((r) => ({
     error_code: String(r.error_code),
     now_count: Number(r.now_count) || 0,
     prev_count: Number(r.prev_count) || 0,
@@ -49,8 +50,8 @@ export async function GET(request: NextRequest) {
   // comparison (the MV is day-granular). Return that to the client so the
   // card renders "last N day(s)" copy instead of a misleading hour count.
   const windowDays =
-    raw.length > 0 && Number(raw[0]?.window_days) > 0
-      ? Number(raw[0].window_days)
+    rpcRows.length > 0 && Number(rpcRows[0]?.window_days) > 0
+      ? Number(rpcRows[0].window_days)
       : Math.max(1, Math.ceil(windowHours / 24))
 
   const payload = selectTopFingerprintSurges(rows)
