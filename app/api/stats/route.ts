@@ -64,6 +64,17 @@ export async function GET(request: NextRequest) {
     asOf = parsed
   }
 
+  // Parse global filter params
+  const daysRaw = searchParams.get("days")
+  const categorySlug = searchParams.get("category")
+  let filterDays: number | null = null
+  if (daysRaw) {
+    const parsed = parseInt(daysRaw, 10)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      filterDays = parsed
+    }
+  }
+
   // When asOf is set, read from the time-bounded RPC; otherwise from the
   // always-current materialized view. Result shape is identical so the
   // downstream aggregation loop is shared.
@@ -84,8 +95,6 @@ export async function GET(request: NextRequest) {
     rows = allRows || []
   }
 
-  const totalIssues = rows.length
-
   // Lookup tables for name/color join (cheap — two small tables).
   type SourceRow = { id: string; name: string; slug: string }
   type CategoryRow = { id: string; name: string; slug: string; color: string }
@@ -99,6 +108,32 @@ export async function GET(request: NextRequest) {
   const categoryById = new Map<string, CategoryRow>(
     ((categories || []) as CategoryRow[]).map((c) => [c.id, c]),
   )
+
+  // Lookup category ID by slug for filtering
+  let filterCategoryId: string | null = null
+  if (categorySlug && categorySlug !== "all") {
+    const matchingCat = (categories || []).find((c: CategoryRow) => c.slug === categorySlug)
+    filterCategoryId = matchingCat?.id ?? null
+  }
+
+  // Apply global filters (days and category)
+  const unfilteredTotal = rows.length
+  const filterAnchor = asOf ? asOf.getTime() : Date.now()
+  if (filterDays || filterCategoryId) {
+    const cutoffTime = filterDays ? filterAnchor - filterDays * 24 * 60 * 60 * 1000 : null
+    rows = rows.filter((r: any) => {
+      // Time filter
+      if (cutoffTime && r.published_at) {
+        const pubTime = new Date(r.published_at).getTime()
+        if (pubTime < cutoffTime) return false
+      }
+      // Category filter
+      if (filterCategoryId && r.category_id !== filterCategoryId) return false
+      return true
+    })
+  }
+
+  const totalIssues = rows.length
 
   const sentimentCounts = { positive: 0, negative: 0, neutral: 0 }
   const sourceCounts: Record<string, number> = {}
