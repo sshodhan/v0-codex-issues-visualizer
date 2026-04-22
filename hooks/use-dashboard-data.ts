@@ -111,12 +111,23 @@ export interface Issue {
   category: { name: string; slug: string; color: string } | null
 }
 
-export function useDashboardStats() {
+export function useDashboardStats(options?: {
+  days?: number
+  category?: string
+  asOf?: string
+}) {
+  const params = new URLSearchParams()
+  if (options?.days) params.set("days", String(options.days))
+  if (options?.category && options.category !== "all") params.set("category", options.category)
+  if (options?.asOf) params.set("as_of", options.asOf)
+  const queryString = params.toString()
+  const url = queryString ? `/api/stats?${queryString}` : "/api/stats"
+
   const { data, error, isLoading, mutate } = useSWR<DashboardStats>(
-    "/api/stats",
+    url,
     fetcher,
     {
-      refreshInterval: 60000, // Refresh every minute
+      refreshInterval: options?.asOf ? 0 : 60000, // Disable auto-refresh in replay mode
     }
   )
 
@@ -136,6 +147,7 @@ export function useIssues(filters?: {
   sortBy?: string
   order?: string
   q?: string
+  asOf?: string
 }) {
   const params = new URLSearchParams()
   if (filters?.source) params.set("source", filters.source)
@@ -145,11 +157,14 @@ export function useIssues(filters?: {
   if (filters?.sortBy) params.set("sortBy", filters.sortBy)
   if (filters?.order) params.set("order", filters.order)
   if (filters?.q) params.set("q", filters.q)
+  if (filters?.asOf) params.set("as_of", filters.asOf)
 
   const { data, error, isLoading, mutate } = useSWR<{
     data: Issue[]
     count: number
-  }>(`/api/issues?${params.toString()}`, fetcher)
+  }>(`/api/issues?${params.toString()}`, fetcher, {
+    refreshInterval: filters?.asOf ? 0 : undefined, // Disable auto-refresh in replay mode
+  })
 
   return {
     issues: data?.data || [],
@@ -229,17 +244,19 @@ export function useClassifications(filters?: {
   category?: string
   needs_human_review?: boolean
   limit?: number
+  asOf?: string
 }) {
   const params = new URLSearchParams()
   if (filters?.status) params.set("status", filters.status)
   if (filters?.category) params.set("category", filters.category)
   if (typeof filters?.needs_human_review === "boolean") params.set("needs_human_review", String(filters.needs_human_review))
   if (filters?.limit) params.set("limit", String(filters.limit))
+  if (filters?.asOf) params.set("as_of", filters.asOf)
 
   const { data, error, isLoading, mutate } = useSWR<{ data: ClassificationRecord[] }>(
     `/api/classifications?${params.toString()}`,
     fetcher,
-    { refreshInterval: 60000 }
+    { refreshInterval: filters?.asOf ? 0 : 60000 } // Disable auto-refresh in replay mode
   )
 
   return {
@@ -250,11 +267,16 @@ export function useClassifications(filters?: {
   }
 }
 
-export function useClassificationStats() {
+export function useClassificationStats(options?: { asOf?: string }) {
+  const params = new URLSearchParams()
+  if (options?.asOf) params.set("as_of", options.asOf)
+  const queryString = params.toString()
+  const url = queryString ? `/api/classifications/stats?${queryString}` : "/api/classifications/stats"
+
   const { data, error, isLoading, mutate } = useSWR<ClassificationStats>(
-    "/api/classifications/stats",
+    url,
     fetcher,
-    { refreshInterval: 60000 }
+    { refreshInterval: options?.asOf ? 0 : 60000 }
   )
 
   return {

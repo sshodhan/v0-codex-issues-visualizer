@@ -1,7 +1,9 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { AsOfBanner } from "@/components/dashboard/as-of-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RefreshCw, Loader2, BarChart3, BrainCircuit, TrendingUp } from "lucide-react"
 import { StatCard, InsightKpiCard } from "@/components/dashboard/stat-card"
@@ -31,6 +33,24 @@ import {
 import { formatDistanceToNow } from "date-fns"
 
 export default function DashboardPage() {
+  const searchParams = useSearchParams()
+  const asOfRaw = searchParams.get("as_of")
+
+  // Validate and parse as_of parameter
+  const asOf = useMemo(() => {
+    if (!asOfRaw) return null
+    const parsed = new Date(asOfRaw)
+    if (Number.isNaN(parsed.getTime())) {
+      console.warn("[v0] Invalid as_of parameter:", asOfRaw)
+      return null
+    }
+    if (parsed.getTime() > Date.now() + 60_000) {
+      console.warn("[v0] as_of cannot be in the future")
+      return null
+    }
+    return asOfRaw
+  }, [asOfRaw])
+
   const [activeTab, setActiveTab] = useState("dashboard")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [globalDays, setGlobalDays] = useState(30)
@@ -41,15 +61,25 @@ export default function DashboardPage() {
     order?: string
   }>({})
 
-  const { stats, isLoading: statsLoading, isError: statsError, refresh: refreshStats } = useDashboardStats()
+  const { stats, isLoading: statsLoading, isError: statsError, refresh: refreshStats } = useDashboardStats({
+    days: globalDays || undefined,
+    category: globalCategory === "all" ? undefined : globalCategory,
+    asOf: asOf || undefined,
+  })
   const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues({
     ...issueFilters,
     days: globalDays || undefined,
     category: globalCategory === "all" ? undefined : globalCategory,
+    asOf: asOf || undefined,
   })
   const { scrape } = useScrape()
-  const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({ limit: 100 })
-  const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats()
+  const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({
+    limit: 100,
+    asOf: asOf || undefined,
+  })
+  const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats({
+    asOf: asOf || undefined,
+  })
 
   const handleRefresh = async () => {
     setIsRefreshing(true)
@@ -184,6 +214,9 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background">
+      {/* As-Of Replay Banner */}
+      <AsOfBanner asOf={asOf} />
+
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto flex h-16 items-center justify-between px-4">
@@ -346,6 +379,8 @@ export default function DashboardPage() {
                 isLoading={issuesLoading}
                 globalTimeLabel={globalTimeLabel}
                 globalCategoryLabel={globalCategoryLabel}
+                observationCount={issues.length}
+                canonicalCount={stats?.totalIssues || issues.length}
                 onFilterChange={handleFilterChange}
               />
             </TabsContent>

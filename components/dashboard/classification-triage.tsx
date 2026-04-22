@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { AlertTriangle, ExternalLink, ShieldCheck } from "lucide-react"
+import { AlertTriangle, ExternalLink, ShieldCheck, ChevronDown, History } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -22,7 +22,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatDistanceToNow, subDays } from "date-fns"
+import { formatDistanceToNow, subDays, format } from "date-fns"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import type { ClassificationRecord, ClassificationStats } from "@/hooks/use-dashboard-data"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
 
@@ -52,7 +57,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
     const timeCutoff = timeDays > 0 ? subDays(new Date(), timeDays) : null
 
     return records.filter((record) => {
-      const categoryMatch = activeCategory === "all" || record.category.toLowerCase() === activeCategory
+      const categoryMatch = activeCategory === "all" || record.effective_category.toLowerCase() === activeCategory
       const timeMatch = !timeCutoff || new Date(record.created_at) >= timeCutoff
       return categoryMatch && timeMatch
     })
@@ -61,10 +66,10 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
   const clusters = useMemo(() => {
     const grouped = new Map<string, { total: number; highRisk: number }>()
     for (const record of globallyFilteredRecords) {
-      const key = `${record.category} › ${record.subcategory || "General"}`
+      const key = `${record.effective_category} › ${record.subcategory || "General"}`
       const current = grouped.get(key) || { total: 0, highRisk: 0 }
       current.total += 1
-      if (record.severity === "critical" || record.severity === "high") current.highRisk += 1
+      if (record.effective_severity === "critical" || record.effective_severity === "high") current.highRisk += 1
       grouped.set(key, current)
     }
 
@@ -76,7 +81,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
 
   const triageRecords = useMemo(() => {
     if (clusterFilter === "all") return globallyFilteredRecords
-    return globallyFilteredRecords.filter((record) => `${record.category} › ${record.subcategory || "General"}` === clusterFilter)
+    return globallyFilteredRecords.filter((record) => `${record.effective_category} › ${record.subcategory || "General"}` === clusterFilter)
   }, [globallyFilteredRecords, clusterFilter])
 
   const selected = useMemo(
@@ -185,20 +190,20 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
                     key={record.id}
                     onClick={() => {
                       setSelectedId(record.id)
-                      setStatusOverride(record.status)
-                      setSeverityOverride(record.severity)
-                      setCategoryOverride(record.category)
+                      setStatusOverride(record.effective_status)
+                      setSeverityOverride(record.effective_severity)
+                      setCategoryOverride(record.effective_category)
                     }}
                     className="cursor-pointer"
                   >
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        {record.needs_human_review && <AlertTriangle className="h-4 w-4 text-amber-500" />}
-                        <span>{record.category}</span>
+                        {record.effective_needs_human_review && <AlertTriangle className="h-4 w-4 text-amber-500" />}
+                        <span>{record.effective_category}</span>
                       </div>
                       <p className="text-xs text-muted-foreground">{record.subcategory}</p>
                     </TableCell>
-                    <TableCell><Badge variant="outline">{record.severity}</Badge></TableCell>
+                    <TableCell><Badge variant="outline">{record.effective_severity}</Badge></TableCell>
                     <TableCell>{Math.round(record.confidence * 100)}%</TableCell>
                     <TableCell>
                       <Badge variant="secondary">{record.source_issue_sentiment || "unknown"}</Badge>
@@ -219,7 +224,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
                         <span className="text-xs text-muted-foreground">missing source URL</span>
                       )}
                     </TableCell>
-                    <TableCell>{record.status}</TableCell>
+                    <TableCell>{record.effective_status}</TableCell>
                     <TableCell>{formatDistanceToNow(new Date(record.created_at), { addSuffix: true })}</TableCell>
                   </TableRow>
                 ))}
@@ -232,6 +237,71 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
           <div className="space-y-3 rounded-lg border p-4">
             <p className="text-sm font-medium">Reviewer panel for selected classification</p>
             <p className="text-sm text-muted-foreground">{selected.summary}</p>
+
+            {/* Review History Panel */}
+            {(selected.latest_review || selected.prior_classification_id) && (
+              <Collapsible className="rounded-md border bg-muted/30">
+                <CollapsibleTrigger className="flex w-full items-center justify-between p-3 text-sm font-medium hover:bg-muted/50">
+                  <div className="flex items-center gap-2">
+                    <History className="h-4 w-4 text-muted-foreground" />
+                    <span>Review History</span>
+                    {selected.latest_review && (
+                      <Badge variant="secondary" className="ml-2">
+                        {selected.latest_review.reviewed_by}
+                      </Badge>
+                    )}
+                  </div>
+                  <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-180" />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-2 p-3 pt-0">
+                  {/* Current effective state */}
+                  <div className="rounded-md border bg-background p-2">
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Current effective state</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="outline">{selected.effective_category}</Badge>
+                      <Badge variant="outline">{selected.effective_severity}</Badge>
+                      <Badge variant="outline">{selected.effective_status}</Badge>
+                    </div>
+                  </div>
+
+                  {/* Latest review if present */}
+                  {selected.latest_review && (
+                    <div className="rounded-md border p-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-medium">
+                          Reviewed by {selected.latest_review.reviewed_by}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {format(new Date(selected.latest_review.reviewed_at), "MMM d, yyyy h:mm a")}
+                        </p>
+                      </div>
+                      {selected.latest_review.reviewer_notes && (
+                        <p className="text-xs text-muted-foreground mt-1 italic">
+                          {selected.latest_review.reviewer_notes}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Baseline classification */}
+                  <div className="rounded-md border border-dashed p-2 opacity-75">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-medium">
+                        Initial classification by {selected.algorithm_version || "algorithm"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {format(new Date(selected.created_at), "MMM d, yyyy h:mm a")}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      <Badge variant="outline" className="text-xs">{selected.category}</Badge>
+                      <Badge variant="outline" className="text-xs">{selected.severity}</Badge>
+                      <Badge variant="outline" className="text-xs">{selected.status}</Badge>
+                    </div>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
             <div className="grid gap-3 md:grid-cols-3">
               <Select value={statusOverride} onValueChange={setStatusOverride}>
                 <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
@@ -248,7 +318,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
               <Input value={categoryOverride} onChange={(event) => setCategoryOverride(event.target.value)} placeholder="Category override" />
             </div>
             <div className="grid gap-3 md:grid-cols-2">
-              <Input value={reviewer} onChange={(event) => setReviewer(event.target.value)} placeholder="Reviewer name/email" />
+              <Input value={reviewer} onChange={(event) => setReviewer(event.target.value)} placeholder="Your name, required for audit log" />
               <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Override rationale / notes" />
             </div>
             <div className="flex items-center gap-2">

@@ -6,9 +6,38 @@ import { createClient } from "@/lib/supabase/server"
 // state. Baseline and latest review are both included in the payload so
 // the UI can show the reviewer override delta if it wants.
 // See docs/ARCHITECTURE.md v10 §§3.3, 5.2.
+//
+// When ?as_of=<ISO8601> is supplied, only returns reviews up to that
+// timestamp for point-in-time replay.
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
   const searchParams = request.nextUrl.searchParams
+
+  // Parse as_of parameter for point-in-time replay
+  const asOfRaw = searchParams.get("as_of")
+  let asOf: Date | null = null
+  if (asOfRaw) {
+    const parsed = new Date(asOfRaw)
+    if (Number.isNaN(parsed.getTime())) {
+      return NextResponse.json(
+        {
+          error: "Invalid as_of",
+          message: "as_of must be a valid ISO8601 timestamp",
+        },
+        { status: 400 },
+      )
+    }
+    if (parsed.getTime() > Date.now() + 60_000) {
+      return NextResponse.json(
+        {
+          error: "Invalid as_of",
+          message: "as_of cannot be in the future",
+        },
+        { status: 400 },
+      )
+    }
+    asOf = parsed
+  }
 
   const status = searchParams.get("status")
   const category = searchParams.get("category")
@@ -20,6 +49,11 @@ export async function GET(request: NextRequest) {
     .select("*")
     .order("created_at", { ascending: false })
     .limit(limit)
+
+  // In as_of mode, only return classifications created before that timestamp
+  if (asOf) {
+    query = query.lte("created_at", asOf.toISOString())
+  }
 
   // Baseline filters (reviewer overrides are applied in-memory below so the
   // filter can still find rows whose reviewed status differs from baseline).
@@ -45,12 +79,18 @@ export async function GET(request: NextRequest) {
     .map((r: any) => r.observation_id)
     .filter((v: string | null): v is string => Boolean(v))
 
+  // Build review query, filtering by as_of if present
+  let reviewQuery = supabase
+    .from("classification_reviews")
+    .select("*")
+    .in("classification_id", classificationIds)
+    .order("reviewed_at", { ascending: false })
+  if (asOf) {
+    reviewQuery = reviewQuery.lte("reviewed_at", asOf.toISOString())
+  }
+
   const [{ data: reviews }, { data: observationRows }] = await Promise.all([
-    supabase
-      .from("classification_reviews")
-      .select("*")
-      .in("classification_id", classificationIds)
-      .order("reviewed_at", { ascending: false }),
+    reviewQuery,
     observationIds.length
       ? supabase
           .from("mv_observation_current")
@@ -91,5 +131,8 @@ export async function GET(request: NextRequest) {
     }
   })
 
-  return NextResponse.json({ data: withReviews })
+  return NextResponse.json({
+    data: withReviews,
+    asOf: asOf ? asOf.toISOString() : null,
+  })
 }

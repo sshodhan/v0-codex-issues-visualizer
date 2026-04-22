@@ -28,6 +28,8 @@ interface IssuesTableProps {
   isLoading: boolean
   globalTimeLabel: string
   globalCategoryLabel: string
+  observationCount?: number
+  canonicalCount?: number
   onFilterChange: (filters: {
     sentiment?: string
     sortBy?: string
@@ -41,6 +43,8 @@ export function IssuesTable({
   isLoading,
   globalTimeLabel,
   globalCategoryLabel,
+  observationCount,
+  canonicalCount,
   onFilterChange,
 }: IssuesTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -114,7 +118,9 @@ export function IssuesTable({
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-lg font-semibold text-foreground">
-              All Issues ({issues.length})
+              All Issues {observationCount !== undefined && canonicalCount !== undefined 
+                ? `(${observationCount} observations across ${canonicalCount} signals)`
+                : `(${issues.length})`}
             </CardTitle>
             <div className="flex flex-wrap gap-2">
               <Select value={sentimentFilter} onValueChange={handleSentimentChange}>
