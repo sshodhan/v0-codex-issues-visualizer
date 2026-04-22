@@ -22,6 +22,16 @@ interface PriorityMatrixProps {
     impact_score: number
     frequency_count: number
     sentiment: string
+    // Actionability score (0..1) produced by `/api/stats` via the shared
+    // `computeActionability` helper. The matrix ranks lanes by the mean of
+    // this per-row value, so frequency is no longer the last-resort
+    // tiebreaker. Back-compat: `priorityScore` continues to flow through
+    // for any out-of-tree consumer; the UI copy is actionability-first
+    // per docs/SCORING.md §10.1.
+    actionability?: number
+    priorityScore?: number
+    source_diversity?: number
+    cluster_key_compound?: string | null
     category: { name: string; color: string } | null
     // v3 bug-fingerprint projection — when available, the tooltip
     // surfaces the dominant error_code so lanes with the same category
@@ -30,8 +40,14 @@ interface PriorityMatrixProps {
       error_code?: string | null
       top_stack_frame?: string | null
       llm_subcategory?: string | null
+      repro_markers?: number | null
     } | null
   }>
+  // Fired when the user clicks an error-code chip in the tooltip. The
+  // callback is wired up to the issues-table compound-key filter so
+  // clicking an ENOENT chip scrolls/drills the analyst into the rows
+  // sharing that fingerprint.
+  onFilterChange?: (filters: { compound_key?: string }) => void
 }
 
 type SentimentKey = "positive" | "negative" | "neutral"
@@ -88,17 +104,19 @@ const getDominantSentiment = (
   return dominant.share >= 0.3 ? dominant : null
 }
 
-export function PriorityMatrix({ data }: PriorityMatrixProps) {
+export function PriorityMatrix({ data, onFilterChange }: PriorityMatrixProps) {
   const { chartData, avgPriority, zoneCategories } = useMemo(() => {
     const groupedByCategory = data.reduce<
       Record<
         string,
         {
           category: string
-          issues: { title: string; impact: number; sentiment: SentimentKey }[]
+          issues: { title: string; impact: number; sentiment: SentimentKey; repro_markers: number }[]
           sentimentCounts: Record<SentimentKey, number>
           totalFrequency: number
           totalImpact: number
+          totalActionability: number
+          totalReproMarkers: number
           // v3 bug-fingerprint aggregates. The priority-matrix tooltip
           // surfaces the top error codes and LLM subcategories per lane
           // so two lanes that share a category name but different root
@@ -117,20 +135,30 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           sentimentCounts: { positive: 0, negative: 0, neutral: 0 },
           totalFrequency: 0,
           totalImpact: 0,
+          totalActionability: 0,
+          totalReproMarkers: 0,
           errorCodeCounts: {},
           subcategoryCounts: {},
         }
       }
 
       const sentiment = normalizeSentiment(item.sentiment)
+      const reproMarkers = Number(item.fingerprint?.repro_markers ?? 0)
       acc[categoryName].issues.push({
         title: item.title,
         impact: item.impact_score,
         sentiment,
+        repro_markers: reproMarkers,
       })
       acc[categoryName].sentimentCounts[sentiment] += 1
       acc[categoryName].totalFrequency += item.frequency_count
       acc[categoryName].totalImpact += item.impact_score
+      // Lane-level actionability is the mean of per-row actionability (the
+      // per-row score already blends impact/frequency/error-code/repro/
+      // source-diversity via the shared helper in /api/stats). We do NOT
+      // recompute the formula here — avoids a duplicate source of truth.
+      acc[categoryName].totalActionability += Number(item.actionability ?? 0)
+      acc[categoryName].totalReproMarkers += reproMarkers
 
       // v3 fingerprint roll-up: top error codes and LLM subcategories
       // per lane so the tooltip can read "Top errors: ENOENT (4),
@@ -164,7 +192,16 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
         const avgImpact = issueCount > 0 ? lane.totalImpact / issueCount : 0
         const normalizedImpact = avgImpact / 10
         const normalizedFrequency = lane.totalFrequency / maxFrequency
+        // priorityScore retained for back-compat and for zone classification
+        // (Escalate / Watch / Monitor thresholds were tuned against this
+        // 0..100 blend). New UI copy uses `actionabilityScore`.
         const priorityScore = Math.round((normalizedImpact * 0.65 + normalizedFrequency * 0.35) * 100)
+        // Actionability as shown in the tooltip: mean of per-row
+        // actionability, rendered as /100 to match the priorityScore visual
+        // scale. The API returns it pre-normalized in [0,1].
+        const actionabilityMean = issueCount > 0 ? lane.totalActionability / issueCount : 0
+        const actionabilityScore = Math.round(actionabilityMean * 100)
+        const avgReproMarkers = issueCount > 0 ? lane.totalReproMarkers / issueCount : 0
 
         const mix = SENTIMENT_ORDER.reduce<Record<SentimentKey, number>>(
           (acc, sentiment) => {
@@ -175,6 +212,10 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
         )
 
         const negativeShare = issueCount > 0 ? lane.sentimentCounts.negative / issueCount : 0
+        // Zone classification uses priorityScore — the escalate/watch/monitor
+        // thresholds predate actionability and migrating them requires a
+        // separate tuning pass. Keeping the zone semantics stable while
+        // changing the ranking axis keeps the visual regression minimal.
         const zone = getZone(priorityScore, negativeShare)
         const dominant = getDominantSentiment(lane.sentimentCounts, issueCount)
 
@@ -194,13 +235,15 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           .map(([sub, count]) => ({ sub, count }))
 
         return {
-          x: priorityScore,
+          x: actionabilityScore,
           y: index,
           z: 220,
           category: lane.category,
           avgImpact: Number(avgImpact.toFixed(1)),
           issueCount,
           priorityScore,
+          actionabilityScore,
+          avgReproMarkers: Number(avgReproMarkers.toFixed(1)),
           sentimentCounts: lane.sentimentCounts,
           sentimentMix: mix,
           negativeShare,
@@ -211,11 +254,17 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           topSubcategories,
         }
       })
-      .sort((a, b) => b.priorityScore - a.priorityScore)
+      // Rank by actionability first (docs/SCORING.md §10.1). When two lanes
+      // tie on actionability (common for lanes without fingerprint signal),
+      // priorityScore breaks the tie so the visual regression on pre-PR
+      // rows stays minimal.
+      .sort(
+        (a, b) => b.actionabilityScore - a.actionabilityScore || b.priorityScore - a.priorityScore,
+      )
       .map((lane, index) => ({ ...lane, y: index }))
 
     const avg = processed.length > 0
-      ? processed.reduce((sum, lane) => sum + lane.priorityScore, 0) / processed.length
+      ? processed.reduce((sum, lane) => sum + lane.actionabilityScore, 0) / processed.length
       : 50
 
     // Group categories by zone for the actionable legend
@@ -236,7 +285,7 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
           <div>
             <CardTitle className="text-lg font-semibold text-foreground">Priority Matrix</CardTitle>
             <p className="text-sm text-muted-foreground mt-1">
-              Categories ranked by blended priority (65% impact + 35% frequency). Bars show sentiment distribution.
+              Ranked by actionability — impact, code-addressability, repro quality, and cross-source confirmation. Click an error-code chip to drill into its observations.
             </p>
           </div>
           <div className="flex gap-3 text-xs text-muted-foreground">
@@ -288,7 +337,7 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
               <XAxis
                 type="number"
                 dataKey="x"
-                name="Priority Score"
+                name="Actionability Score"
                 domain={[0, 100]}
                 stroke="hsl(var(--muted-foreground))"
                 tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
@@ -366,13 +415,20 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
                         </div>
                         
                         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                          <span className="text-muted-foreground">Priority Score</span>
-                          <span className="font-medium text-foreground">{lane.priorityScore}/100</span>
+                          <span className="text-muted-foreground">Actionability</span>
+                          <span className="font-medium text-foreground">{lane.actionabilityScore}/100</span>
                           <span className="text-muted-foreground">Issue Count</span>
                           <span className="font-medium text-foreground">{lane.issueCount}</span>
                           <span className="text-muted-foreground">Avg Impact</span>
                           <span className="font-medium text-foreground">{lane.avgImpact}/10</span>
+                          <span className="text-muted-foreground">Avg Repro Markers</span>
+                          <span className="font-medium text-foreground">{lane.avgReproMarkers}/3</span>
+                          <span className="text-muted-foreground">Priority Score (legacy)</span>
+                          <span className="font-medium text-muted-foreground">{lane.priorityScore}/100</span>
                         </div>
+                        <p className="pt-1 text-[10px] text-muted-foreground border-t border-border">
+                          Actionability = 55% impact + 20% frequency + 10% error-code + 8% repro + 7% source diversity. Repro markers contribute directly; they are not advisory.
+                        </p>
                         
                         <div className="pt-1 border-t border-border">
                           <p className="text-xs text-muted-foreground mb-1">Sentiment breakdown:</p>
@@ -398,17 +454,36 @@ export function PriorityMatrix({ data }: PriorityMatrixProps) {
 
                         {(lane.topErrorCodes?.length ?? 0) > 0 && (
                           <div className="pt-1 border-t border-border">
-                            <p className="text-xs text-muted-foreground mb-1">Top error codes:</p>
+                            <p className="text-xs text-muted-foreground mb-1">Top error codes (click to filter):</p>
                             <div className="flex flex-wrap gap-1">
-                              {lane.topErrorCodes.map((e: { code: string; count: number }) => (
-                                <Badge
-                                  key={e.code}
-                                  variant="destructive"
-                                  className="font-mono text-[10px]"
-                                >
-                                  {e.code} · {e.count}
-                                </Badge>
-                              ))}
+                              {lane.topErrorCodes.map((e: { code: string; count: number }) =>
+                                onFilterChange ? (
+                                  <button
+                                    key={e.code}
+                                    type="button"
+                                    onClick={() =>
+                                      onFilterChange({ compound_key: `err:${e.code}` })
+                                    }
+                                    className="inline-flex rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    aria-label={`Drill into ${e.code}`}
+                                  >
+                                    <Badge
+                                      variant="outline"
+                                      className="font-mono text-[10px] border-destructive/60 text-destructive"
+                                    >
+                                      {e.code} · {e.count}
+                                    </Badge>
+                                  </button>
+                                ) : (
+                                  <Badge
+                                    key={e.code}
+                                    variant="outline"
+                                    className="font-mono text-[10px] border-destructive/60 text-destructive"
+                                  >
+                                    {e.code} · {e.count}
+                                  </Badge>
+                                ),
+                              )}
                             </div>
                           </div>
                         )}

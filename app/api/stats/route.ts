@@ -5,6 +5,10 @@ import {
   computeCompetitiveMentions,
   summarizeCompetitiveMentions,
 } from "@/lib/analytics/competitive"
+import {
+  computeActionability,
+  computeActionabilityBreakdown,
+} from "@/lib/analytics/actionability"
 
 type Sentiment = "positive" | "negative" | "neutral"
 
@@ -244,31 +248,73 @@ export async function GET(request: NextRequest) {
   // fingerprint block is forwarded so the dashboard can render the
   // layered regex → LLM signal panel per cluster (see
   // components/dashboard/signal-layers.tsx).
-  const priorityMatrix = rows.map((r: any) => ({
-    id: r.observation_id,
-    title: r.title,
-    content: r.content ?? null,
-    url: r.url ?? null,
-    impact_score: r.impact_score ?? 0,
-    frequency_count: r.frequency_count ?? 1,
-    sentiment: r.sentiment ?? "neutral",
-    category: r.category_id ? categoryById.get(r.category_id) : null,
-    fingerprint: {
+  //
+  // Per-row `actionability` (outcome D) replaces the legacy `priorityScore`
+  // as the matrix's ranking authority. `priorityScore` is retained on the
+  // payload for back-compat with any consumer that keyed on it. The per-
+  // cluster `source_diversity` input is fetched from the
+  // `v_cluster_source_diversity` view (added in migration 014) — one
+  // small grouped read regardless of MV size, instead of reconstructing
+  // cross-source counts per-row.
+  const sourceDiversityByCluster = await fetchClusterSourceDiversity(supabase, rows)
+  const priorityMatrix = rows.map((r: any) => {
+    const impactScore = Number(r.impact_score ?? 0)
+    const frequencyCount = Number(r.frequency_count ?? 1)
+    const reproMarkers = Number(r.repro_markers ?? 0)
+    const sourceDiversity = r.cluster_id
+      ? sourceDiversityByCluster.get(r.cluster_id) ?? 1
+      : 1
+    const actionability = computeActionability({
+      impact_score: impactScore,
+      frequency_count: frequencyCount,
       error_code: r.error_code ?? null,
-      top_stack_frame: r.top_stack_frame ?? null,
-      top_stack_frame_hash: r.top_stack_frame_hash ?? null,
-      cli_version: r.cli_version ?? null,
-      os: r.fp_os ?? null,
-      shell: r.fp_shell ?? null,
-      editor: r.fp_editor ?? null,
-      model_id: r.model_id ?? null,
-      repro_markers: r.repro_markers ?? 0,
-      keyword_presence: r.fp_keyword_presence ?? 0,
-      llm_subcategory: r.llm_subcategory ?? null,
-      llm_primary_tag: r.llm_primary_tag ?? null,
-      algorithm_version: r.fingerprint_algorithm_version ?? null,
-    },
-  }))
+      repro_markers: reproMarkers,
+      source_diversity: sourceDiversity,
+    })
+    const actionabilityBreakdown = computeActionabilityBreakdown({
+      impact_score: impactScore,
+      frequency_count: frequencyCount,
+      error_code: r.error_code ?? null,
+      repro_markers: reproMarkers,
+      source_diversity: sourceDiversity,
+    })
+    // Legacy blended score — kept so any existing consumer that keyed on
+    // `priorityScore` keeps rendering identically. New UI surfaces should
+    // prefer `actionability` (see docs/SCORING.md §10.1).
+    const priorityScore = Math.round(
+      ((impactScore / 10) * 0.65 + Math.min(frequencyCount / 10, 1) * 0.35) * 100,
+    )
+    return {
+      id: r.observation_id,
+      title: r.title,
+      content: r.content ?? null,
+      url: r.url ?? null,
+      impact_score: impactScore,
+      frequency_count: frequencyCount,
+      source_diversity: sourceDiversity,
+      actionability,
+      actionability_breakdown: actionabilityBreakdown,
+      priorityScore,
+      sentiment: r.sentiment ?? "neutral",
+      cluster_key_compound: r.cluster_key_compound ?? null,
+      category: r.category_id ? categoryById.get(r.category_id) : null,
+      fingerprint: {
+        error_code: r.error_code ?? null,
+        top_stack_frame: r.top_stack_frame ?? null,
+        top_stack_frame_hash: r.top_stack_frame_hash ?? null,
+        cli_version: r.cli_version ?? null,
+        os: r.fp_os ?? null,
+        shell: r.fp_shell ?? null,
+        editor: r.fp_editor ?? null,
+        model_id: r.model_id ?? null,
+        repro_markers: reproMarkers,
+        keyword_presence: r.fp_keyword_presence ?? 0,
+        llm_subcategory: r.llm_subcategory ?? null,
+        llm_primary_tag: r.llm_primary_tag ?? null,
+        algorithm_version: r.fingerprint_algorithm_version ?? null,
+      },
+    }
+  })
 
   // 6-day window for realtime insights and competitive mentions. In as_of
   // mode the window is anchored at the as_of point, not now().
@@ -328,4 +374,38 @@ export async function GET(request: NextRequest) {
     lastScrape,
     asOf: asOf ? asOf.toISOString() : null,
   })
+}
+
+// Per-cluster source diversity feeds the 7% source-diversity term in the
+// actionability score. We read the v_cluster_source_diversity view added
+// in migration 014 rather than re-aggregating mv_observation_current here
+// so the math stays in one place. If the view isn't available yet (e.g. a
+// deploy that ran before 014), the map falls back empty and the
+// actionability contribution degrades gracefully to 0 — never a hard error.
+async function fetchClusterSourceDiversity(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  rows: any[],
+): Promise<Map<string, number>> {
+  const clusterIds = new Set<string>()
+  for (const r of rows) if (r.cluster_id) clusterIds.add(r.cluster_id as string)
+  if (clusterIds.size === 0) return new Map()
+
+  const { data, error } = await supabase
+    .from("v_cluster_source_diversity")
+    .select("cluster_id, source_diversity")
+    .in("cluster_id", [...clusterIds])
+
+  if (error) {
+    // The view is additive — a miss doesn't corrupt the matrix, it just
+    // removes the bonus term. Log and carry on.
+    console.warn("[stats] v_cluster_source_diversity read failed:", error.message)
+    return new Map()
+  }
+
+  return new Map<string, number>(
+    ((data ?? []) as Array<{ cluster_id: string; source_diversity: number | null }>).map((row) => [
+      row.cluster_id,
+      Math.max(1, Number(row.source_diversity) || 1),
+    ]),
+  )
 }

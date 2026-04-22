@@ -18,6 +18,7 @@ import { SentimentChart } from "@/components/dashboard/sentiment-chart"
 import { SourceChart } from "@/components/dashboard/source-chart"
 import { TrendChart } from "@/components/dashboard/trend-chart"
 import { PriorityMatrix } from "@/components/dashboard/priority-matrix"
+import { FingerprintSurgeCard } from "@/components/dashboard/fingerprint-surge-card"
 import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
 import { IssuesTable } from "@/components/dashboard/issues-table"
 import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
@@ -30,6 +31,7 @@ import {
   useScrape,
   useClassifications,
   useClassificationStats,
+  useFingerprintSurges,
 } from "@/hooks/use-dashboard-data"
 import { formatDistanceToNow } from "date-fns"
 
@@ -61,6 +63,7 @@ function DashboardContent() {
     sentiment?: string
     sortBy?: string
     order?: string
+    compound_key?: string
   }>({})
 
   const { stats, isLoading: statsLoading, isError: statsError, refresh: refreshStats } = useDashboardStats({
@@ -69,7 +72,10 @@ function DashboardContent() {
     asOf: asOf || undefined,
   })
   const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues({
-    ...issueFilters,
+    sentiment: issueFilters.sentiment,
+    sortBy: issueFilters.sortBy,
+    order: issueFilters.order,
+    compound_key: issueFilters.compound_key,
     days: globalDays || undefined,
     category: globalCategory === "all" ? undefined : globalCategory,
     asOf: asOf || undefined,
@@ -82,12 +88,19 @@ function DashboardContent() {
   const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats({
     asOf: asOf || undefined,
   })
+  const { data: fingerprintSurges, refresh: refreshFingerprintSurges } = useFingerprintSurges(24)
 
   const handleRefresh = async () => {
     setIsRefreshing(true)
     try {
       await scrape()
-      await Promise.all([refreshStats(), refreshIssues(), refreshClassifications(), refreshClassificationStats()])
+      await Promise.all([
+        refreshStats(),
+        refreshIssues(),
+        refreshClassifications(),
+        refreshClassificationStats(),
+        refreshFingerprintSurges(),
+      ])
     } catch (error) {
       console.error("Failed to refresh:", error)
     } finally {
@@ -97,6 +110,17 @@ function DashboardContent() {
 
   const handleFilterChange = (newFilters: typeof issueFilters) => {
     setIssueFilters((prev) => ({ ...prev, ...newFilters }))
+    // Any fingerprint drill-down should land the user on the issues tab
+    // content. The issues table lives on the dashboard tab, so we scroll
+    // it into view rather than switching tabs.
+    if (newFilters.compound_key !== undefined && typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        document.getElementById("issues-table-anchor")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        })
+      })
+    }
   }
 
   const handleNavigateToCategory = (slug: string) => {
@@ -298,9 +322,19 @@ function DashboardContent() {
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
               {/* Hero Insight Block - The "Aha" moment */}
-              <HeroInsight 
+              <HeroInsight
                 topInsight={heroInsight}
                 onNavigateToCategory={handleNavigateToCategory}
+              />
+
+              {/* Fingerprint Surge Card — answers "is something breaking
+                  right now?" in the 5-second dashboard scan. Clicking the
+                  drill-in button feeds a compound_key filter into the
+                  issues table below. */}
+              <FingerprintSurgeCard
+                data={fingerprintSurges}
+                windowHours={24}
+                onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
               />
 
               {/* Secondary KPI Cards - Insight-first design */}
@@ -364,7 +398,10 @@ function DashboardContent() {
               </div>
 
               {/* Priority Matrix - Actionable view */}
-              <PriorityMatrix data={stats.priorityMatrix} />
+              <PriorityMatrix
+                data={stats.priorityMatrix}
+                onFilterChange={handleFilterChange}
+              />
 
               {/* Real-time insights + competitive mentions */}
               <div className="grid gap-6 lg:grid-cols-2">
@@ -381,15 +418,18 @@ function DashboardContent() {
               )}
 
               {/* Issues Table - Deep dive zone */}
-              <IssuesTable
-                issues={issues}
-                isLoading={issuesLoading}
-                globalTimeLabel={globalTimeLabel}
-                globalCategoryLabel={globalCategoryLabel}
-                observationCount={issues.length}
-                canonicalCount={stats?.totalIssues || issues.length}
-                onFilterChange={handleFilterChange}
-              />
+              <div id="issues-table-anchor" className="scroll-mt-20">
+                <IssuesTable
+                  issues={issues}
+                  isLoading={issuesLoading}
+                  globalTimeLabel={globalTimeLabel}
+                  globalCategoryLabel={globalCategoryLabel}
+                  observationCount={issues.length}
+                  canonicalCount={stats?.totalIssues || issues.length}
+                  onFilterChange={handleFilterChange}
+                  activeCompoundKey={issueFilters.compound_key}
+                />
+              </div>
             </TabsContent>
 
             {/* AI Classifications Tab */}
