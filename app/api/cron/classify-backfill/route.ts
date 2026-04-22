@@ -1,40 +1,29 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { processObservationClassificationQueue } from "@/lib/classification/pipeline"
-import {
-  buildBackfillCandidates,
-  type BackfillSourceRow,
-} from "@/lib/classification/backfill-candidates"
-import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
+import { runClassifyBackfill } from "@/lib/classification/run-backfill"
+import { logServerError } from "@/lib/error-tracking/server-logger"
 
 // Daily Vercel-cron entry that catches up the long tail of unclassified
 // high-impact observations the ingest-time pipeline never reached
 // (pre-fingerprint backfill rows, ingest-time classifier failures, etc.).
 //
-// The ingest pipeline (lib/scrapers/index.ts → processObservationClassificationQueue)
-// only enqueues NEW observations; rows that existed before the classifier
-// was wired up — or whose first attempt errored — silently accreted as
-// "high impact, no LLM signal". This route closes that gap by walking
-// mv_observation_current for the highest-impact unclassified canonical
-// observations and routing them through the same queue with the dedupe
-// guard engaged (reclassifyExisting=false). Non-canonical members are
-// skipped because cluster-level surfaces (Priority Matrix, AI tab
-// triage) read off the canonical row; classifying members redundantly
-// would burn ~$0.04 each without changing what the dashboard shows.
+// The orchestration (mv_observation_current query → buildBackfillCandidates
+// → processObservationClassificationQueue → MV refresh) lives in
+// lib/classification/run-backfill.ts and is shared with the admin
+// one-shot route /api/admin/classify-backfill (BUGS.md N-10). This file
+// owns only the Vercel-cron-specific surface: CRON_SECRET auth,
+// CLASSIFY_BACKFILL_DISABLED kill switch, scrape_logs(source_id=null)
+// audit row, and OPENAI_API_KEY precondition.
 //
 // Budget: DEFAULT_LIMIT canonicals/run × ~3-5s/call must fit under
 // Vercel's plan-specific maxDuration (Hobby caps at 60s; Pro at 300s).
-// 10/run leaves headroom on Hobby; bump via ?limit= when on Pro.
-// Clearing a backlog of N canonicals at the default cap takes ~N/10
-// days — long for big backlogs, but the right knob to widen is `?limit=`
-// (or the admin one-shot route tracked as BUGS.md N-9), not the cron's
-// default.
+// 10/run leaves headroom on Hobby; bump via ?limit= when on Pro, or use
+// the admin panel's "Run until done" loop to clear a backlog.
 //
-// Run summary is logged to scrape_logs(source_id=null) so the admin
-// surface and BUGS.md N-10 follow-up can distinguish backfill activity
-// from scrape activity. /api/stats explicitly excludes source_id=null
-// rows from the "Last sync" chip so backfill runs don't masquerade as
-// scrapes.
+// Run summary is logged to scrape_logs(source_id=null) so admin surfaces
+// can distinguish backfill activity from scrape activity. /api/stats
+// explicitly excludes source_id=null rows from the "Last sync" chip so
+// backfill runs don't masquerade as scrapes.
 //
 // Kill switch: set CLASSIFY_BACKFILL_DISABLED=1 to short-circuit
 // without unsetting OPENAI_API_KEY (which would also break the ingest
@@ -49,24 +38,6 @@ export const maxDuration = 60
 
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 100
-const MIN_IMPACT_SCORE = 6
-
-const SELECT_COLS = [
-  "observation_id",
-  "title",
-  "content",
-  "url",
-  "source_id",
-  "cli_version",
-  "fp_os",
-  "fp_shell",
-  "fp_editor",
-  "model_id",
-  "repro_markers",
-  "llm_classified_at",
-  "impact_score",
-  "published_at",
-].join(", ")
 
 export async function GET(request: NextRequest) {
   if (process.env.CLASSIFY_BACKFILL_DISABLED === "1") {
@@ -138,101 +109,29 @@ export async function GET(request: NextRequest) {
       .eq("id", log.id)
   }
 
-  // Restrict to canonical observations only. Cluster-level dashboard
-  // surfaces (Priority Matrix bubbles, AI tab cluster groupings, hero
-  // insight) read off the canonical row; classifying a non-canonical
-  // member would burn ~$0.04 per call without making any of those
-  // surfaces light up. Per-observation classification of members is
-  // still available on demand via /api/observations/[id]/classify.
-  const { data: rows, error: queryErr } = await supabase
-    .from("mv_observation_current")
-    .select(SELECT_COLS)
-    .is("llm_classified_at", null)
-    .eq("is_canonical", true)
-    .gte("impact_score", MIN_IMPACT_SCORE)
-    .order("impact_score", { ascending: false })
-    .order("published_at", { ascending: false, nullsFirst: false })
-    .limit(limit)
+  try {
+    const result = await runClassifyBackfill(supabase, { limit })
 
-  if (queryErr) {
-    await finalize({ status: "failed", error_message: queryErr.message })
-    logServerError("classify-backfill", "query_failed", queryErr)
-    return NextResponse.json({ error: queryErr.message }, { status: 500 })
-  }
-
-  const observations = (rows ?? []) as unknown as BackfillSourceRow[]
-  if (observations.length === 0) {
-    await finalize({ status: "completed", issues_found: 0, issues_added: 0 })
-    return NextResponse.json({
-      candidates: 0,
-      classified: 0,
-      skipped: 0,
-      failed: 0,
-      refreshedMvs: false,
+    await finalize({
+      status: "completed",
+      issues_found: result.attempted,
+      issues_added: result.classified,
+      ...(result.failures.length > 0
+        ? { error_message: `${result.failures.length} classification failures` }
+        : {}),
     })
+
+    return NextResponse.json({
+      candidates: result.candidates,
+      classified: result.classified,
+      skipped: result.skipped,
+      failed: result.failed,
+      refreshedMvs: result.refreshedMvs,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await finalize({ status: "failed", error_message: message })
+    logServerError("classify-backfill", "run_failed", error)
+    return NextResponse.json({ error: message }, { status: 500 })
   }
-
-  const sourceIds = Array.from(
-    new Set(
-      observations
-        .map((row) => row.source_id)
-        .filter((id): id is string => Boolean(id)),
-    ),
-  )
-  const slugById = new Map<string, string>()
-  if (sourceIds.length > 0) {
-    const { data: sources, error: srcErr } = await supabase
-      .from("sources")
-      .select("id, slug")
-      .in("id", sourceIds)
-    if (srcErr) {
-      await finalize({ status: "failed", error_message: srcErr.message })
-      logServerError("classify-backfill", "sources_lookup_failed", srcErr)
-      return NextResponse.json({ error: srcErr.message }, { status: 500 })
-    }
-    for (const row of sources ?? []) {
-      slugById.set(row.id as string, row.slug as string)
-    }
-  }
-
-  const candidates = buildBackfillCandidates(observations, slugById)
-
-  logServer({
-    component: "classify-backfill",
-    event: "queue_started",
-    level: "info",
-    data: { candidates: candidates.length, limit },
-  })
-
-  const result = await processObservationClassificationQueue(supabase, candidates, {
-    reclassifyExisting: false,
-  })
-
-  // Refresh MVs so mv_observation_current's joined llm_* columns reflect
-  // the new classifications on the next dashboard tick. Mirrors the
-  // post-scrape refresh in lib/scrapers/index.ts → runAllScrapers.
-  let refreshedMvs = false
-  const { error: refreshErr } = await supabase.rpc("refresh_materialized_views")
-  if (refreshErr) {
-    logServerError("classify-backfill", "mv_refresh_failed", refreshErr)
-  } else {
-    refreshedMvs = true
-  }
-
-  await finalize({
-    status: "completed",
-    issues_found: result.attempted,
-    issues_added: result.classified,
-    ...(result.failures.length > 0
-      ? { error_message: `${result.failures.length} classification failures` }
-      : {}),
-  })
-
-  return NextResponse.json({
-    candidates: result.attempted,
-    classified: result.classified,
-    skipped: result.skipped,
-    failed: result.failures.length,
-    refreshedMvs,
-  })
 }
