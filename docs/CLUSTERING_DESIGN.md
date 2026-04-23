@@ -137,12 +137,29 @@ Embedding and semantic labeling use algorithm-version tags (`observation_embeddi
 
 ### API
 - `/api/classify` now delegates to shared classification pipeline code, reducing drift between manual and automated classification paths.
+- `/api/classifications` joins each response row to its observation's current cluster membership and surfaces `cluster_id`, `cluster_key`, `cluster_label`, `cluster_label_confidence`, and `cluster_size`. Implementation fans out two extra Supabase queries against `clusters` and `cluster_members` (filtered by `detached_at IS NULL`) after the observation fetch resolves.
 
-### UI
-- Triage UI now distinguishes:
+### UI — vocabulary lock
+The word "cluster" is reserved for the Layer-A semantic/title-hash clustering documented here. Everything else in the triage UI uses different language so the three layers stay legible at a glance:
+
+| Surface | Name in code and UI | What it actually is |
+| --- | --- | --- |
+| Global slider | **Category focus** | 1-of-N heuristic category filter (no grouping) |
+| Triage chip strip | **Top triage groups** | Client-side group-by on `(effective_category, subcategory)` |
+| Triage chip strip (second row) | **Top semantic clusters** | This document — Layer-A clusters rendered from the new API fields |
+| Priority Matrix | **Lanes** | Client-side group-by on heuristic `category.name` |
+
+Historical `clusterFilter` / "TOP CLASSIFICATION CLUSTERS" / "Clustered classification lanes" copy and identifiers were renamed to the table above to eliminate collision; the Vercel Analytics event key `cluster_filter` is retained for back-compat and populated from the renamed `groupFilter` state.
+
+### UI — triage behavior
+- Triage UI distinguishes:
   - pipeline-empty (no classifications generated yet),
   - scope-empty (filters remove existing records).
-- Cluster controls are disabled when no clusters exist, with explicit tooltip guidance.
+- Group filter controls are disabled when no groups exist, with explicit tooltip guidance.
+- The semantic-cluster chip strip only renders when at least one in-scope classification has `cluster_id != null`. Records without cluster membership (embedding failed, below-threshold similarity, or clustering not yet run) are simply invisible to the chip strip.
+- Cluster labels render as **"Unlabelled cluster"** when `cluster_label` is null. Raw `cluster_key` values (`semantic:<digest>` or `title:<md5>`) are implementation detail and surface only through a `title=` attribute tooltip — never as user-facing copy.
+- The triage detail panel shows a "Semantic cluster" block with label, member count, and confidence (2dp) whenever the selected record has a `cluster_id`.
+- The group filter and the semantic-cluster filter **compose with AND**: a record must match both to appear in the triage table. The scoped-empty state names the filter(s) to clear so reviewers can widen the view without guessing.
 
 ---
 

@@ -94,8 +94,35 @@ export async function GET(request: NextRequest) {
     observationIds.length
       ? supabase
           .from("mv_observation_current")
-          .select("observation_id, title, url, sentiment")
+          .select("observation_id, title, url, sentiment, cluster_id, cluster_key")
           .in("observation_id", observationIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+
+  // Second-stage cluster fetch: distinct cluster ids from the observations
+  // above, then resolve label + active member count in two parallel queries.
+  // Kept separate from the first Promise.all because the cluster id set is
+  // not known until `observationRows` resolves.
+  const clusterIds = Array.from(
+    new Set(
+      (observationRows || [])
+        .map((o: any) => o.cluster_id)
+        .filter((v: string | null): v is string => Boolean(v)),
+    ),
+  )
+  const [{ data: clusterRows }, { data: memberRows }] = await Promise.all([
+    clusterIds.length
+      ? supabase
+          .from("clusters")
+          .select("id, cluster_key, label, label_confidence")
+          .in("id", clusterIds)
+      : Promise.resolve({ data: [] as any[] }),
+    clusterIds.length
+      ? supabase
+          .from("cluster_members")
+          .select("cluster_id")
+          .in("cluster_id", clusterIds)
+          .is("detached_at", null)
       : Promise.resolve({ data: [] as any[] }),
   ])
 
@@ -111,9 +138,24 @@ export async function GET(request: NextRequest) {
     observationMap.set(o.observation_id, o)
   }
 
+  const memberCountByCluster = new Map<string, number>()
+  for (const m of memberRows || []) {
+    memberCountByCluster.set(m.cluster_id, (memberCountByCluster.get(m.cluster_id) ?? 0) + 1)
+  }
+
+  const clusterMap = new Map<string, { label: string | null; label_confidence: number | null; size: number }>()
+  for (const c of clusterRows || []) {
+    clusterMap.set(c.id, {
+      label: c.label ?? null,
+      label_confidence: c.label_confidence ?? null,
+      size: memberCountByCluster.get(c.id) ?? 0,
+    })
+  }
+
   const withReviews = rows.map((row: any) => {
     const latest = latestReviewByClassification.get(row.id) ?? null
     const obs = row.observation_id ? observationMap.get(row.observation_id) ?? null : null
+    const cluster = obs?.cluster_id ? clusterMap.get(obs.cluster_id) ?? null : null
     return {
       ...row,
       latest_review: latest,
@@ -128,6 +170,14 @@ export async function GET(request: NextRequest) {
       source_issue_url: obs?.url ?? null,
       source_issue_title: obs?.title ?? null,
       source_issue_sentiment: obs?.sentiment ?? null,
+      // Semantic-cluster identity carried from the observation's current
+      // cluster membership. `cluster_key` can be `semantic:<digest>` or
+      // `title:<md5>` — treat as an internal id, not user-facing copy.
+      cluster_id: obs?.cluster_id ?? null,
+      cluster_key: obs?.cluster_key ?? null,
+      cluster_label: cluster?.label ?? null,
+      cluster_label_confidence: cluster?.label_confidence ?? null,
+      cluster_size: cluster?.size ?? null,
     }
   })
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { CalendarDays, Layers3 } from "lucide-react"
+import { CalendarDays, Filter } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
 
@@ -62,8 +62,8 @@ export function GlobalFilterBar({
         <div className="space-y-2 rounded-lg border border-border/60 bg-secondary/30 p-3">
           <div className="flex items-center justify-between gap-2">
             <p className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
-              <Layers3 className="h-4 w-4 text-primary" />
-              Category cluster focus
+              <Filter className="h-4 w-4 text-primary" />
+              Category focus
             </p>
             <span className="text-xs text-muted-foreground">
               {categoryOptions[categoryIndex]?.label ?? "All categories"}
@@ -80,7 +80,7 @@ export function GlobalFilterBar({
             }}
           />
           <p className="text-xs text-muted-foreground">
-            {categoryOptions[categoryIndex]?.count ?? 0} issues in selected cluster
+            {categoryOptions[categoryIndex]?.count ?? 0} issues in selected category
           </p>
         </div>
       </CardContent>
