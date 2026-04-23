@@ -25,25 +25,40 @@ interface RealtimeInsight {
 
 interface RealtimeInsightsProps {
   insights: RealtimeInsight[]
+  /** When set, the top-ranked row matching this slug is omitted (covered by the lead story). */
+  skipFirstCategorySlug?: string | null
 }
 
-export function RealtimeInsights({ insights }: RealtimeInsightsProps) {
+export function RealtimeInsights({ insights, skipFirstCategorySlug }: RealtimeInsightsProps) {
+  const displayed =
+    skipFirstCategorySlug
+      ? insights.filter((i) => i.category.slug !== skipFirstCategorySlug)
+      : insights
+
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Zap className="h-4 w-4 text-amber-500" />
-          What engineers should fix now
+          {skipFirstCategorySlug ? "Other hot themes" : "What engineers should fix now"}
         </CardTitle>
         <CardDescription>
-          Ranked from the last 72 hours by urgency (volume + momentum + impact + source diversity).
+          {skipFirstCategorySlug
+            ? "More categories from the last 72 hours (the lead story above is #1 by urgency). Ranked by volume, momentum, impact, and source diversity."
+            : "Ranked from the last 72 hours by urgency (volume + momentum + impact + source diversity)."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {insights.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No hot signals detected in the last 72 hours.</p>
+        {displayed.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {insights.length === 0
+              ? "No hot signals detected in the last 72 hours."
+              : "No additional themes beyond the lead story."}
+          </p>
         ) : (
-          insights.map((insight, index) => {
+          displayed.map((insight) => {
+            const globalRank =
+              insights.findIndex((i) => i.category.slug === insight.category.slug) + 1
             const isRising = insight.momentum >= 0
             return (
               <div
@@ -51,7 +66,7 @@ export function RealtimeInsights({ insights }: RealtimeInsightsProps) {
                 className="rounded-lg border border-border p-4"
               >
                 <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary">#{index + 1}</Badge>
+                  <Badge variant="secondary">#{globalRank}</Badge>
                   <Badge
                     className="text-white"
                     style={{ backgroundColor: insight.category.color }}

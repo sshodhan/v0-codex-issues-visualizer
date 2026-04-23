@@ -33,6 +33,7 @@ import { reviewClassification } from "@/hooks/use-dashboard-data"
 import { logClientError } from "@/lib/error-tracking/client-logger"
 import { track } from "@vercel/analytics"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { ClassificationTabStrip } from "@/components/dashboard/classification-tab-strip"
 
 interface ClassificationTriageProps {
   records: ClassificationRecord[]
@@ -41,6 +42,12 @@ interface ClassificationTriageProps {
   activeCategory: string
   timeDays: number
   onRefresh: () => Promise<unknown>
+  /** V1: original layout. V2: trust strip + heuristic vs LLM explainer. */
+  uxVariant?: "v1" | "v2"
+  lastSyncLabel: string
+  asOfActive: boolean
+  /** Issue count in global time window for the selected heuristic category (from stats breakdown). */
+  heuristicScopeIssueCount: number
 }
 
 const STATUS_OPTIONS = ["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"] as const
@@ -65,7 +72,18 @@ function hasTrustedLabel(
   return label !== null && confidence !== null && confidence >= LABEL_CONFIDENCE_SHOW_THRESHOLD
 }
 
-export function ClassificationTriage({ records, stats, isLoading, activeCategory, timeDays, onRefresh }: ClassificationTriageProps) {
+export function ClassificationTriage({
+  records,
+  stats,
+  isLoading,
+  activeCategory,
+  timeDays,
+  onRefresh,
+  uxVariant = "v2",
+  lastSyncLabel,
+  asOfActive,
+  heuristicScopeIssueCount,
+}: ClassificationTriageProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [statusOverride, setStatusOverride] = useState<string>("triaged")
   const [severityOverride, setSeverityOverride] = useState<string>("medium")
@@ -259,34 +277,58 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
     }
   }
 
+  const isV2 = uxVariant === "v2"
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-primary" />
-          Classification Triage & Reviewer Workflow
-        </CardTitle>
-        <CardDescription>
-          Grouped classification lanes make it faster to jump into dense issue pockets and review related reports in one pass. Semantic clusters (below) surface reports that share a root cause regardless of how they were categorised.
-        </CardDescription>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-xl sm:text-2xl">
+              <ShieldCheck className="h-5 w-5 text-primary" />
+              {isV2 ? "AI triage — review & clusters" : "Classification Triage & Reviewer Workflow"}
+            </CardTitle>
+            <CardDescription className={isV2 ? "mt-2 text-sm leading-relaxed max-w-3xl" : undefined}>
+              {isV2
+                ? "Each row is an LLM classification linked to public source feedback. Layer B groups (category × subcategory) and Layer A semantic clusters help you clear related items together — reviews append to an audit trail."
+                : "Grouped classification lanes make it faster to jump into dense issue pockets and review related reports in one pass. Semantic clusters (below) surface reports that share a root cause regardless of how they were categorised."}
+            </CardDescription>
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-4">
-          <div className="rounded-md border p-3">
+        {isV2 && (
+          <ClassificationTabStrip
+            lastSyncLabel={lastSyncLabel}
+            asOfActive={asOfActive}
+            timeDays={timeDays}
+            issueCountInScope={heuristicScopeIssueCount}
+            classificationRowCount={globallyFilteredRecords.length}
+          />
+        )}
+
+        <div className={`grid gap-3 sm:grid-cols-4 ${isV2 ? "rounded-lg border border-border/60 bg-card p-3 sm:p-4" : ""}`}>
+          <div className={`rounded-md border p-3 ${isV2 ? "bg-muted/20" : ""}`}>
             <p className="text-xs text-muted-foreground">Total classifications</p>
-            <p className="text-xl font-semibold">{stats?.total ?? records.length}</p>
+            <p className="text-xl font-semibold tabular-nums">{stats?.total ?? records.length}</p>
+            {isV2 && <p className="text-[10px] text-muted-foreground mt-1">In database for this app</p>}
           </div>
-          <div className="rounded-md border p-3">
+          <div className={`rounded-md border p-3 ${isV2 ? "bg-muted/20" : ""}`}>
             <p className="text-xs text-muted-foreground">In current scope</p>
-            <p className="text-xl font-semibold">{globallyFilteredRecords.length}</p>
+            <p className="text-xl font-semibold tabular-nums">{globallyFilteredRecords.length}</p>
+            {isV2 && <p className="text-[10px] text-muted-foreground mt-1">After time + category filter</p>}
           </div>
-          <div className="rounded-md border p-3">
+          <div className={`rounded-md border p-3 ${isV2 ? "bg-muted/20" : ""}`}>
             <p className="text-xs text-muted-foreground">Needs human review</p>
-            <p className="text-xl font-semibold">{stats?.needsReviewCount ?? records.filter((r) => r.needs_human_review).length}</p>
+            <p className="text-xl font-semibold tabular-nums">
+              {stats?.needsReviewCount ?? records.filter((r) => r.needs_human_review).length}
+            </p>
+            {isV2 && <p className="text-[10px] text-muted-foreground mt-1">From stats or row scan</p>}
           </div>
-          <div className="rounded-md border p-3">
+          <div className={`rounded-md border p-3 ${isV2 ? "bg-muted/20" : ""}`}>
             <p className="text-xs text-muted-foreground">Traceability coverage</p>
-            <p className="text-xl font-semibold">{stats?.traceabilityCoverage ?? 0}%</p>
+            <p className="text-xl font-semibold tabular-nums">{stats?.traceabilityCoverage ?? 0}%</p>
+            {isV2 && <p className="text-[10px] text-muted-foreground mt-1">With source link</p>}
           </div>
         </div>
 
@@ -304,10 +346,20 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
         )}
 
         {isPipelineEmpty && (
-          <div className="rounded-md border border-dashed bg-muted/30 p-4">
-            <p className="text-sm font-medium">No AI classifications generated yet.</p>
+          <div
+            className={
+              isV2
+                ? "rounded-lg border-2 border-dashed border-border bg-muted/15 p-5 space-y-2"
+                : "rounded-md border border-dashed bg-muted/30 p-4"
+            }
+          >
+            <p className={isV2 ? "text-base font-semibold" : "text-sm font-medium"}>
+              No AI classifications generated yet
+            </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              This triage queue appears empty because classification output has not been produced for this project yet.
+              {isV2
+                ? "The issues table and charts can show volume from scraped feedback while this queue stays empty — LLM rows only appear after classification runs. Check admin / cron or run a backfill when the API key and DB are configured."
+                : "This triage queue appears empty because classification output has not been produced for this project yet."}
             </p>
             <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
               <li>Run the scrape + classification job to ingest fresh source feedback.</li>
