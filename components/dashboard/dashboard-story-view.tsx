@@ -10,6 +10,7 @@ import { BookOpen, ArrowDown, ExternalLink, Layers3, TriangleAlert } from "lucid
 import { StoryCategoryAtlas } from "@/components/dashboard/story-category-atlas"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
+import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 
 type CatOpt = { value: string; label: string; count: number }
 
@@ -203,6 +204,9 @@ export function DashboardStoryView({
                   <p className="text-xs text-muted-foreground">
                     {r.count} in window · {r.classified_count} with LLM classification timestamp
                   </p>
+                  <div className="mt-1">
+                    <ClusterTrustRibbon cluster={r} />
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button

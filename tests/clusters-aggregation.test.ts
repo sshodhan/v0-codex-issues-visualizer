@@ -9,7 +9,7 @@ import {
 
 // Pure-function tests for the /api/clusters aggregation. Imports the
 // real helper so drift between test and route handler is caught by
-// `tsc`. The route calls aggregateClusters(rows, labels, {limit, samplesPerCluster});
+// `tsc`. The route calls aggregateClusters(rows, labels, [], {limit, samplesPerCluster});
 // these tests lock the invariants it's expected to maintain.
 //
 // Supersedes the client-side `computeSemanticClusters` tests from the
@@ -47,7 +47,7 @@ test("aggregateClusters groups observations by cluster_id and counts in_window",
     mkRow({ observation_id: "o2", cluster_id: "c1", cluster_key: "semantic:c1", frequency_count: 7 }),
     mkRow({ observation_id: "o3", cluster_id: "c2", cluster_key: "semantic:c2", frequency_count: 3 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result.length, 2)
   assert.equal(result.find((c) => c.id === "c1")?.in_window, 2)
   assert.equal(result.find((c) => c.id === "c2")?.in_window, 1)
@@ -58,7 +58,7 @@ test("aggregateClusters skips rows with a null cluster_id", () => {
   // invent a bucket — the route still returns such rows from the MV
   // and the helper must ignore them.
   const rows = [mkRow({ cluster_id: null, cluster_key: null })]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.deepEqual(result, [])
 })
 
@@ -70,7 +70,7 @@ test("aggregateClusters captures frequency_count as size, window-independent", (
     mkRow({ observation_id: "o1", cluster_id: "c1", cluster_key: "semantic:c1", frequency_count: 50 }),
     mkRow({ observation_id: "o2", cluster_id: "c1", cluster_key: "semantic:c1", frequency_count: 50 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result[0].size, 50)
   assert.equal(result[0].in_window, 2)
 })
@@ -83,7 +83,7 @@ test("aggregateClusters counts classified_count from llm_classified_at", () => {
     mkRow({ observation_id: "o2", cluster_id: "c1", cluster_key: "semantic:c1", llm_classified_at: null }),
     mkRow({ observation_id: "o3", cluster_id: "c1", cluster_key: "semantic:c1", llm_classified_at: "2026-04-23T00:00:00Z" }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result[0].classified_count, 2)
   assert.equal(result[0].in_window, 3)
 })
@@ -104,7 +104,7 @@ test("aggregateClusters sorts by in_window DESC with size DESC as tiebreaker", (
     mkRow({ observation_id: "o7", cluster_id: "medB", cluster_key: "semantic:medB", frequency_count: 5 }),
     mkRow({ observation_id: "o8", cluster_id: "medB", cluster_key: "semantic:medB", frequency_count: 5 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.deepEqual(
     result.map((c) => c.id),
     ["big", "medA", "medB", "small"],
@@ -120,7 +120,7 @@ test("aggregateClusters honours the limit parameter", () => {
       frequency_count: 3,
     }),
   )
-  const result = aggregateClusters(rows, [], { limit: 5, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 5, samplesPerCluster: 3 })
   assert.equal(result.length, 5)
 })
 
@@ -130,7 +130,7 @@ test("aggregateClusters drops title:<md5> singletons — pure chip noise", () =>
   const rows = [
     mkRow({ cluster_id: "t1", cluster_key: "title:abc", frequency_count: 1 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.deepEqual(result, [])
 })
 
@@ -141,7 +141,7 @@ test("aggregateClusters keeps title: clusters that accumulated >=2 members", () 
     mkRow({ observation_id: "o1", cluster_id: "td", cluster_key: "title:ddd", frequency_count: 2 }),
     mkRow({ observation_id: "o2", cluster_id: "td", cluster_key: "title:ddd", frequency_count: 2 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result.length, 1)
   assert.equal(result[0].id, "td")
 })
@@ -153,7 +153,7 @@ test("aggregateClusters keeps semantic: clusters even as singletons", () => {
   const rows = [
     mkRow({ observation_id: "o1", cluster_id: "cs", cluster_key: "semantic:cs", frequency_count: 1 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result.length, 1)
 })
 
@@ -169,7 +169,7 @@ test("aggregateClusters collects up to samplesPerCluster titles in input order",
     mkRow({ observation_id: "o-low", cluster_id: "c1", cluster_key: "semantic:c1", impact_score: 4.2, title: "Low" }),
     mkRow({ observation_id: "o-extra", cluster_id: "c1", cluster_key: "semantic:c1", impact_score: 2.0, title: "Extra" }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result[0].samples.length, 3)
   assert.deepEqual(
     result[0].samples.map((s) => s.observation_id),
@@ -181,7 +181,7 @@ test("aggregateClusters defaults a missing title to 'Untitled observation'", () 
   const rows = [
     mkRow({ cluster_id: "c1", cluster_key: "semantic:c1", title: null, frequency_count: 2 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result[0].samples[0].title, "Untitled observation")
 })
 
@@ -194,7 +194,7 @@ test("aggregateClusters joins label + confidence from the labels input", () => {
   const labels = [
     mkLabel({ id: "c1", cluster_key: "semantic:c1", label: "Repo scan hangs", label_confidence: 0.82 }),
   ]
-  const result = aggregateClusters(rows, labels, { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, labels, [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result[0].label, "Repo scan hangs")
   assert.equal(result[0].label_confidence, 0.82)
 })
@@ -207,7 +207,7 @@ test("aggregateClusters leaves label fields null when the labels input omits a c
   const rows = [
     mkRow({ cluster_id: "cOrphan", cluster_key: "semantic:cOrphan", frequency_count: 2 }),
   ]
-  const result = aggregateClusters(rows, [], { limit: 10, samplesPerCluster: 3 })
+  const result = aggregateClusters(rows, [], [], { limit: 10, samplesPerCluster: 3 })
   assert.equal(result.length, 1)
   assert.equal(result[0].label, null)
   assert.equal(result[0].label_confidence, null)

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { logServerError } from "@/lib/error-tracking/server-logger"
 import {
   aggregateClusters,
+  type ClusterHealthRow,
   type ClusterLabelRow,
   type ClusterObservationRow,
 } from "@/lib/classification/clusters"
@@ -126,9 +127,26 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    const { data: healthData, error: healthError } = clusterIds.length
+      ? await supabase
+          .from("mv_cluster_health_current")
+          .select("cluster_id, cluster_path, cluster_size, classified_count, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy")
+          .in("cluster_id", clusterIds)
+      : { data: [] as ClusterHealthRow[], error: null }
+
+    if (healthError) {
+      logServerError(
+        "api-clusters",
+        "cluster_health_fetch_failed",
+        healthError,
+        { cluster_id_count: clusterIds.length },
+      )
+    }
+
     const clusters = aggregateClusters(
       rows as ClusterObservationRow[],
       (labelData ?? []) as ClusterLabelRow[],
+      (healthData ?? []) as ClusterHealthRow[],
       { limit, samplesPerCluster: SAMPLES_PER_CLUSTER },
     )
 

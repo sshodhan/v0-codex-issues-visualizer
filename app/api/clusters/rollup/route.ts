@@ -81,15 +81,35 @@ export async function GET(request: NextRequest) {
   }
 
   const labelMap = new Map((clusterRows || []).map((c: any) => [c.id, c]))
+  const { data: healthRows, error: hErr } = await supabase
+    .from("mv_cluster_health_current")
+    .select("cluster_id, cluster_path, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy")
+    .in(
+      "cluster_id",
+      sorted.map((s) => s.id),
+    )
+
+  if (hErr) {
+    return NextResponse.json({ error: hErr.message }, { status: 500 })
+  }
+  const healthMap = new Map((healthRows || []).map((h: any) => [h.cluster_id, h]))
 
   const clusters = sorted.map((s) => {
     const meta = labelMap.get(s.id)
+    const health = healthMap.get(s.id)
     return {
       id: s.id,
       count: s.count,
       classified_count: s.classified,
+      reviewed_count: health?.reviewed_count ?? 0,
       label: meta?.label ?? null,
       label_confidence: meta?.label_confidence ?? null,
+      cluster_path: (health?.cluster_path ?? "fallback") as "semantic" | "fallback",
+      fingerprint_hit_rate: Number(health?.fingerprint_hit_rate ?? 0),
+      dominant_error_code_share: Number(health?.dominant_error_code_share ?? 0),
+      dominant_stack_frame_share: Number(health?.dominant_stack_frame_share ?? 0),
+      intra_cluster_similarity_proxy: Number(health?.intra_cluster_similarity_proxy ?? 0),
+      nearest_cluster_gap_proxy: Number(health?.nearest_cluster_gap_proxy ?? 0),
     }
   })
 

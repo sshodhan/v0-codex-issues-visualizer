@@ -55,6 +55,7 @@ import { logClientError } from "@/lib/error-tracking/client-logger"
 import { track } from "@vercel/analytics"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ClassificationTabStrip } from "@/components/dashboard/classification-tab-strip"
+import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 
 interface ClassificationTriageProps {
   records: ClassificationRecord[]
@@ -548,7 +549,12 @@ export function ClassificationTriage({
                         )}
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>{chipTitle}</TooltipContent>
+                    <TooltipContent>
+                      <div className="space-y-1">
+                        <p>{chipTitle}</p>
+                        <ClusterTrustRibbon cluster={cluster} />
+                      </div>
+                    </TooltipContent>
                   </Tooltip>
                 )
               })}
@@ -991,6 +997,7 @@ function ClusterMemberPreview({
         Sample member observations (highest impact first). Once classify-backfill runs against
         these, they'll appear in the triage table above and the classified count will rise.
       </p>
+      <ClusterTrustRibbon cluster={cluster} />
       <ul className="space-y-1 text-sm">
         {cluster.samples.map((sample) => (
           <li key={sample.observation_id} className="flex items-start gap-2">

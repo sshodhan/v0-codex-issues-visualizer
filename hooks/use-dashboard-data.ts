@@ -216,8 +216,15 @@ export interface ClusterRollupRow {
   id: string
   count: number
   classified_count: number
+  reviewed_count: number
   label: string | null
   label_confidence: number | null
+  cluster_path: "semantic" | "fallback"
+  fingerprint_hit_rate: number
+  dominant_error_code_share: number
+  dominant_stack_frame_share: number
+  intra_cluster_similarity_proxy: number
+  nearest_cluster_gap_proxy: number
 }
 
 /**
@@ -293,6 +300,13 @@ export interface ClusterSummary {
   size: number
   in_window: number
   classified_count: number
+  reviewed_count: number
+  cluster_path: "semantic" | "fallback"
+  fingerprint_hit_rate: number
+  dominant_error_code_share: number
+  dominant_stack_frame_share: number
+  intra_cluster_similarity_proxy: number
+  nearest_cluster_gap_proxy: number
   samples: ClusterSample[]
 }
 

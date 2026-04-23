@@ -1,5 +1,5 @@
 /**
- * Expected `public`-schema state after migration 014 + 015 (verifier).
+ * Expected `public`-schema state after migration 016 (cluster health read model).
  *
  * The admin "Schema verification" tab calls `get_schema_snapshot()`
  * (added by 015) and diffs the live snapshot against this manifest.
@@ -116,6 +116,8 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "mv_trend_daily",
     // 014.
     "mv_fingerprint_daily",
+    // 016.
+    "mv_cluster_health_current",
   ],
   functions: [
     // 007 — write/read RPCs the scraper pipeline depends on.
@@ -141,7 +143,7 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "record_bug_fingerprint",
     // 014.
     "fingerprint_surges",
-    // 015 (this migration).
+    // 015.
     "get_schema_snapshot",
   ],
   indexes: [
@@ -189,6 +191,9 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "idx_mv_fingerprint_daily_day_code",
     "idx_mv_fingerprint_daily_code_day",
     "idx_mv_fingerprint_daily_day",
+    // ---- mv_cluster_health_current (016) ----
+    "idx_mv_cluster_health_current_cluster",
+    "idx_mv_cluster_health_current_size",
     // ---- algorithm registry (007) ----
     "idx_algorithm_versions_one_current",
     // ---- scrape logs (002 + hand-added status filter) ----
