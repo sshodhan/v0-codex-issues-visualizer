@@ -94,13 +94,17 @@ export function FingerprintSurgeCard({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-2">
           <div className="space-y-1">
-            <CardTitle className="text-base font-semibold text-foreground flex items-center gap-2">
-              <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
-              Trending Errors
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">
-              {headline}
-              {hasAnything && <span className="text-muted-foreground/70"> · {windowLabel}</span>}
+            <div className="flex items-center gap-3">
+              <CardTitle className="text-base font-semibold text-foreground flex items-center gap-2">
+                <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
+                Trending Errors
+              </CardTitle>
+              <span className="text-xs text-muted-foreground">
+                {headline} · {windowLabel}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Current status: <span className={hasAnything ? "font-medium text-amber-600 dark:text-amber-400" : "font-medium text-emerald-600 dark:text-emerald-400"}>{hasAnything ? "attention needed" : "all clear"}</span> · Last Sync: {data?.last_synced ? new Date(data.last_synced).toLocaleString() : "—"}
             </p>
             {variant === "v2" && (
               <MethodologyTriggerButton
@@ -126,17 +130,16 @@ export function FingerprintSurgeCard({
       {open && (
         <CardContent className="space-y-4">
           {!hasAnything ? (
-            <div className="flex flex-col items-center justify-center py-6 text-center">
-              <div className="rounded-full bg-emerald-500/10 p-3 mb-3">
-                <CheckCircle2 className="h-6 w-6 text-emerald-500" />
+            <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 p-4">
+              <div className="rounded-full bg-emerald-500/10 p-2 flex-shrink-0">
+                <CheckCircle2 className="h-5 w-5 text-emerald-500" />
               </div>
-              <p className="text-sm font-medium text-foreground">No spikes detected</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Error rates are stable compared to {windowLabel}
-              </p>
-              <p className="text-xs text-muted-foreground mt-3">
-                Current status: <span className="font-medium text-emerald-600 dark:text-emerald-400">all clear</span> · Last Sync: {data?.last_synced ? new Date(data.last_synced).toLocaleString() : "—"}
-              </p>
+              <div>
+                <p className="text-sm font-medium text-foreground">No spikes detected</p>
+                <p className="text-xs text-muted-foreground">
+                  Error rates are stable compared to {windowLabel}
+                </p>
+              </div>
             </div>
           ) : (
             <>
