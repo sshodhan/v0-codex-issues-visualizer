@@ -30,6 +30,10 @@ export interface DashboardStats {
       impact_score: number
     } | null
   }>
+  /** Latest LLM `classifications.category` on MV rows in the same `totalIssues` window (v14+ /api/stats). */
+  llmCategoryBreakdown?: Array<{ name: string; count: number }>
+  llmClassifiedInWindow?: number
+  llmPendingInWindow?: number
   trendData: Array<{
     date: string
     positive: number

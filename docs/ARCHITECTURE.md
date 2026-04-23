@@ -328,6 +328,14 @@ Responsibilities:
 - Normalize Supabase relation payload shape (`firstRelation`).
 - Feed the Priority Matrix from canonical rows only (`is_canonical = true`)
   so cluster frequency is surfaced without double-counting duplicates.
+- **LLM category breakdown (Story / honest cross-compare):** the same filtered
+  canonical row set also rolls up `llm_category` from `mv_observation_current`
+  (latest classification join) when `llm_classified_at` is set, exposed as
+  `llmCategoryBreakdown`, `llmClassifiedInWindow`, and `llmPendingInWindow` on
+  the JSON response. This is **not** the same as `classificationStats.byCategory`
+  (which counts raw `classifications` rows without the MV time slice). The
+  Classifications tab can scope triage via `?llm_category=<slug>` (and optional
+  `?triage_group=<effective_category › subcategory>` URL-encoded).
 
 **Canonical-filter policy (open gap).** The Priority Matrix is canonical-
 filtered, but the other aggregates in this route (`totalIssues`,

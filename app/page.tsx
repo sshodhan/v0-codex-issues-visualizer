@@ -93,6 +93,22 @@ function DashboardContentInner() {
     return raw.length > 0 && raw.length < 4000 ? raw : undefined
   }, [searchParams])
 
+  const llmCategoryFromUrl = useMemo(() => {
+    const key = "llm_category"
+    if (!searchParams.has(key)) return undefined
+    const raw = searchParams.get(key)?.trim() ?? ""
+    if (raw === "" || raw === "all") return "all" as const
+    return raw.toLowerCase()
+  }, [searchParams])
+
+  const triageGroupFromUrl = useMemo(() => {
+    const key = "triage_group"
+    if (!searchParams.has(key)) return undefined
+    const raw = searchParams.get(key)?.trim() ?? ""
+    if (raw === "" || raw === "all") return "all" as const
+    return raw
+  }, [searchParams])
+
   const applyIssueSearchParams = useCallback(
     (patch: { clusterId?: string | null; compoundKey?: string | null }) => {
       const next = new URLSearchParams(searchParams.toString())
@@ -266,6 +282,63 @@ function DashboardContentInner() {
           block: "start",
         })
       })
+    }
+  }
+
+  const applyTriageContextParams = useCallback(
+    (patch: { llm?: string | null; group?: string | null }) => {
+      const next = new URLSearchParams(searchParams.toString())
+      if ("llm" in patch) {
+        if (patch.llm) {
+          next.set("llm_category", patch.llm)
+        } else {
+          next.delete("llm_category")
+        }
+      }
+      if ("group" in patch) {
+        if (patch.group) {
+          next.set("triage_group", patch.group)
+        } else {
+          next.delete("triage_group")
+        }
+      }
+      const qs = next.toString()
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams],
+  )
+
+  const handleTriageGroupUrl = useCallback(
+    (v: string) => {
+      applyTriageContextParams({ group: v === "all" ? null : v })
+    },
+    [applyTriageContextParams],
+  )
+
+  const handleStoryHeuristicFromAtlas = (slug: string) => {
+    setGlobalCategory(slug)
+    applyTriageContextParams({ llm: null, group: null })
+  }
+
+  const handleStoryLlmTriage = (llmCategorySlug: string) => {
+    setActiveTab("classifications")
+    applyTriageContextParams({
+      llm: llmCategorySlug === "all" ? null : llmCategorySlug,
+      group: null,
+    })
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        const el =
+          document.getElementById("triage-llm-link-scope") || document.getElementById("triage-top-groups")
+        el?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    }
+  }
+
+  const handleOpenDashboardFromStoryAtlas = () => {
+    setActiveTab("dashboard")
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }))
     }
   }
 
@@ -674,6 +747,16 @@ function DashboardContentInner() {
                 lastSyncLabel={lastScrapeTime}
                 globalTimeLabel={globalTimeLabel}
                 asOfActive={asOf != null}
+                categoryBreakdown={stats.categoryBreakdown}
+                llmCategoryBreakdown={stats.llmCategoryBreakdown ?? []}
+                llmClassifiedInWindow={stats.llmClassifiedInWindow ?? 0}
+                llmPendingInWindow={stats.llmPendingInWindow ?? 0}
+                onStoryHeuristicFromAtlas={handleStoryHeuristicFromAtlas}
+                onStoryLlmTriage={handleStoryLlmTriage}
+                onOpenDashboardFromAtlas={handleOpenDashboardFromStoryAtlas}
+                selectedLlmCategorySlug={
+                  llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : null
+                }
               />
             </TabsContent>
 
@@ -704,6 +787,20 @@ function DashboardContentInner() {
                   value: clusterIdFromUrl ? clusterIdFromUrl : "all",
                   onChange: handleTriageSemanticClusterUrl,
                 }}
+                groupControl={{
+                  value:
+                    triageGroupFromUrl === undefined
+                      ? "all"
+                      : triageGroupFromUrl === "all"
+                        ? "all"
+                        : triageGroupFromUrl,
+                  onChange: handleTriageGroupUrl,
+                }}
+                overrideLlmCategoryFilter={
+                  !llmCategoryFromUrl || llmCategoryFromUrl === "all"
+                    ? "all"
+                    : llmCategoryFromUrl
+                }
               />
             </TabsContent>
           </Tabs>

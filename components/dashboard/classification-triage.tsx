@@ -54,6 +54,16 @@ interface ClassificationTriageProps {
    * so the Story tab and triage can share one Layer-A cluster id.
    */
   semanticClusterControl?: { value: "all" | string; onChange: (id: "all" | string) => void }
+  /**
+   * When set (e.g. `?llm_category=` from Story), Layer-B scope uses this
+   * `effective_category` slug instead of the global bar — avoids heuristic/LLM mismatch.
+   * Omit or `"all"` = no override from URL.
+   */
+  overrideLlmCategoryFilter?: string
+  /**
+   * When set, triage group (`category › subcategory`) is controlled (e.g. `?triage_group=` from Story).
+   */
+  groupControl?: { value: string; onChange: (v: string) => void }
 }
 
 const STATUS_OPTIONS = ["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"] as const
@@ -95,6 +105,8 @@ export function ClassificationTriage({
   asOfActive,
   heuristicScopeIssueCount,
   semanticClusterControl,
+  groupControl,
+  overrideLlmCategoryFilter: overrideLlmFromParent,
 }: ClassificationTriageProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [statusOverride, setStatusOverride] = useState<string>("triaged")
@@ -106,7 +118,13 @@ export function ClassificationTriage({
   // `groupFilter` is the (effective_category › subcategory) triage group
   // (Layer B). `semanticClusterFilter` is the real Layer-A semantic cluster
   // id. The two compose — a record must match both to survive `triageRecords`.
-  const [groupFilter, setGroupFilter] = useState<string>("all")
+  const [internalGroupFilter, setInternalGroupFilter] = useState<string>("all")
+  const isGroupControlled = Boolean(groupControl)
+  const groupFilter = groupControl?.value ?? internalGroupFilter
+  const setGroupFilter = (v: string) => {
+    if (groupControl) groupControl.onChange(v)
+    else setInternalGroupFilter(v)
+  }
   const [internalSemanticClusterFilter, setInternalSemanticClusterFilter] = useState<string>("all")
   const isSemanticClusterControlled = Boolean(semanticClusterControl)
   const semanticClusterFilter = semanticClusterControl?.value ?? internalSemanticClusterFilter
@@ -134,9 +152,18 @@ export function ClassificationTriage({
     () => new Set(records.map((record) => record.effective_category.toLowerCase())),
     [records],
   )
+  const urlLlmRaw =
+    overrideLlmFromParent && overrideLlmFromParent.toLowerCase() !== "all"
+      ? overrideLlmFromParent.trim().toLowerCase()
+      : null
+  const useUrlLlm = Boolean(urlLlmRaw)
   const globalFilterAppliesToLlmTab =
     activeCategory === "all" || knownLlmCategorySlugs.has(activeCategory)
-  const effectiveCategoryFilter = globalFilterAppliesToLlmTab ? activeCategory : "all"
+  const effectiveCategoryFilter = useUrlLlm
+    ? (urlLlmRaw as string)
+    : globalFilterAppliesToLlmTab
+      ? activeCategory
+      : "all"
 
   const globallyFilteredRecords = useMemo(() => {
     const timeCutoff = timeDays > 0 ? subDays(new Date(), timeDays) : null
@@ -357,7 +384,18 @@ export function ClassificationTriage({
           </div>
         </div>
 
-        {!globalFilterAppliesToLlmTab && hasAnyRecords && (
+        {useUrlLlm && (
+          <div className="flex items-start gap-2 rounded-md border border-dashed border-primary/40 bg-primary/5 p-3 text-sm text-muted-foreground" id="triage-llm-link-scope">
+            <span className="text-xs font-semibold uppercase tracking-wide text-primary">LLM filter</span>
+            <p>
+              Scoping the queue by LLM <span className="font-medium">effective_category</span> from the URL (
+              <span className="font-mono text-xs text-foreground">{urlLlmRaw}</span>
+              ) — the global category bar is heuristic-only and may not match; that is expected.
+            </p>
+          </div>
+        )}
+
+        {!useUrlLlm && !globalFilterAppliesToLlmTab && hasAnyRecords && (
           <div className="flex items-start gap-2 rounded-md border border-dashed bg-muted/30 p-3 text-sm text-muted-foreground">
             <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
             <p>
@@ -378,7 +416,7 @@ export function ClassificationTriage({
           />
         )}
 
-        <div className="space-y-2 rounded-md border p-3">
+        <div className="space-y-2 rounded-md border p-3" id="triage-top-groups">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Top triage groups</p>
           <p className="text-xs text-muted-foreground">
             Virtual lanes by classified category × subcategory.

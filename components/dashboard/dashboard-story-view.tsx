@@ -7,6 +7,7 @@ import { SignalTimelineStory } from "@/components/dashboard/signal-timeline-stor
 import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
 import { BookOpen, ArrowDown, ExternalLink, Layers3, TriangleAlert } from "lucide-react"
+import { StoryCategoryAtlas } from "@/components/dashboard/story-category-atlas"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
 
@@ -34,6 +35,15 @@ interface DashboardStoryViewProps {
   lastSyncLabel: string
   globalTimeLabel: string
   asOfActive: boolean
+  /** Heuristic + LLM category breakdowns from /api/stats (same window as dashboard) */
+  categoryBreakdown: Array<{ name: string; count: number; color: string }>
+  llmCategoryBreakdown: Array<{ name: string; count: number }>
+  llmClassifiedInWindow: number
+  llmPendingInWindow: number
+  onStoryHeuristicFromAtlas: (slug: string) => void
+  onStoryLlmTriage: (llmCategorySlug: string) => void
+  onOpenDashboardFromAtlas: () => void
+  selectedLlmCategorySlug: string | null
 }
 
 export function DashboardStoryView({
@@ -58,6 +68,14 @@ export function DashboardStoryView({
   lastSyncLabel,
   globalTimeLabel,
   asOfActive,
+  categoryBreakdown,
+  llmCategoryBreakdown,
+  llmClassifiedInWindow,
+  llmPendingInWindow,
+  onStoryHeuristicFromAtlas,
+  onStoryLlmTriage,
+  onOpenDashboardFromAtlas,
+  selectedLlmCategorySlug,
 }: DashboardStoryViewProps) {
   const points = useMemo(() => buildStoryTimeline(issues), [issues])
   const topCats = useMemo(() => groupCategoriesByCount(points).slice(0, 4), [points])
@@ -104,6 +122,23 @@ export function DashboardStoryView({
           Total canonical signals in view: {statsTotalIssues}.
         </p>
       </section>
+
+      <StoryCategoryAtlas
+        globalTimeLabel={globalTimeLabel}
+        globalCategoryLabel={
+          categoryOptions.find((o) => o.value === categoryValue)?.label ?? "All categories"
+        }
+        totalIssues={statsTotalIssues}
+        heuristicRows={categoryBreakdown}
+        llmRows={llmCategoryBreakdown}
+        llmClassifiedInWindow={llmClassifiedInWindow}
+        llmPendingInWindow={llmPendingInWindow}
+        onSelectHeuristicSlug={onStoryHeuristicFromAtlas}
+        onOpenLlmInTriage={onStoryLlmTriage}
+        onOpenDashboard={onOpenDashboardFromAtlas}
+        selectedHeuristicSlug={categoryValue}
+        selectedLlmCategorySlug={selectedLlmCategorySlug}
+      />
 
       <section className="space-y-4">
         <div className="flex items-center gap-2 text-primary">
