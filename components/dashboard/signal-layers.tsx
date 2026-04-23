@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -263,6 +264,15 @@ export function SignalLayers(props: SignalLayersProps) {
           Cluster key: {compoundKey}
         </p>
       ) : null}
+      <div>
+        <Link
+          href={`/admin?tab=trace&observation=${observationId}`}
+          className="text-[11px] text-primary hover:underline"
+        >
+          Open full observation trace
+        </Link>
+      </div>
+
     </div>
   )
 

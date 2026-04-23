@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { Suspense, useEffect, useMemo, useRef, useState } from "react"
+import type { ReactNode } from "react"
 import {
   ArrowLeft,
   Loader2,
@@ -132,7 +133,31 @@ interface ClassifyBackfillBatchResult {
   refreshedMvs: boolean
 }
 
-const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "schema"] as const
+interface ObservationTraceResponse {
+  observation: {
+    observation_id: string
+    title: string
+    url: string | null
+    source_id: string | null
+    external_id: string | null
+    captured_at: string | null
+    published_at: string | null
+    cluster_id: string | null
+    cluster_key: string | null
+  }
+  availability: Record<string, boolean>
+  stages: {
+    capture: { captured_at: string | null; published_at: string | null; source_id: string | null }
+    fingerprint: { latest_computed_at: string | null; algorithm_version: string | null; total_versions: number; rows: Array<Record<string, unknown>> }
+    embedding: { latest_computed_at: string | null; algorithm_version: string | null; model: string | null; dimensions: number | null; total_versions: number; rows: Array<Record<string, unknown>> }
+    clustering: { active_cluster_id: string | null; active_cluster_key: string | null; active_cluster_size: number | null; memberships: Array<Record<string, unknown>> }
+    classification: { latest_created_at: string | null; latest_algorithm_version: string | null; latest_model_used: string | null; total_versions: number; chain_head_id: string | null; lineage: Array<Record<string, unknown>> }
+    review: { total_reviews: number; latest_reviewed_at: string | null }
+  }
+  generated_at: string
+}
+
+const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
 // `useSearchParams()` bails out of static prerender in Next.js 15 and
@@ -208,6 +233,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="backfill">Backfill</TabsTrigger>
             <TabsTrigger value="classify-backfill">Classify backfill</TabsTrigger>
             <TabsTrigger value="clustering">Clustering</TabsTrigger>
+            <TabsTrigger value="trace">Observation trace</TabsTrigger>
             <TabsTrigger value="schema">Schema verification</TabsTrigger>
           </TabsList>
           <TabsContent value="backfill">
@@ -219,11 +245,194 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="clustering">
             <ClusteringPanel secret={secret} />
           </TabsContent>
+          <TabsContent value="trace">
+            <ObservationTracePanel secret={secret} />
+          </TabsContent>
           <TabsContent value="schema">
             <SchemaVerificationPanel secret={secret} />
           </TabsContent>
         </Tabs>
       </main>
+    </div>
+  )
+}
+
+function ObservationTracePanel({ secret }: { secret: string }) {
+  const searchParams = useSearchParams()
+  const [observationId, setObservationId] = useState("")
+  const [trace, setTrace] = useState<ObservationTraceResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const fromUrl = searchParams?.get("observation") ?? ""
+    if (fromUrl) setObservationId(fromUrl)
+  }, [searchParams])
+
+  async function loadTrace() {
+    if (!observationId.trim()) {
+      setError("Provide an observation ID.")
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/observations/${observationId.trim()}/trace`, {
+        headers: authHeaders(secret),
+      })
+      if (!res.ok) {
+        setError(await explainAdminFailure(res))
+        setTrace(null)
+        return
+      }
+      setTrace((await res.json()) as ObservationTraceResponse)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load trace")
+      setTrace(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Unified observation trace</CardTitle>
+        <CardDescription>
+          Capture → fingerprint → embedding → cluster membership → classification chain → review lineage.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-col gap-2 md:flex-row">
+          <Input
+            value={observationId}
+            onChange={(e) => setObservationId(e.target.value)}
+            placeholder="Observation UUID"
+            className="font-mono"
+          />
+          <Button onClick={loadTrace} disabled={loading}>
+            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Load trace
+          </Button>
+        </div>
+        {error ? (
+          <Alert variant="destructive">
+            <AlertTitle>Trace load failed</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {trace ? (
+          <div className="space-y-3">
+            <div className="rounded-md border p-3 text-sm">
+              <p className="font-medium">{trace.observation.title}</p>
+              <p className="text-xs text-muted-foreground">{trace.observation.observation_id}</p>
+              {trace.observation.url ? (
+                <a className="text-xs text-primary hover:underline" href={trace.observation.url} target="_blank" rel="noreferrer">
+                  Open source URL
+                </a>
+              ) : null}
+            </div>
+            <TraceStage
+              title="Capture"
+              available={trace.availability.capture}
+              meta={[
+                ["captured_at", trace.stages.capture.captured_at],
+                ["published_at", trace.stages.capture.published_at],
+                ["source_id", trace.stages.capture.source_id],
+              ]}
+            />
+            <TraceStage
+              title="Fingerprint"
+              available={trace.availability.fingerprint}
+              meta={[
+                ["algorithm_version", trace.stages.fingerprint.algorithm_version],
+                ["latest_computed_at", trace.stages.fingerprint.latest_computed_at],
+                ["versions", String(trace.stages.fingerprint.total_versions)],
+              ]}
+            />
+            <TraceStage
+              title="Embedding"
+              available={trace.availability.embedding}
+              meta={[
+                ["algorithm_version", trace.stages.embedding.algorithm_version],
+                ["model", trace.stages.embedding.model],
+                ["dimensions", trace.stages.embedding.dimensions === null ? null : String(trace.stages.embedding.dimensions)],
+                ["latest_computed_at", trace.stages.embedding.latest_computed_at],
+              ]}
+            />
+            <TraceStage
+              title="Cluster membership"
+              available={trace.availability.clustering}
+              meta={[
+                ["active_cluster_id", trace.stages.clustering.active_cluster_id],
+                ["active_cluster_key", trace.stages.clustering.active_cluster_key],
+                ["active_cluster_size", trace.stages.clustering.active_cluster_size === null ? null : String(trace.stages.clustering.active_cluster_size)],
+                ["memberships", String(trace.stages.clustering.memberships.length)],
+              ]}
+            />
+            <TraceStage
+              title="Classification chain"
+              available={trace.availability.classification}
+              meta={[
+                ["latest_model", trace.stages.classification.latest_model_used],
+                ["latest_algorithm", trace.stages.classification.latest_algorithm_version],
+                ["latest_created_at", trace.stages.classification.latest_created_at],
+                ["versions", String(trace.stages.classification.total_versions)],
+              ]}
+            >
+              {trace.stages.classification.lineage.length > 0 ? (
+                <div className="space-y-2">
+                  {trace.stages.classification.lineage.map((node, idx) => (
+                    <div key={String(node.id)} className="rounded border bg-muted/40 p-2 text-xs">
+                      <p className="font-mono">{String(node.id)}</p>
+                      <p>{String(node.category ?? "unknown")} · {String(node.severity ?? "unknown")} · {String(node.status ?? "unknown")}</p>
+                      <p className="text-muted-foreground">prior: {String(node.prior_classification_id ?? "none")} {idx === 0 ? "(head)" : ""}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </TraceStage>
+            <TraceStage
+              title="Review lineage"
+              available={trace.availability.review}
+              meta={[
+                ["total_reviews", String(trace.stages.review.total_reviews)],
+                ["latest_reviewed_at", trace.stages.review.latest_reviewed_at],
+                ["generated_at", trace.generated_at],
+              ]}
+            />
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function TraceStage({
+  title,
+  available,
+  meta,
+  children,
+}: {
+  title: string
+  available: boolean
+  meta: Array<[string, string | null]>
+  children?: ReactNode
+}) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-sm font-medium">{title}</p>
+        <Badge variant={available ? "secondary" : "outline"}>{available ? "available" : "missing"}</Badge>
+      </div>
+      <div className="grid gap-1 text-xs text-muted-foreground md:grid-cols-2">
+        {meta.map(([k, v]) => (
+          <p key={k}>
+            <span className="font-mono text-foreground">{k}</span>: {v ?? "—"}
+          </p>
+        ))}
+      </div>
+      {children ? <div className="mt-2">{children}</div> : null}
     </div>
   )
 }

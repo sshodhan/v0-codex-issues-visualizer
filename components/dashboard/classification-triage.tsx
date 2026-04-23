@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useMemo, useState, useEffect, useRef } from "react"
 import {
   AlertCircle,
@@ -617,20 +618,31 @@ export function ClassificationTriage({
                       <Badge variant="secondary">{record.source_issue_sentiment || "unknown"}</Badge>
                     </TableCell>
                     <TableCell className="max-w-[320px]">
-                      {record.source_issue_url ? (
-                        <a
-                          href={record.source_issue_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-primary hover:underline"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          {record.source_issue_title || "Open source feedback"}
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">missing source URL</span>
-                      )}
+                      <div className="flex flex-col gap-1">
+                        {record.source_issue_url ? (
+                          <a
+                            href={record.source_issue_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            {record.source_issue_title || "Open source feedback"}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">missing source URL</span>
+                        )}
+                        {record.observation_id ? (
+                          <Link
+                            href={`/admin?tab=trace&observation=${record.observation_id}`}
+                            onClick={(event) => event.stopPropagation()}
+                            className="text-xs text-primary hover:underline"
+                          >
+                            Open trace
+                          </Link>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell>{record.effective_status}</TableCell>
                     <TableCell>{formatDistanceToNow(new Date(record.created_at), { addSuffix: true })}</TableCell>
@@ -657,6 +669,16 @@ export function ClassificationTriage({
               <LayerBreadcrumb record={selected} />
             </div>
             <p className="text-sm text-muted-foreground">{selected.summary}</p>
+            {selected.observation_id ? (
+              <div>
+                <Link
+                  href={`/admin?tab=trace&observation=${selected.observation_id}`}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Open unified observation trace
+                </Link>
+              </div>
+            ) : null}
 
             <PerRecordPrereqHints record={selected} />
 
