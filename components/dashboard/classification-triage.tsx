@@ -55,6 +55,7 @@ import { logClientError } from "@/lib/error-tracking/client-logger"
 import { track } from "@vercel/analytics"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ClassificationTabStrip } from "@/components/dashboard/classification-tab-strip"
+import { getConfidenceBandDisplay } from "@/lib/classification/confidence-display"
 
 interface ClassificationTriageProps {
   records: ClassificationRecord[]
@@ -297,6 +298,13 @@ export function ClassificationTriage({
     () => triageRecords.find((record) => record.id === selectedId) || null,
     [triageRecords, selectedId]
   )
+  const selectedConfidenceDisplay = selected
+    ? getConfidenceBandDisplay({
+        confidence: selected.confidence,
+        needsHumanReview: selected.effective_needs_human_review,
+        retriedWithLargeModel: selected.retried_with_large_model,
+      })
+    : null
 
   const trimmedReviewer = reviewer.trim()
   const canSubmitReview = Boolean(selected) && trimmedReviewer.length > 0
@@ -592,7 +600,13 @@ export function ClassificationTriage({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {triageRecords.map((record) => (
+                {triageRecords.map((record) => {
+                  const confidenceDisplay = getConfidenceBandDisplay({
+                    confidence: record.confidence,
+                    needsHumanReview: record.effective_needs_human_review,
+                    retriedWithLargeModel: record.retried_with_large_model,
+                  })
+                  return (
                   <TableRow
                     key={record.id}
                     onClick={() => {
@@ -612,7 +626,14 @@ export function ClassificationTriage({
                       <LayerBreadcrumb record={record} compact />
                     </TableCell>
                     <TableCell><Badge variant="outline">{record.effective_severity}</Badge></TableCell>
-                    <TableCell>{Math.round(record.confidence * 100)}%</TableCell>
+                    <TableCell>
+                      <span
+                        className="text-xs font-medium"
+                        title={confidenceDisplay.modelScoreLabel}
+                      >
+                        {confidenceDisplay.band}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       <Badge variant="secondary">{record.source_issue_sentiment || "unknown"}</Badge>
                     </TableCell>
@@ -635,13 +656,14 @@ export function ClassificationTriage({
                     <TableCell>{record.effective_status}</TableCell>
                     <TableCell>{formatDistanceToNow(new Date(record.created_at), { addSuffix: true })}</TableCell>
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
           </div>
         )}
 
-        {selected && (
+        {selected && selectedConfidenceDisplay && (
           <div className="space-y-3 rounded-lg border p-4">
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
@@ -649,9 +671,9 @@ export function ClassificationTriage({
                 <Badge
                   variant="outline"
                   className="px-1.5 py-0 text-[10px] font-mono uppercase"
-                  title="Confidence bucket — see 'How this works'"
+                  title={selectedConfidenceDisplay.modelScoreLabel}
                 >
-                  C · {Math.round(selected.confidence * 100)}%
+                  C · {selectedConfidenceDisplay.band}
                 </Badge>
               </div>
               <LayerBreadcrumb record={selected} />
@@ -1235,6 +1257,11 @@ function LayerBreadcrumb({
 // them. Returns null when there's nothing to flag.
 function PerRecordPrereqHints({ record }: { record: ClassificationRecord }) {
   const hints: Array<{ kind: "warn" | "info"; body: React.ReactNode }> = []
+  const confidenceDisplay = getConfidenceBandDisplay({
+    confidence: record.confidence,
+    needsHumanReview: record.effective_needs_human_review,
+    retriedWithLargeModel: record.retried_with_large_model,
+  })
 
   // Layer-A miss: this classification's observation has no cluster
   // attachment. Either clustering hasn't caught up, embedding failed,
@@ -1265,11 +1292,12 @@ function PerRecordPrereqHints({ record }: { record: ClassificationRecord }) {
       kind: "warn",
       body: (
         <>
-          Low confidence ({Math.round(record.confidence * 100)}%) —{" "}
+          {confidenceDisplay.band} — {confidenceDisplay.summary}{" "}
           {record.retried_with_large_model
             ? "already escalated to the large model"
             : "did not escalate to the large model"}
-          . Manual review recommended.
+          . {confidenceDisplay.nextAction}{" "}
+          <span className="text-muted-foreground">({confidenceDisplay.modelScoreLabel})</span>.
         </>
       ),
     })
