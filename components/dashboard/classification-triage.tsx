@@ -28,7 +28,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import type { ClassificationRecord, ClassificationStats } from "@/hooks/use-dashboard-data"
+import type { ClassificationRecord, ClassificationStats, ClusterSummary } from "@/hooks/use-dashboard-data"
+import { useClusters } from "@/hooks/use-dashboard-data"
 import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
 import { logClientError } from "@/lib/error-tracking/client-logger"
@@ -193,44 +194,20 @@ export function ClassificationTriage({
       .slice(0, 10)
   }, [globallyFilteredRecords])
 
-  // Real (Layer A) semantic clusters in the current scope. Groups by
-  // observation-level `cluster_id`; records without a cluster membership
-  // (clustering not yet run, embedding failed, below similarity threshold)
-  // are skipped so the chip strip only shows actionable clusters.
+  // Real (Layer A) semantic clusters in the current time window. Sourced
+  // from /api/clusters (mv_observation_current join), NOT from the
+  // classification records — so the chip strip shows up even when 0
+  // classifications exist yet. Previously the strip derived from
+  // `records.map(r => r.cluster_id)` which left clusters invisible
+  // until classify-backfill ran. See docs/CLUSTERING_DESIGN.md §7.
   //
-  // Deterministic title-hash fallback clusters (`title:<md5>` keys) are
-  // only surfaced when they have multiple members — a `title:` singleton
-  // carries no more information than the existing group-by and would
-  // render as meaningless "Unlabelled cluster · 1 obs" noise next to
-  // real semantic clusters (data-scientist review finding H2).
-  const semanticClusters = useMemo(() => {
-    type Bucket = {
-      id: string
-      key: string | null
-      label: string | null
-      label_confidence: number | null
-      size: number
-      total: number
-    }
-    const grouped = new Map<string, Bucket>()
-    for (const record of globallyFilteredRecords) {
-      if (!record.cluster_id) continue
-      const current = grouped.get(record.cluster_id) ?? {
-        id: record.cluster_id,
-        key: record.cluster_key,
-        label: record.cluster_label,
-        label_confidence: record.cluster_label_confidence,
-        size: record.cluster_size ?? 0,
-        total: 0,
-      }
-      current.total += 1
-      grouped.set(record.cluster_id, current)
-    }
-    return Array.from(grouped.values())
-      .filter((c) => (c.key?.startsWith("semantic:") ?? false) || c.size >= 2)
-      .sort((a, b) => b.total - a.total || b.size - a.size)
-      .slice(0, 10)
-  }, [globallyFilteredRecords])
+  // The API already applies the `semantic:` / `size >= 2` filter so
+  // title-hash singletons stay out of the chip strip (data-scientist
+  // review finding H2).
+  const { clusters: semanticClusters } = useClusters({
+    days: timeDays > 0 ? timeDays : undefined,
+    limit: 10,
+  })
 
   const triageRecords = useMemo(() => {
     return globallyFilteredRecords.filter((record) => {
@@ -506,11 +483,11 @@ export function ClassificationTriage({
                 const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
                   ? cluster.label!
                   : "Unlabelled cluster"
-                // Chip text makes in-scope vs total disambiguation explicit:
-                // the primary badge is the number visible right now, the
-                // outline badge (when different) is the total active
-                // membership. Tooltip spells it out for anyone unsure.
-                const chipTitle = `${cluster.total} in current view · ${cluster.size} total observation${cluster.size === 1 ? "" : "s"}`
+                // Chip text makes in-scope vs total disambiguation
+                // explicit: primary badge is observations visible in the
+                // current window, outline badge (when different) is the
+                // total active membership. Tooltip spells it out.
+                const chipTitle = `${cluster.in_window} in current view · ${cluster.size} total observation${cluster.size === 1 ? "" : "s"}${cluster.classified_count > 0 ? ` · ${cluster.classified_count} classified` : ""}`
                 return (
                   <Tooltip key={cluster.id}>
                     <TooltipTrigger asChild>
@@ -531,8 +508,8 @@ export function ClassificationTriage({
                         className="gap-2"
                       >
                         <span className="truncate max-w-[220px]">{displayLabel}</span>
-                        <Badge variant="secondary">{cluster.total} here</Badge>
-                        {cluster.size > cluster.total && (
+                        <Badge variant="secondary">{cluster.in_window} here</Badge>
+                        {cluster.size > cluster.in_window && (
                           <Badge variant="outline">{cluster.size} total</Badge>
                         )}
                       </Button>
@@ -543,6 +520,13 @@ export function ClassificationTriage({
               })}
             </div>
           </div>
+        )}
+
+        {semanticClusterFilter !== "all" && (
+          <ClusterMemberPreview
+            cluster={semanticClusters.find((c) => c.id === semanticClusterFilter) ?? null}
+            show={isPipelineEmpty || triageRecords.length === 0}
+          />
         )}
 
         {isLoading ? (
@@ -920,6 +904,68 @@ function StatusRow({
         <p className="text-xs text-muted-foreground">{label}</p>
         <p className="text-sm font-medium truncate">{value}</p>
       </div>
+    </div>
+  )
+}
+
+// Expands below the chip strip when a cluster is selected but there's
+// nothing in the triage table to filter (either pre-classification, or
+// the compound filter pruned everything). Shows the cluster's top-impact
+// member observations straight from /api/clusters so a reviewer can see
+// what's actually in the cluster instead of staring at an empty table.
+function ClusterMemberPreview({
+  cluster,
+  show,
+}: {
+  cluster: ClusterSummary | null
+  show: boolean
+}) {
+  if (!show || !cluster) return null
+  const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
+    ? cluster.label!
+    : "Unlabelled cluster"
+  const extraMembers = Math.max(0, cluster.in_window - cluster.samples.length)
+  return (
+    <div className="rounded-md border bg-muted/20 p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <Layers3 className="h-4 w-4 text-primary" />
+        <p className="text-sm font-medium">{displayLabel}</p>
+        <Badge variant="secondary">{cluster.in_window} in view</Badge>
+        {cluster.classified_count > 0 && (
+          <Badge variant="outline">{cluster.classified_count} classified</Badge>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Sample member observations (highest impact first). Once classify-backfill runs against
+        these, they'll appear in the triage table above and the classified count will rise.
+      </p>
+      <ul className="space-y-1 text-sm">
+        {cluster.samples.map((sample) => (
+          <li key={sample.observation_id} className="flex items-start gap-2">
+            <Badge variant="outline" className="mt-0.5 text-xs">
+              {sample.impact_score.toFixed(1)}
+            </Badge>
+            {sample.url ? (
+              <a
+                href={sample.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-start gap-1 text-primary hover:underline"
+              >
+                <span className="truncate">{sample.title}</span>
+                <ExternalLink className="mt-0.5 h-3 w-3 flex-shrink-0" />
+              </a>
+            ) : (
+              <span className="text-muted-foreground">{sample.title}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {extraMembers > 0 && (
+        <p className="text-xs text-muted-foreground">
+          + {extraMembers} more in this cluster not shown
+        </p>
+      )}
     </div>
   )
 }
