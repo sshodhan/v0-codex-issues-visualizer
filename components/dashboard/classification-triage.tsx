@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState, useEffect, useRef } from "react"
-import { AlertTriangle, ExternalLink, ShieldCheck, ChevronDown, History, Layers3 } from "lucide-react"
+import { AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, CircleDashed, ExternalLink, History, Layers3, ShieldCheck, XCircle } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -29,6 +29,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import type { ClassificationRecord, ClassificationStats } from "@/hooks/use-dashboard-data"
+import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
 import { logClientError } from "@/lib/error-tracking/client-logger"
 import { track } from "@vercel/analytics"
@@ -71,6 +72,11 @@ function hasTrustedLabel(
 ): boolean {
   return label !== null && confidence !== null && confidence >= LABEL_CONFIDENCE_SHOW_THRESHOLD
 }
+
+// `pickPrimaryCta` + PrerequisiteStatus shape live in
+// lib/classification/prerequisites.ts so the decision tree can be tested
+// without pulling React into node --test. See that file for the
+// precedence ordering rationale.
 
 export function ClassificationTriage({
   records,
@@ -346,26 +352,11 @@ export function ClassificationTriage({
         )}
 
         {isPipelineEmpty && (
-          <div
-            className={
-              isV2
-                ? "rounded-lg border-2 border-dashed border-border bg-muted/15 p-5 space-y-2"
-                : "rounded-md border border-dashed bg-muted/30 p-4"
-            }
-          >
-            <p className={isV2 ? "text-base font-semibold" : "text-sm font-medium"}>
-              No AI classifications generated yet
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {isV2
-                ? "The issues table and charts can show volume from scraped feedback while this queue stays empty — LLM rows only appear after classification runs. Check admin / cron or run a backfill when the API key and DB are configured."
-                : "This triage queue appears empty because classification output has not been produced for this project yet."}
-            </p>
-            <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-              <li>Run the scrape + classification job to ingest fresh source feedback.</li>
-              <li>Backfill classifications for historical feedback so older records show up here.</li>
-            </ul>
-          </div>
+          <PipelineStatusPanel
+            prereq={stats?.prerequisites ?? null}
+            timeDays={timeDays}
+            isV2={isV2}
+          />
         )}
 
         <div className="space-y-2 rounded-md border p-3">
@@ -693,5 +684,177 @@ export function ClassificationTriage({
         )}
       </CardContent>
     </Card>
+  )
+}
+
+// Rendered inline for `isPipelineEmpty` — replaces the previous generic
+// "No AI classifications yet" block with a live status breakdown and
+// deep-links into the relevant admin tabs. Data comes from
+// `/api/classifications/stats`'s `prerequisites` field; when that's null
+// (server-side fetch failed) we fall back to a terse message so the
+// reviewer still sees *something* instead of a blank card.
+function PipelineStatusPanel({
+  prereq,
+  timeDays,
+  isV2,
+}: {
+  prereq: PrerequisiteStatus | null
+  timeDays: number
+  isV2: boolean
+}) {
+  const wrapperClass = isV2
+    ? "rounded-lg border-2 border-dashed border-border bg-muted/15 p-5 space-y-4"
+    : "rounded-md border border-dashed bg-muted/30 p-4 space-y-3"
+  const headingClass = isV2 ? "text-base font-semibold" : "text-sm font-medium"
+
+  if (!prereq) {
+    return (
+      <div className={wrapperClass}>
+        <p className={headingClass}>No AI classifications generated yet</p>
+        <p className="text-sm text-muted-foreground">
+          Pipeline status unavailable — check server logs. Run a scrape + classification job and
+          refresh this queue.
+        </p>
+      </div>
+    )
+  }
+
+  const windowLabel = timeDays === 0 ? "all time" : `last ${timeDays} days`
+  const cta = pickPrimaryCta(prereq)
+  // Secondary CTA surfaces when classify-backfill is the primary but
+  // clustering is also behind — avoids making the reviewer take two
+  // round-trips through the panel. Only shown when BOTH filters are
+  // non-trivial; otherwise a single primary CTA keeps the panel terse.
+  const showSecondaryClusteringCta =
+    cta.kind === "classify-backfill" && prereq.pendingClustering > 0
+
+  const fmtWhen = (at: string | null) => {
+    if (!at) return "never"
+    try {
+      return formatDistanceToNow(new Date(at), { addSuffix: true })
+    } catch {
+      return "unknown"
+    }
+  }
+
+  return (
+    <div className={wrapperClass}>
+      <div>
+        <p className={headingClass}>No AI classifications generated yet — pipeline status</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Counts for the current window ({windowLabel}). Click an action below to trigger the
+          missing step from the admin panel.
+        </p>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <StatusRow
+          kind={prereq.observationsInWindow > 0 ? "ok" : "missing"}
+          label="Observations in scope"
+          value={`${prereq.observationsInWindow} in ${windowLabel}`}
+        />
+        <StatusRow
+          kind={progressKind(prereq.clusteredCount, prereq.observationsInWindow)}
+          label="Semantic clustering"
+          value={progressLabel(prereq.clusteredCount, prereq.observationsInWindow, "clustered")}
+        />
+        <StatusRow
+          kind={progressKind(prereq.classifiedCount, prereq.observationsInWindow)}
+          label="Classifications"
+          value={progressLabel(prereq.classifiedCount, prereq.observationsInWindow, "classified")}
+        />
+        <StatusRow
+          kind={prereq.openaiConfigured ? "ok" : "error"}
+          label="OpenAI API key"
+          value={prereq.openaiConfigured ? "configured" : "missing — backfill will 503"}
+        />
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 text-xs text-muted-foreground">
+        <span>
+          Last scrape: <span className="text-foreground">{fmtWhen(prereq.lastScrape.at)}</span>
+        </span>
+        <span>
+          Last classify-backfill:{" "}
+          <span className="text-foreground">{fmtWhen(prereq.lastClassifyBackfill.at)}</span>
+        </span>
+      </div>
+
+      {cta.kind !== "none" && (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          {cta.kind === "openai-missing" ? (
+            <div className="inline-flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <span>
+                Set <code>OPENAI_API_KEY</code> in project env before running backfill.
+              </span>
+            </div>
+          ) : (
+            <a
+              href={cta.href}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              {cta.label}
+              <ArrowRight className="h-4 w-4" />
+            </a>
+          )}
+          {showSecondaryClusteringCta && (
+            <a
+              href="/admin?tab=clustering"
+              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+            >
+              Rebuild clustering
+              <ArrowRight className="h-4 w-4" />
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function progressKind(
+  have: number,
+  total: number,
+): "ok" | "partial" | "missing" {
+  if (total === 0) return "missing"
+  if (have >= total) return "ok"
+  if (have > 0) return "partial"
+  return "missing"
+}
+
+function progressLabel(have: number, total: number, verb: string): string {
+  if (total === 0) return `0 ${verb}`
+  const pct = Math.round((have / total) * 100)
+  return `${have}/${total} ${verb} (${pct}%)`
+}
+
+function StatusRow({
+  kind,
+  label,
+  value,
+}: {
+  kind: "ok" | "partial" | "missing" | "error"
+  label: string
+  value: string
+}) {
+  const icon =
+    kind === "ok" ? (
+      <CheckCircle2 className="h-4 w-4 text-emerald-500 flex-shrink-0" />
+    ) : kind === "partial" ? (
+      <CircleDashed className="h-4 w-4 text-amber-500 flex-shrink-0" />
+    ) : kind === "error" ? (
+      <XCircle className="h-4 w-4 text-destructive flex-shrink-0" />
+    ) : (
+      <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0" />
+    )
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-border/60 bg-background/50 p-2">
+      {icon}
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-sm font-medium truncate">{value}</p>
+      </div>
+    </div>
   )
 }

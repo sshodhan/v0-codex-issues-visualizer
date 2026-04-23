@@ -1,7 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
   Loader2,
@@ -131,7 +132,39 @@ interface ClassifyBackfillBatchResult {
   refreshedMvs: boolean
 }
 
+const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "schema"] as const
+type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
+
+// `useSearchParams()` bails out of static prerender in Next.js 15 and
+// requires a Suspense boundary, or `next build` fails with a prerender
+// error on `/admin`. Keep the hook's caller inside a child component and
+// wrap it below; fallback renders the default tab so the page isn't
+// blank during the client-hydration round-trip.
 export default function AdminPage() {
+  return (
+    <Suspense fallback={<AdminPageContent initialTab="backfill" />}>
+      <AdminPageWithTab />
+    </Suspense>
+  )
+}
+
+function AdminPageWithTab() {
+  const searchParams = useSearchParams()
+  // Deep-linkable tabs: the AI triage empty-state panel links to
+  // `/admin?tab=classify-backfill` (etc.) so reviewers land directly on
+  // the panel they came to run. Unknown or missing values fall back to
+  // "backfill" so a stale link never produces a blank tab pane.
+  const initialTab = useMemo<AdminTab>(() => {
+    const raw = searchParams?.get("tab")
+    return (ADMIN_TAB_VALUES as readonly string[]).includes(raw ?? "")
+      ? (raw as AdminTab)
+      : "backfill"
+  }, [searchParams])
+
+  return <AdminPageContent initialTab={initialTab} />
+}
+
+function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
   const [secret, setSecret] = useState("")
 
   return (
@@ -170,7 +203,7 @@ export default function AdminPage() {
       </header>
 
       <main className="container mx-auto space-y-6 py-6">
-        <Tabs defaultValue="backfill" className="space-y-4">
+        <Tabs defaultValue={initialTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="backfill">Backfill</TabsTrigger>
             <TabsTrigger value="classify-backfill">Classify backfill</TabsTrigger>
