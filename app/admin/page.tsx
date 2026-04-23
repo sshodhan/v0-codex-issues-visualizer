@@ -46,7 +46,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { logClientError } from "@/lib/error-tracking/client-logger"
+import type {
+  CheckResult,
+  VerifyReport,
+} from "@/lib/schema/expected-manifest"
 
 const CHUNK_SIZE = 500
 
@@ -165,9 +170,26 @@ export default function AdminPage() {
       </header>
 
       <main className="container mx-auto space-y-6 py-6">
-        <BackfillPanel secret={secret} />
-        <ClassifyBackfillPanel secret={secret} />
-        <ClusteringPanel secret={secret} />
+        <Tabs defaultValue="backfill" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="backfill">Backfill</TabsTrigger>
+            <TabsTrigger value="classify-backfill">Classify backfill</TabsTrigger>
+            <TabsTrigger value="clustering">Clustering</TabsTrigger>
+            <TabsTrigger value="schema">Schema verification</TabsTrigger>
+          </TabsList>
+          <TabsContent value="backfill">
+            <BackfillPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="classify-backfill">
+            <ClassifyBackfillPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="clustering">
+            <ClusteringPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="schema">
+            <SchemaVerificationPanel secret={secret} />
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
   )
@@ -1365,4 +1387,255 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       </CardContent>
     </Card>
   )
+}
+
+// ============================================================================
+// Schema verification panel
+// ============================================================================
+
+type CheckWithHint = CheckResult & { hint?: string }
+
+function SchemaVerificationPanel({ secret }: { secret: string }) {
+  const [report, setReport] = useState<VerifyReport | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [showPassing, setShowPassing] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch("/api/admin/verify-schema", {
+        headers: authHeaders(secret),
+      })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const data = (await res.json()) as VerifyReport
+      setReport(data)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      logClientError(e, "admin-verify-schema-failed")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secret])
+
+  const grouped = report ? groupChecks(report.checks) : []
+  const failingCount = report?.summary.fail ?? 0
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle>Schema verification</CardTitle>
+            <CardDescription>
+              Compares the live <code>public</code> schema against the
+              expected post-014 manifest. Reports per-object pass/fail
+              for tables, views, materialized views, indexes, functions,
+              required columns, dropped objects, and the
+              algorithm-version registry.
+            </CardDescription>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={load}
+            disabled={loading}
+          >
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`}
+            />
+            Re-check
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error && (
+          <Alert variant="destructive">
+            <AlertTitle>Failed to verify schema</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {report && (
+          <>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="rounded-md border p-3">
+                <div className="text-xs text-muted-foreground">Total checks</div>
+                <div className="text-2xl font-semibold tabular-nums">
+                  {report.summary.total}
+                </div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-xs text-muted-foreground">Passing</div>
+                <div className="text-2xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {report.summary.pass}
+                </div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-xs text-muted-foreground">Failing</div>
+                <div
+                  className={`text-2xl font-semibold tabular-nums ${
+                    failingCount > 0
+                      ? "text-destructive"
+                      : "text-muted-foreground"
+                  }`}
+                >
+                  {failingCount}
+                </div>
+              </div>
+              <div className="ml-auto text-xs text-muted-foreground">
+                Snapshot:{" "}
+                <span className="font-mono">
+                  {new Date(report.snapshotAt).toLocaleString()}
+                </span>
+              </div>
+            </div>
+
+            {failingCount === 0 ? (
+              <Alert>
+                <AlertTitle>All schema objects accounted for</AlertTitle>
+                <AlertDescription>
+                  Every expected table, view, MV, index, function, column,
+                  and algorithm-version row matched the manifest. Nothing
+                  forbidden is present.
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Alert variant="destructive">
+                <AlertTitle>{failingCount} check(s) failing</AlertTitle>
+                <AlertDescription>
+                  Drift between live schema and the post-014 manifest.
+                  Apply the missing migration(s) — see{" "}
+                  <code>scripts/</code> — and re-check.
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="show-passing"
+                checked={showPassing}
+                onCheckedChange={(c) => setShowPassing(c === true)}
+              />
+              <label
+                htmlFor="show-passing"
+                className="cursor-pointer text-sm text-muted-foreground"
+              >
+                Show passing checks
+              </label>
+            </div>
+
+            <div className="space-y-4">
+              {grouped.map(([group, checks]) => {
+                const groupFails = checks.filter((c) => c.status === "fail")
+                const visible = showPassing ? checks : groupFails
+                if (visible.length === 0) return null
+                return (
+                  <div key={group} className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold capitalize">
+                        {group}
+                      </h3>
+                      <Badge variant="secondary" className="font-mono">
+                        {checks.length - groupFails.length}/{checks.length}{" "}
+                        passing
+                      </Badge>
+                    </div>
+                    <div className="overflow-x-auto rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-[140px]">Status</TableHead>
+                            <TableHead className="w-[100px]">Kind</TableHead>
+                            <TableHead>Name</TableHead>
+                            <TableHead>Expected</TableHead>
+                            <TableHead>Actual</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {visible.map((c, i) => (
+                            <TableRow key={`${c.kind}-${c.name}-${i}`}>
+                              <TableCell>
+                                <Badge
+                                  variant={
+                                    c.status === "pass"
+                                      ? "default"
+                                      : "destructive"
+                                  }
+                                >
+                                  {c.status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="font-mono text-xs text-muted-foreground">
+                                {c.kind}
+                              </TableCell>
+                              <TableCell className="font-mono text-xs">
+                                {c.name}
+                              </TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {c.expected}
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                {c.actual}
+                                {(c as CheckWithHint).hint && (
+                                  <div className="mt-1 text-muted-foreground">
+                                    {(c as CheckWithHint).hint}
+                                  </div>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// Stable group ordering keeps the report scannable: failures cluster by
+// architectural layer instead of jumping kind-to-kind.
+const GROUP_ORDER = [
+  "verifier",
+  "reference",
+  "evidence",
+  "derivation",
+  "classification",
+  "clustering",
+  "fingerprints",
+  "aggregation",
+  "algorithm",
+  "dropped",
+  "other",
+]
+
+function groupChecks(checks: CheckResult[]): Array<[string, CheckResult[]]> {
+  const map = new Map<string, CheckResult[]>()
+  for (const c of checks) {
+    const g = c.group ?? "other"
+    const arr = map.get(g) ?? []
+    arr.push(c)
+    map.set(g, arr)
+  }
+  const ordered: Array<[string, CheckResult[]]> = []
+  for (const g of GROUP_ORDER) {
+    const arr = map.get(g)
+    if (arr) ordered.push([g, arr])
+  }
+  for (const [g, arr] of map) {
+    if (!GROUP_ORDER.includes(g)) ordered.push([g, arr])
+  }
+  return ordered
 }
