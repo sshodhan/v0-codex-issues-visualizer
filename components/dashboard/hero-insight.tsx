@@ -43,8 +43,10 @@ interface HeroInsightProps {
   onExploreIssues: (categorySlug: string) => void
   /** Secondary: switch to AI Classifications for triage with category filter */
   onNavigateToCategory?: (slug: string) => void
-  /** Shown on primary CTA so users know the table may use a different time range than the 72h lead story. */
-  issueTableTimeLabel: string
+  /** Shown on primary CTA (V2) so users know the table may use a different time range than the 72h lead story. */
+  issueTableTimeLabel?: string
+  /** V1: original single CTA to classifications. V2: NYT-style + dual CTAs + methodology. */
+  variant?: "v1" | "v2"
   className?: string
 }
 
@@ -52,11 +54,13 @@ export function HeroInsight({
   topInsight,
   onExploreIssues,
   onNavigateToCategory,
-  issueTableTimeLabel,
+  issueTableTimeLabel = "",
+  variant = "v2",
   className,
 }: HeroInsightProps) {
   const [interpretationOpen, setInterpretationOpen] = useState(false)
   const [urgencyOpen, setUrgencyOpen] = useState(false)
+  const isV2 = variant === "v2"
 
   if (!topInsight) {
     return (
@@ -76,6 +80,110 @@ export function HeroInsight({
 
   const { category, categorySlug, headline, subheadline, metrics, topIssues } = topInsight
   const isRising = metrics.momentum > 0
+
+  if (!isV2) {
+    return (
+      <Card
+        className={cn(
+          "relative overflow-hidden bg-gradient-to-br from-card to-card/80 border-border shadow-lg",
+          className
+        )}
+      >
+        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[var(--negative)] via-[var(--insight-warning)] to-[var(--negative)]" />
+        <CardContent className="p-6 md:p-8">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6">
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-2 mb-4">
+                <Badge
+                  variant="outline"
+                  className="bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20 font-semibold"
+                >
+                  <AlertTriangle className="h-3 w-3 mr-1" />
+                  Needs Attention
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "font-medium",
+                    isRising
+                      ? "bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20"
+                      : "bg-[var(--positive)]/10 text-[var(--positive)] border-[var(--positive)]/20"
+                  )}
+                >
+                  {isRising ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
+                  {isRising ? "+" : ""}
+                  {metrics.momentum}% vs last period
+                </Badge>
+              </div>
+              <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-2 text-balance">{headline}</h2>
+              <p className="text-muted-foreground text-lg mb-6">{subheadline}</p>
+              <div className="flex flex-wrap gap-6 mb-6">
+                <div className="flex flex-col">
+                  <span className="text-2xl font-bold text-foreground">{metrics.total}</span>
+                  <span className="text-sm text-muted-foreground">total signals</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-2xl font-bold text-[var(--negative)]">
+                    {Math.round(metrics.negativeShare * 100)}%
+                  </span>
+                  <span className="text-sm text-muted-foreground">negative sentiment</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-2xl font-bold text-foreground">{metrics.sourcesReporting}</span>
+                  <span className="text-sm text-muted-foreground">sources reporting</span>
+                </div>
+              </div>
+              <Button
+                onClick={() => onNavigateToCategory?.(categorySlug)}
+                className="gap-2"
+                size="lg"
+              >
+                Review {category} issues
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="lg:w-96 lg:pl-6 lg:border-l lg:border-border">
+              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                Representative Issues
+              </h3>
+              <div className="space-y-3">
+                {topIssues.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No sample issues available.</p>
+                ) : (
+                  topIssues.slice(0, 3).map((issue, index) => (
+                    <div key={issue.id} className="bg-secondary/50 rounded-lg p-3 hover:bg-secondary transition-colors">
+                      <div className="flex items-start gap-2">
+                        <span className="text-xs font-bold text-muted-foreground shrink-0">#{index + 1}</span>
+                        <div className="min-w-0 flex-1">
+                          {issue.url ? (
+                            <a
+                              href={issue.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-sm font-medium text-foreground hover:text-primary line-clamp-2 flex items-start gap-1"
+                            >
+                              <span className="flex-1">{issue.title}</span>
+                              <ExternalLink className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" />
+                            </a>
+                          ) : (
+                            <p className="text-sm font-medium text-foreground line-clamp-2">{issue.title}</p>
+                          )}
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-xs text-muted-foreground">{issue.source}</span>
+                            <span className="text-xs text-muted-foreground">Impact: {issue.impact_score.toFixed(1)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <>

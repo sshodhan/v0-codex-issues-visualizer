@@ -33,6 +33,8 @@ interface FingerprintSurgeCardProps {
   onFilter: (compoundKey: string) => void
   /** Shown in header; comparison unit matches backend (day-based MV) */
   windowLabelForCopy?: string
+  /** V1: original copy only; V2: methodology sublabel + dialog */
+  variant?: "v1" | "v2"
 }
 
 export function FingerprintSurgeCard({
@@ -40,6 +42,7 @@ export function FingerprintSurgeCard({
   windowHours = 24,
   onFilter,
   windowLabelForCopy,
+  variant = "v2",
 }: FingerprintSurgeCardProps) {
   const [fingerprintInfoOpen, setFingerprintInfoOpen] = useState(false)
   const surges = data?.surges ?? []
@@ -90,15 +93,17 @@ export function FingerprintSurgeCard({
               Fingerprint Surges
             </CardTitle>
             <p className="text-sm text-muted-foreground">{headline}</p>
-            <p className="text-xs text-muted-foreground">
-              Compared window: {windowLabel}. Spikes are from deterministic regex
-              fingerprints (not the LLM layer).{" "}
-              <MethodologyTriggerButton
-                label="Why fingerprints?"
-                onClick={() => setFingerprintInfoOpen(true)}
-                className="h-auto p-0 text-xs"
-              />
-            </p>
+            {variant === "v2" && (
+              <p className="text-xs text-muted-foreground">
+                Compared window: {windowLabel}. Spikes are from deterministic regex
+                fingerprints (not the LLM layer).{" "}
+                <MethodologyTriggerButton
+                  label="Why fingerprints?"
+                  onClick={() => setFingerprintInfoOpen(true)}
+                  className="h-auto p-0 text-xs"
+                />
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {surges.length > 0 && (
@@ -196,10 +201,12 @@ export function FingerprintSurgeCard({
         </CardContent>
       )}
 
-      <FingerprintModelDialog
-        open={fingerprintInfoOpen}
-        onOpenChange={setFingerprintInfoOpen}
-      />
+      {variant === "v2" && (
+        <FingerprintModelDialog
+          open={fingerprintInfoOpen}
+          onOpenChange={setFingerprintInfoOpen}
+        />
+      )}
     </Card>
   )
 }

@@ -26,6 +26,8 @@ import { ClassificationTriage } from "@/components/dashboard/classification-tria
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
+import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
+import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
 import {
   useDashboardStats,
   useIssues,
@@ -37,7 +39,9 @@ import {
 import { formatDistanceToNow } from "date-fns"
 
 // Inner component that uses useSearchParams (requires Suspense boundary)
-function DashboardContent() {
+function DashboardContentInner() {
+  const { version: uxVersion } = useDashboardUxVersion()
+  const isV2 = isUxV2(uxVersion)
   const searchParams = useSearchParams()
   const asOfRaw = searchParams.get("as_of")
 
@@ -157,6 +161,16 @@ function DashboardContent() {
 
     return [{ value: "all", label: "All categories", count: stats?.totalIssues || 0 }, ...dynamic]
   }, [stats])
+
+  /** Heuristic issue count in scope (matches GlobalFilterBar) — for LLM tab explainer. */
+  const heuristicScopeIssueCount = useMemo(() => {
+    if (!stats) return 0
+    if (globalCategory === "all") return stats.totalIssues
+    const found = (stats.categoryBreakdown || []).find(
+      (c) => c.name.toLowerCase().replace(/\s+/g, "-") === globalCategory,
+    )
+    return found?.count ?? 0
+  }, [stats, globalCategory])
 
   const globalTimeLabel = globalDays === 0 ? "All time" : `Last ${globalDays} days`
   const globalCategoryLabel = categoryOptions.find((option) => option.value === globalCategory)?.label || "All categories"
@@ -279,7 +293,8 @@ function DashboardContent() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4 flex-wrap justify-end">
+            <UxVersionToggle />
             <div className="text-right text-sm">
               <p className="text-muted-foreground">Last synced</p>
               <p className="font-medium text-foreground">{lastScrapeTime}</p>
@@ -341,29 +356,28 @@ function DashboardContent() {
 
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
-              <DataProvenanceStrip
-                lastSyncLabel={lastScrapeTime}
-                issueWindowLabel={globalTimeLabel}
-                asOfActive={asOf != null}
-              />
+              {isV2 && (
+                <DataProvenanceStrip
+                  lastSyncLabel={lastScrapeTime}
+                  issueWindowLabel={globalTimeLabel}
+                  asOfActive={asOf != null}
+                />
+              )}
 
-              {/* Hero Insight Block - The "Aha" moment */}
               <HeroInsight
                 topInsight={heroInsight}
                 onExploreIssues={handleHeroExploreIssues}
                 onNavigateToCategory={handleNavigateToCategory}
                 issueTableTimeLabel={globalTimeLabel}
+                variant={isV2 ? "v2" : "v1"}
               />
 
-              {/* Fingerprint Surge Card — answers "is something breaking
-                  right now?" in the 5-second dashboard scan. Clicking the
-                  drill-in button feeds a compound_key filter into the
-                  issues table below. */}
               <FingerprintSurgeCard
                 data={fingerprintSurges}
                 windowHours={24}
                 windowLabelForCopy={fingerprintWindowLabel}
                 onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+                variant={isV2 ? "v2" : "v1"}
               />
 
               {/* Secondary KPI Cards - Insight-first design */}
@@ -430,13 +444,13 @@ function DashboardContent() {
               <PriorityMatrix
                 data={stats.priorityMatrix}
                 onFilterChange={handleFilterChange}
+                variant={isV2 ? "v2" : "v1"}
               />
 
-              {/* Real-time insights + competitive mentions */}
               <div className="grid gap-6 lg:grid-cols-2">
                 <RealtimeInsights
                   insights={stats.realtimeInsights}
-                  skipFirstCategorySlug={heroInsight?.categorySlug}
+                  skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
                 />
                 <CompetitiveMentions
                   mentions={stats.competitiveMentions || []}
@@ -485,6 +499,10 @@ function DashboardContent() {
                 onRefresh={async () => {
                   await Promise.all([refreshClassifications(), refreshClassificationStats()])
                 }}
+                uxVariant={isV2 ? "v2" : "v1"}
+                lastSyncLabel={lastScrapeTime}
+                asOfActive={asOf != null}
+                heuristicScopeIssueCount={heuristicScopeIssueCount}
               />
             </TabsContent>
           </Tabs>
@@ -501,6 +519,14 @@ function DashboardContent() {
         </div>
       </footer>
     </div>
+  )
+}
+
+function DashboardContent() {
+  return (
+    <DashboardUxProvider>
+      <DashboardContentInner />
+    </DashboardUxProvider>
   )
 }
 
