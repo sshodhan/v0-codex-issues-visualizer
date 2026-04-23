@@ -216,8 +216,10 @@ export interface ClusterRollupRow {
   id: string
   count: number
   classified_count: number
+  source_count?: number
   label: string | null
   label_confidence: number | null
+  representative_title?: string | null
 }
 
 /**
