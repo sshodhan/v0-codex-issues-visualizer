@@ -277,6 +277,57 @@ export function useIssues(filters?: {
   }
 }
 
+export interface ClusterSample {
+  observation_id: string
+  title: string
+  url: string | null
+  impact_score: number
+  sentiment: string | null
+}
+
+export interface ClusterSummary {
+  id: string
+  cluster_key: string
+  label: string | null
+  label_confidence: number | null
+  size: number
+  in_window: number
+  classified_count: number
+  samples: ClusterSample[]
+}
+
+export interface ClustersResponse {
+  clusters: ClusterSummary[]
+  windowDays: number | null
+  source: "observations"
+}
+
+// Direct cluster read from /api/clusters, independent of the
+// classification pipeline. Powers the semantic-cluster chip strip on
+// the triage tab so clusters are visible even when 0 classifications
+// have been generated yet. See docs/CLUSTERING_DESIGN.md §7.
+export function useClusters(options?: { days?: number; limit?: number; asOf?: string }) {
+  const params = new URLSearchParams()
+  if (options?.days) params.set("days", String(options.days))
+  if (options?.limit) params.set("limit", String(options.limit))
+  // as_of intentionally NOT forwarded: clusters carry no derivation
+  // timestamp, so point-in-time replay on cluster state is a separate
+  // design problem (see CLUSTERING_DESIGN.md §6.3).
+  void options?.asOf
+  const url = `/api/clusters${params.toString() ? `?${params.toString()}` : ""}`
+
+  const { data, error, isLoading, mutate } = useSWR<ClustersResponse>(url, fetcher, {
+    refreshInterval: 60000,
+  })
+
+  return {
+    clusters: data?.clusters ?? [],
+    isLoading,
+    isError: error,
+    refresh: mutate,
+  }
+}
+
 // Surfaces the top fingerprint surges over the given rolling window. The
 // backing route calls the `fingerprint_surges` SQL function introduced in
 // migration 014; the shape is `{ surges, new_in_window }` and matches the
@@ -325,10 +376,18 @@ export interface ClassificationRecord {
   subcategory: string
   severity: "critical" | "high" | "medium" | "low"
   status: "new" | "triaged" | "in-progress" | "resolved" | "wont-fix" | "duplicate"
+  // LLM schema enums (lib/classification/schema.ts). Required by the JSON
+  // schema but kept nullable here because pre-schema-lock rows in
+  // production may have null values until reclassified.
+  reproducibility: "always" | "often" | "sometimes" | "once" | "unknown" | null
+  impact: "single-user" | "team" | "org" | "fleet" | "unknown" | null
   confidence: number
   summary: string
+  root_cause_hypothesis: string | null
+  suggested_fix: string | null
   evidence_quotes: string[]
   alternate_categories: string[]
+  tags: string[]
   needs_human_review: boolean
   review_reasons: string[]
   model_used: string | null

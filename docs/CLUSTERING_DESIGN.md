@@ -138,6 +138,7 @@ Embedding and semantic labeling use algorithm-version tags (`observation_embeddi
 ### API
 - `/api/classify` now delegates to shared classification pipeline code, reducing drift between manual and automated classification paths.
 - `/api/classifications` joins each response row to its observation's current cluster membership and surfaces `cluster_id`, `cluster_key`, `cluster_label`, `cluster_label_confidence`, and `cluster_size`. Implementation fans out two extra Supabase queries against `clusters` and `cluster_members` (filtered by `detached_at IS NULL`) after the observation fetch resolves.
+- **`/api/clusters`** reads clusters **directly from `mv_observation_current`** (independent of classifications) so the triage chip strip can render when zero classifications exist. Query params: `?days=N` (optional window) and `?limit=N` (default 20, max 100). Returns `{ clusters: ClusterSummary[], windowDays, source: "observations" }`. Each cluster includes `in_window` (count in the requested window), `size` (total active members across all time from `cluster_frequency`), `classified_count` (subset with `llm_classified_at IS NOT NULL`), and up to 3 `samples` (top-impact member titles). Pure aggregation lives in `lib/classification/clusters.ts` → `aggregateClusters()` so it can be unit-tested without Supabase.
 
 ### UI — vocabulary lock
 The word "cluster" is reserved for the Layer-A semantic/title-hash clustering documented here. Everything else in the triage UI uses different language so the three layers stay legible at a glance:
@@ -180,10 +181,24 @@ The panel's primary CTA is picked by `pickPrimaryCta(prereq)` in `lib/classifica
 
 When primary is classify-backfill and clustering is also behind, a secondary "Rebuild clustering" button renders alongside to save the reviewer a round-trip. Prereq fetch failures (server-side log via `logServerError` component `api-classifications-stats`) degrade to a minimal fallback panel — no 500, no blank card.
 
-- The semantic-cluster chip strip only renders when at least one in-scope classification has `cluster_id != null`. Records without cluster membership (embedding failed, below-threshold similarity, or clustering not yet run) are simply invisible to the chip strip.
+- The semantic-cluster chip strip reads from `/api/clusters` (sourced from `mv_observation_current`), not from the classification queue. This decouples the cluster surface from the classification pipeline — clusters are visible the moment an observation is ingested with a `cluster_id`, without waiting for classify-backfill to populate matching classification records. When a chip is selected but the triage table is empty (either pre-classification or compound-filter pruned it), a **cluster-member preview panel** renders below the chip strip showing the cluster's top-impact observations with source links, so reviewers can see what's actually in the cluster instead of staring at an empty table.
 - Cluster labels render as **"Unlabelled cluster"** when `cluster_label` is null. Raw `cluster_key` values (`semantic:<digest>` or `title:<md5>`) are implementation detail and surface only through a `title=` attribute tooltip — never as user-facing copy.
 - The triage detail panel shows a "Semantic cluster" block with label, member count, and confidence (2dp) whenever the selected record has a `cluster_id`.
 - The group filter and the semantic-cluster filter **compose with AND**: a record must match both to appear in the triage table. The scoped-empty state names the filter(s) to clear so reviewers can widen the view without guessing.
+
+#### Layered explainer + per-record context
+
+The triage card surfaces the three layers explicitly so reviewers don't have to read this doc to triage:
+
+- **`LayerExplainerPanel`** — a collapsible "How this works" card directly under the KPI strip. Definitions for Layer A (semantic cluster), Layer B (triage group), Layer C (the row), each with a deep-link to the admin tab that owns the relevant pipeline step. Open/closed state persists in `localStorage` under `classification-triage:layer-explainer-open`; first render is always closed (SSR-safe).
+- **Layer badges (`A` / `B` / `C`)** are mounted on the section headings and on every row breadcrumb so the vocabulary in the explainer maps unambiguously to surfaces.
+- **`LayerBreadcrumb`** — `A: <cluster label> › B: <category › subcategory> › C: <id8>`. Compact form on every table row (drops the C suffix); full form in the reviewer panel header. When `cluster_id` is null the A segment renders as "no cluster" so the visual rhythm of all three layers is preserved.
+- **`ClassificationContextPanel`** — the full Layer-C body for the selected record. Renders only the schema fields that are populated (`reproducibility`, `impact`, `root_cause_hypothesis`, `suggested_fix`, `evidence_quotes`, `tags`) plus model provenance (`model_used`, `retried_with_large_model`, `algorithm_version`). Evidence quotes are tagged "substring-validated against source" because `lib/classification/schema.ts` → `evidenceQuotesAreSubstrings` enforces it server-side; surfacing the validation builds reviewer trust.
+- **`PerRecordPrereqHints`** — small inline hints when a selected row has a Layer-A miss (no `cluster_id`), low confidence (`< 0.7`, the same threshold that triggers large-model escalation in the pipeline), or the LLM flagged it for human review (`review_reasons` is non-empty). Each hint deep-links to the `/admin` tab that owns the fix; generic "something is off" messages are deliberately avoided.
+
+#### Partial-pipeline strip
+
+`PipelineStatusPanel` covers the empty-pipeline state. The middle state — *some* classifications exist but `pendingClassification > 0` or `pendingClustering > 0` — is covered by **`PartialPipelineStrip`**: a single-line amber banner under the KPI cards that shows `classified%` / `clustered%` for the current window plus the same primary CTA (`pickPrimaryCta(prereq)`) used by the empty-state panel. Hidden when caught up (`cta.kind === "none"`) so it doesn't nag during steady-state operation.
 
 ---
 
