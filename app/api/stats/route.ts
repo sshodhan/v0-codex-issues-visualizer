@@ -143,6 +143,10 @@ export async function GET(request: NextRequest) {
   const sourceCounts: Record<string, number> = {}
   const categoryCounts: Record<string, { count: number; color: string }> = {}
   const categorySentimentMap: Record<string, CategorySentimentAccumulator> = {}
+  /** Latest LLM `category` from mv (joined classifications), same window as totalIssues. */
+  const llmCategoryCounts: Record<string, number> = {}
+  let llmClassifiedInWindow = 0
+  let llmPendingInWindow = 0
 
   for (const r of rows) {
     if (r.sentiment && r.sentiment in sentimentCounts) {
@@ -187,6 +191,14 @@ export async function GET(request: NextRequest) {
           impact_score: issueImpact,
         }
       }
+    }
+
+    if (r.llm_classified_at) {
+      llmClassifiedInWindow += 1
+      const k = (r.llm_category as string | null) || "uncategorized"
+      llmCategoryCounts[k] = (llmCategoryCounts[k] || 0) + 1
+    } else {
+      llmPendingInWindow += 1
     }
   }
 
@@ -360,6 +372,10 @@ export async function GET(request: NextRequest) {
   const { data: lastScrapeRows } = await lastScrapeQuery
   const lastScrape = (lastScrapeRows && lastScrapeRows[0]) || null
 
+  const llmCategoryBreakdown = Object.entries(llmCategoryCounts)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count)
+
   return NextResponse.json({
     totalIssues,
     sentimentBreakdown: sentimentCounts,
@@ -372,6 +388,9 @@ export async function GET(request: NextRequest) {
       count: data.count,
       color: data.color,
     })),
+    llmCategoryBreakdown,
+    llmClassifiedInWindow,
+    llmPendingInWindow,
     categorySentimentBreakdown,
     trendData: Object.values(trendByDay),
     priorityMatrix,

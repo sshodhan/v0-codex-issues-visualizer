@@ -30,6 +30,10 @@ export interface DashboardStats {
       impact_score: number
     } | null
   }>
+  /** Latest LLM `classifications.category` on MV rows in the same `totalIssues` window (v14+ /api/stats). */
+  llmCategoryBreakdown?: Array<{ name: string; count: number }>
+  llmClassifiedInWindow?: number
+  llmPendingInWindow?: number
   trendData: Array<{
     date: string
     positive: number
@@ -150,6 +154,9 @@ export interface Issue {
   llm_primary_tag?: string | null
   fingerprint_algorithm_version?: string | null
   cluster_key_compound?: string | null
+  /** Present when read from mv_observation_current */
+  cluster_id?: string | null
+  cluster_key?: string | null
 }
 
 export interface FingerprintSurgeRow {
@@ -205,6 +212,30 @@ export function useDashboardStats(options?: {
   }
 }
 
+export interface ClusterRollupRow {
+  id: string
+  count: number
+  classified_count: number
+  label: string | null
+  label_confidence: number | null
+}
+
+/**
+ * Top semantic clusters in the current dashboard window (Layer A on mv_observation_current),
+ * for Story tab and drill-down affordances. Read-only.
+ */
+export function useClusterRollup(options: { days?: number; category: string }) {
+  const params = new URLSearchParams()
+  if (options.days) params.set("days", String(options.days))
+  if (options.category && options.category !== "all") params.set("category", options.category)
+  const qs = params.toString()
+  const url = qs ? `/api/clusters/rollup?${qs}` : "/api/clusters/rollup"
+  const { data, error, isLoading, mutate } = useSWR<{ clusters: ClusterRollupRow[] }>(url, fetcher, {
+    refreshInterval: 120_000,
+  })
+  return { data, isLoading, isError: error, refresh: mutate }
+}
+
 export function useIssues(filters?: {
   source?: string
   category?: string
@@ -214,6 +245,8 @@ export function useIssues(filters?: {
   order?: string
   q?: string
   compound_key?: string
+  /** Layer-A cluster filter (read-time); UUID */
+  cluster_id?: string
   asOf?: string
 }) {
   const params = new URLSearchParams()
@@ -225,6 +258,7 @@ export function useIssues(filters?: {
   if (filters?.order) params.set("order", filters.order)
   if (filters?.q) params.set("q", filters.q)
   if (filters?.compound_key) params.set("compound_key", filters.compound_key)
+  if (filters?.cluster_id) params.set("cluster_id", filters.cluster_id)
   if (filters?.asOf) params.set("as_of", filters.asOf)
 
   const { data, error, isLoading, mutate } = useSWR<{
