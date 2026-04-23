@@ -20,6 +20,7 @@ import {
   recordBugFingerprint,
 } from "@/lib/storage/derivations"
 import { runSemanticClusteringForBatch } from "@/lib/storage/semantic-clusters"
+import { recordProcessingEvent } from "@/lib/storage/processing-events"
 import {
   processObservationClassificationQueue,
   synthesizeObservationReportText,
@@ -200,6 +201,17 @@ async function persistIssueRecord(
   await recordBugFingerprint(supabase, observationId, {
     ...fingerprint,
     cluster_key_compound: compoundKey,
+  })
+  await recordProcessingEvent(supabase, {
+    observationId,
+    stage: "fingerprinting",
+    status: "completed",
+    algorithmVersionModel: "regex:v1",
+    detail: {
+      error_code: fingerprint.error_code,
+      top_stack_frame_hash: fingerprint.top_stack_frame_hash,
+      cluster_key_compound: compoundKey,
+    },
   })
 
   // 3.1c Aggregation — semantic clustering first (embeddings ⇒ attach,

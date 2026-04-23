@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import type { createAdminClient } from "@/lib/supabase/admin"
 import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import { attachToCluster } from "@/lib/storage/clusters"
+import { recordProcessingEvent } from "@/lib/storage/processing-events"
 
 import {
   buildEmbeddingInputText,
@@ -70,7 +71,16 @@ async function ensureEmbedding(
 
   const input = buildEmbeddingInputText(observation.title, observation.content)
   const embedding = await createEmbedding(input)
-  if (!embedding) return null
+  if (!embedding) {
+    await recordProcessingEvent(supabase, {
+      observationId: observation.id,
+      stage: "embedding",
+      status: "failed",
+      algorithmVersionModel: `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`,
+      detail: { reason: "embedding_api_failed" },
+    })
+    return null
+  }
 
   await supabase.rpc("record_observation_embedding", {
     obs_id: observation.id,
@@ -79,6 +89,13 @@ async function ensureEmbedding(
     dims: embedding.length,
     input_text: input,
     vec: embedding,
+  })
+  await recordProcessingEvent(supabase, {
+    observationId: observation.id,
+    stage: "embedding",
+    status: "completed",
+    algorithmVersionModel: `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`,
+    detail: { dimensions: embedding.length },
   })
 
   return embedding
@@ -197,7 +214,16 @@ export async function runSemanticClusteringForBatch(
         obs_id: member.id,
         key,
       })
-      if (!attached.error) semanticAttached++
+      if (!attached.error) {
+        semanticAttached++
+        await recordProcessingEvent(supabase, {
+          observationId: member.id,
+          stage: "clustering",
+          status: "semantic_attached",
+          algorithmVersionModel: CURRENT_VERSIONS.semantic_cluster_label,
+          detail: { cluster_key: key, threshold: similarityThreshold, min_cluster_size: minClusterSize },
+        })
+      }
     }
 
     const first = group[0]
@@ -238,6 +264,13 @@ export async function runSemanticClusteringForBatch(
     if (redetach) await supabase.rpc("detach_from_cluster", { obs_id: observation.id })
     await attachToCluster(supabase, observation.id, observation.title)
     fallbackAttached++
+    await recordProcessingEvent(supabase, {
+      observationId: observation.id,
+      stage: "clustering",
+      status: "fallback_attached",
+      algorithmVersionModel: CURRENT_VERSIONS.semantic_cluster_label,
+      detail: { reason: "insufficient_semantic_similarity_or_embedding_failure" },
+    })
   }
 
   return {

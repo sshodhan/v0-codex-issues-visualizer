@@ -103,6 +103,8 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "observation_embeddings",
     // Bug fingerprints (013).
     "bug_fingerprints",
+    // Processing trace events (016).
+    "processing_events",
   ],
   views: [
     // 007: cluster_frequency = view over cluster_members.
@@ -199,6 +201,9 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // ---- scrape logs (002 + hand-added status filter) ----
     "idx_scrape_logs_source",
     "idx_scrape_logs_status",
+    // ---- processing events (016) ----
+    "idx_processing_events_observation_created",
+    "idx_processing_events_stage_created",
   ],
   requiredColumns: {
     // 012 added cluster-labeling columns.
@@ -245,6 +250,14 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     scrape_logs: ["status", "started_at", "completed_at"],
     // 007 evidence-layer shape.
     observations: ["external_id", "source_id", "captured_at", "published_at"],
+    processing_events: [
+      "observation_id",
+      "stage",
+      "status",
+      "algorithm_version_model",
+      "detail_json",
+      "created_at",
+    ],
   },
   forbiddenTables: [
     // 003 created, 007 dropped.
