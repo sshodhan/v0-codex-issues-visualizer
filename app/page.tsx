@@ -28,6 +28,7 @@ import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
 import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
+import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
 import {
@@ -739,6 +740,7 @@ function DashboardContentInner() {
                               {cluster.count} observations · {cluster.classified_count} triaged ·{" "}
                               {cluster.source_count ?? 0} sources
                             </p>
+                            <ClusterTrustRibbon cluster={cluster} />
                           </CardContent>
                         </Card>
                       </Link>
