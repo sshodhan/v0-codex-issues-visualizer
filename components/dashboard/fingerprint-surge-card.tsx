@@ -134,6 +134,9 @@ export function FingerprintSurgeCard({
               <p className="text-xs text-muted-foreground mt-1">
                 Error rates are stable compared to {windowLabel}
               </p>
+              <p className="text-xs text-muted-foreground mt-3">
+                Current status: <span className="font-medium text-emerald-600 dark:text-emerald-400">all clear</span> · Last Sync: {data?.last_synced ? new Date(data.last_synced).toLocaleString() : "—"}
+              </p>
             </div>
           ) : (
             <>
