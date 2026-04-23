@@ -1,7 +1,26 @@
 "use client"
 
 import { useMemo, useState, useEffect, useRef } from "react"
-import { AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, CircleDashed, ExternalLink, History, Layers3, ShieldCheck, XCircle } from "lucide-react"
+import {
+  AlertCircle,
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CircleDashed,
+  ExternalLink,
+  FlaskConical,
+  History,
+  Info,
+  Layers3,
+  Lightbulb,
+  Quote,
+  ScrollText,
+  ShieldCheck,
+  Tag,
+  XCircle,
+} from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -385,6 +404,8 @@ export function ClassificationTriage({
           </div>
         )}
 
+        <LayerExplainerPanel />
+
         {isPipelineEmpty && (
           <PipelineStatusPanel
             prereq={stats?.prerequisites ?? null}
@@ -393,8 +414,20 @@ export function ClassificationTriage({
           />
         )}
 
+        {/* Partial-pipeline summary: rendered when SOME classifications exist
+            but the pipeline is behind. Pipeline-empty is already handled by
+            PipelineStatusPanel above; this surface keeps the prereq link
+            visible during the more common partial state so reviewers can
+            jump to /admin to clear the backlog without scrolling away. */}
+        {!isPipelineEmpty && (
+          <PartialPipelineStrip prereq={stats?.prerequisites ?? null} timeDays={timeDays} />
+        )}
+
         <div className="space-y-2 rounded-md border p-3" id="triage-top-groups">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Top triage groups</p>
+          <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-mono">B</Badge>
+            Top triage groups
+          </p>
           <p className="text-xs text-muted-foreground">
             Virtual lanes by classified category × subcategory.
           </p>
@@ -447,6 +480,7 @@ export function ClassificationTriage({
         {(hasSemanticClusters || isSemanticClusterControlled) && (
           <div className="space-y-2 rounded-md border p-3" id="triage-semantic-clusters">
             <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-mono">A</Badge>
               <Layers3 className="h-3.5 w-3.5" />
               Top semantic clusters
             </p>
@@ -575,6 +609,7 @@ export function ClassificationTriage({
                         <span>{record.effective_category}</span>
                       </div>
                       <p className="text-xs text-muted-foreground">{record.subcategory}</p>
+                      <LayerBreadcrumb record={record} compact />
                     </TableCell>
                     <TableCell><Badge variant="outline">{record.effective_severity}</Badge></TableCell>
                     <TableCell>{Math.round(record.confidence * 100)}%</TableCell>
@@ -608,14 +643,29 @@ export function ClassificationTriage({
 
         {selected && (
           <div className="space-y-3 rounded-lg border p-4">
-            <p className="text-sm font-medium">Reviewer panel for selected classification</p>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Reviewer panel for selected classification</p>
+                <Badge
+                  variant="outline"
+                  className="px-1.5 py-0 text-[10px] font-mono uppercase"
+                  title="Confidence bucket — see 'How this works'"
+                >
+                  C · {Math.round(selected.confidence * 100)}%
+                </Badge>
+              </div>
+              <LayerBreadcrumb record={selected} />
+            </div>
             <p className="text-sm text-muted-foreground">{selected.summary}</p>
+
+            <PerRecordPrereqHints record={selected} />
 
             {selected.cluster_id &&
               (selected.cluster_key?.startsWith("semantic:") ||
                 (selected.cluster_size ?? 0) >= 2) && (
                 <div className="rounded-md border bg-muted/30 p-3 text-sm">
                   <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+                    <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-mono">A</Badge>
                     <Layers3 className="h-3.5 w-3.5" />
                     Semantic cluster
                   </p>
@@ -636,6 +686,8 @@ export function ClassificationTriage({
                   </p>
                 </div>
               )}
+
+            <ClassificationContextPanel record={selected} />
 
             {/* Review History Panel */}
             {(selected.latest_review || selected.prior_classification_id) && (
@@ -966,6 +1018,437 @@ function ClusterMemberPreview({
           + {extraMembers} more in this cluster not shown
         </p>
       )}
+    </div>
+  )
+}
+
+// Persists the open/closed state of the layered explainer so repeat
+// reviewers don't pay a full panel of vertical space every visit. SSR
+// fallback is "closed" — first render matches the server, then opens
+// from localStorage on mount if the user had it expanded.
+const LAYER_EXPLAINER_STORAGE_KEY = "classification-triage:layer-explainer-open"
+
+function LayerExplainerPanel() {
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(LAYER_EXPLAINER_STORAGE_KEY)
+      if (stored === "1") setOpen(true)
+    } catch {
+      // localStorage unavailable (private mode, SSR) — leave closed
+    }
+  }, [])
+
+  const handleToggle = (next: boolean) => {
+    setOpen(next)
+    try {
+      window.localStorage.setItem(LAYER_EXPLAINER_STORAGE_KEY, next ? "1" : "0")
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={handleToggle}
+      className="rounded-md border bg-muted/10"
+    >
+      <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 p-3 text-sm hover:bg-muted/30">
+        <div className="inline-flex items-center gap-2">
+          <Info className="h-4 w-4 text-muted-foreground" />
+          <span className="font-medium">How this works — three layers of context</span>
+        </div>
+        <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="space-y-3 p-3 pt-0 text-sm">
+        <p className="text-xs text-muted-foreground">
+          Every reviewable item is anchored at three layers. Filters compose with AND across
+          Layer A and Layer B; Layer C is the row you click.
+        </p>
+        <LayerExplainerRow
+          letter="A"
+          icon={<Layers3 className="h-4 w-4 text-primary" />}
+          title="Semantic cluster"
+          body="Embedding-based grouping of observations that share a root cause across categories. Sourced from /api/clusters and visible the moment ingest assigns a cluster_id — independent of whether classification has run yet."
+          adminLink={{ href: "/admin?tab=clustering", label: "Clustering admin" }}
+        />
+        <LayerExplainerRow
+          letter="B"
+          icon={<Tag className="h-4 w-4 text-primary" />}
+          title="Triage group"
+          body="Client-side group-by on (effective_category × subcategory). Comes from the LLM classification enum (code-generation-quality, tool-use-failure, …) — distinct from the dashboard's heuristic taxonomy used by the global slider."
+          adminLink={{ href: "/admin?tab=classify-backfill", label: "Classify backfill" }}
+        />
+        <LayerExplainerRow
+          letter="C"
+          icon={<ScrollText className="h-4 w-4 text-primary" />}
+          title="Classification (the row)"
+          body="A single LLM-structured judgement: severity, status, reproducibility, impact, evidence quotes, root-cause hypothesis, suggested fix. Selecting a row opens the full context + reviewer override controls below the table."
+          adminLink={null}
+        />
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function LayerExplainerRow({
+  letter,
+  icon,
+  title,
+  body,
+  adminLink,
+}: {
+  letter: "A" | "B" | "C"
+  icon: React.ReactNode
+  title: string
+  body: string
+  adminLink: { href: string; label: string } | null
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-md border bg-background/50 p-3">
+      <Badge variant="outline" className="mt-0.5 px-1.5 py-0 font-mono">{letter}</Badge>
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="inline-flex items-center gap-2">
+          {icon}
+          <span className="text-sm font-medium">{title}</span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">{body}</p>
+        {adminLink && (
+          <a
+            href={adminLink.href}
+            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+          >
+            {adminLink.label} <ArrowRight className="h-3 w-3" />
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Surfaces a one-line prereq summary when records exist but the pipeline
+// is behind. Pipeline-empty is handled by PipelineStatusPanel; this is
+// for the "we have *some* data, but admin action would unblock the
+// rest" middle state. Hidden when caught up.
+function PartialPipelineStrip({
+  prereq,
+  timeDays,
+}: {
+  prereq: PrerequisiteStatus | null
+  timeDays: number
+}) {
+  if (!prereq) return null
+  const cta = pickPrimaryCta(prereq)
+  // Only render when there's an actionable next step. caught-up state
+  // (cta.kind === "none") is silent — no need to nag the reviewer.
+  if (cta.kind === "none") return null
+
+  const windowLabel = timeDays === 0 ? "all time" : `last ${timeDays}d`
+  const total = prereq.observationsInWindow
+  const classifyPct = total > 0 ? Math.round((prereq.classifiedCount / total) * 100) : 0
+  const clusterPct = total > 0 ? Math.round((prereq.clusteredCount / total) * 100) : 0
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
+      <AlertCircle className="h-4 w-4 flex-shrink-0 text-amber-500" />
+      <span className="text-xs text-muted-foreground">
+        Pipeline behind ({windowLabel}):{" "}
+        <span className="text-foreground tabular-nums">{classifyPct}%</span> classified ·{" "}
+        <span className="text-foreground tabular-nums">{clusterPct}%</span> clustered
+      </span>
+      {cta.kind === "openai-missing" ? (
+        <span className="inline-flex items-center gap-1 text-xs text-destructive">
+          <AlertTriangle className="h-3 w-3" /> set <code className="font-mono">OPENAI_API_KEY</code>
+        </span>
+      ) : (
+        <a
+          href={cta.href}
+          className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+        >
+          {cta.label} <ArrowRight className="h-3 w-3" />
+        </a>
+      )}
+    </div>
+  )
+}
+
+
+// Compact A › B › C breadcrumb. Used in two places:
+//   - row cell (compact = true): one-line, truncated cluster label, no
+//     C suffix (the row is itself the C item).
+//   - reviewer panel header (compact = false): full breadcrumb with the
+//     classification id suffix, useful when copying for chat handoff.
+function LayerBreadcrumb({
+  record,
+  compact = false,
+}: {
+  record: ClassificationRecord
+  compact?: boolean
+}) {
+  const clusterLabel = record.cluster_id
+    ? hasTrustedLabel(record.cluster_label, record.cluster_label_confidence)
+      ? record.cluster_label
+      : "Unlabelled cluster"
+    : null
+  const groupLabel = `${record.effective_category} › ${record.subcategory || "General"}`
+
+  const baseClass = compact
+    ? "mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"
+    : "flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
+  const segmentClass = compact
+    ? "inline-flex items-center gap-1 truncate max-w-[140px]"
+    : "inline-flex items-center gap-1"
+  const sepClass = compact
+    ? "h-3 w-3 flex-shrink-0 opacity-50"
+    : "h-3 w-3 opacity-50"
+
+  return (
+    <div className={baseClass}>
+      <span className={segmentClass}>
+        <Badge variant="outline" className="px-1 py-0 text-[9px] font-mono">A</Badge>
+        <span className="truncate">{clusterLabel ?? "no cluster"}</span>
+      </span>
+      <ChevronRight className={sepClass} />
+      <span className={segmentClass}>
+        <Badge variant="outline" className="px-1 py-0 text-[9px] font-mono">B</Badge>
+        <span className="truncate">{groupLabel}</span>
+      </span>
+      {!compact && (
+        <>
+          <ChevronRight className={sepClass} />
+          <span className={segmentClass}>
+            <Badge variant="outline" className="px-1 py-0 text-[9px] font-mono">C</Badge>
+            <span className="font-mono text-[10px]">{record.id.slice(0, 8)}</span>
+          </span>
+        </>
+      )}
+    </div>
+  )
+}
+
+// Inline hints for the selected record when a prerequisite gap or
+// validity concern is visible at the row level. Each hint has a
+// targeted /admin deep-link so reviewers know exactly which gear to
+// turn — generic "something is off" messages train people to ignore
+// them. Returns null when there's nothing to flag.
+function PerRecordPrereqHints({ record }: { record: ClassificationRecord }) {
+  const hints: Array<{ kind: "warn" | "info"; body: React.ReactNode }> = []
+
+  // Layer-A miss: this classification's observation has no cluster
+  // attachment. Either clustering hasn't caught up, embedding failed,
+  // or it's below the cosine threshold. Reviewer can't tell which from
+  // here — link to the clustering admin tab where rebuild logs spell
+  // it out.
+  if (!record.cluster_id) {
+    hints.push({
+      kind: "info",
+      body: (
+        <>
+          No semantic cluster attached — embedding may be missing or below the similarity
+          threshold.{" "}
+          <a href="/admin?tab=clustering" className="font-medium text-primary hover:underline">
+            Open clustering admin →
+          </a>
+        </>
+      ),
+    })
+  }
+
+  // Layer-C confidence gate: surface the threshold the schema itself
+  // uses (CLASSIFIER_MODEL escalates below 0.7). Below that the LLM
+  // already retried with the larger model — knowing this tells the
+  // reviewer the result is already best-effort.
+  if (record.confidence < 0.7) {
+    hints.push({
+      kind: "warn",
+      body: (
+        <>
+          Low confidence ({Math.round(record.confidence * 100)}%) —{" "}
+          {record.retried_with_large_model
+            ? "already escalated to the large model"
+            : "did not escalate to the large model"}
+          . Manual review recommended.
+        </>
+      ),
+    })
+  }
+
+  // Surface why the LLM flagged this for human review. The schema's
+  // `review_reasons` is an array of free-text reasons populated by the
+  // pipeline (low confidence, evidence_quote substring miss, sensitive
+  // content, etc.). Showing them inline saves a reviewer from guessing.
+  if (record.effective_needs_human_review && record.review_reasons.length > 0) {
+    hints.push({
+      kind: "warn",
+      body: (
+        <>
+          Flagged for human review:{" "}
+          <span className="font-medium">{record.review_reasons.join("; ")}</span>
+        </>
+      ),
+    })
+  }
+
+  if (hints.length === 0) return null
+
+  return (
+    <div className="space-y-1.5">
+      {hints.map((hint, idx) => (
+        <div
+          key={idx}
+          className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${
+            hint.kind === "warn"
+              ? "border-amber-500/30 bg-amber-500/5"
+              : "border-border bg-muted/20"
+          }`}
+        >
+          {hint.kind === "warn" ? (
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-amber-500" />
+          ) : (
+            <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+          )}
+          <div className="min-w-0 flex-1 leading-relaxed">{hint.body}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Renders the full LLM-structured Layer-C content for the selected
+// record: enums (reproducibility, impact), free-text rationale (root
+// cause, suggested fix), evidence quotes (the substrings the LLM cited
+// — server-validated by evidenceQuotesAreSubstrings), tags, and
+// model/algorithm provenance. Each block is omitted when its source
+// field is empty/null so the panel stays terse on minimal classifications.
+function ClassificationContextPanel({ record }: { record: ClassificationRecord }) {
+  const hasEnums = record.reproducibility || record.impact
+  const hasNarrative = record.root_cause_hypothesis || record.suggested_fix
+  const hasEvidence = record.evidence_quotes.length > 0
+  const hasTags = record.tags.length > 0
+  const hasProvenance = record.model_used || record.algorithm_version
+
+  if (!hasEnums && !hasNarrative && !hasEvidence && !hasTags && !hasProvenance) {
+    return null
+  }
+
+  return (
+    <div className="space-y-3 rounded-md border bg-muted/10 p-3">
+      <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+        <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-mono">C</Badge>
+        <ScrollText className="h-3.5 w-3.5" />
+        Classification details
+      </p>
+
+      {hasEnums && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {record.reproducibility && (
+            <ContextField
+              icon={<FlaskConical className="h-3.5 w-3.5 text-muted-foreground" />}
+              label="Reproducibility"
+              value={record.reproducibility}
+            />
+          )}
+          {record.impact && (
+            <ContextField
+              icon={<AlertCircle className="h-3.5 w-3.5 text-muted-foreground" />}
+              label="Impact"
+              value={record.impact}
+            />
+          )}
+        </div>
+      )}
+
+      {record.root_cause_hypothesis && (
+        <div className="space-y-1">
+          <p className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Lightbulb className="h-3.5 w-3.5" /> Root cause hypothesis
+          </p>
+          <p className="text-sm leading-relaxed">{record.root_cause_hypothesis}</p>
+        </div>
+      )}
+
+      {record.suggested_fix && (
+        <div className="space-y-1">
+          <p className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <ArrowRight className="h-3.5 w-3.5" /> Suggested fix
+          </p>
+          <p className="text-sm leading-relaxed">{record.suggested_fix}</p>
+        </div>
+      )}
+
+      {hasEvidence && (
+        <div className="space-y-1">
+          <p className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Quote className="h-3.5 w-3.5" /> Evidence quotes
+            <span className="text-[10px] font-normal opacity-70">(substring-validated against source)</span>
+          </p>
+          <ul className="space-y-1">
+            {record.evidence_quotes.map((quote, idx) => (
+              <li
+                key={idx}
+                className="rounded-md border-l-2 border-primary/40 bg-background px-3 py-1.5 text-xs leading-relaxed text-muted-foreground"
+              >
+                "{quote}"
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {hasTags && (
+        <div className="space-y-1">
+          <p className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Tag className="h-3.5 w-3.5" /> Tags
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {record.tags.map((tag) => (
+              <Badge key={tag} variant="secondary" className="text-[10px]">
+                {tag}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {hasProvenance && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-2 text-[11px] text-muted-foreground">
+          {record.model_used && (
+            <span>
+              Model: <span className="font-mono text-foreground">{record.model_used}</span>
+              {record.retried_with_large_model && (
+                <span className="ml-1 text-amber-600">· escalated</span>
+              )}
+            </span>
+          )}
+          {record.algorithm_version && (
+            <span>
+              Algorithm: <span className="font-mono text-foreground">{record.algorithm_version}</span>
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ContextField({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+}) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border bg-background/50 p-2">
+      {icon}
+      <div className="min-w-0">
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+        <p className="text-sm font-medium">{value}</p>
+      </div>
     </div>
   )
 }

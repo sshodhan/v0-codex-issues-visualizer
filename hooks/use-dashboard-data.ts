@@ -376,10 +376,18 @@ export interface ClassificationRecord {
   subcategory: string
   severity: "critical" | "high" | "medium" | "low"
   status: "new" | "triaged" | "in-progress" | "resolved" | "wont-fix" | "duplicate"
+  // LLM schema enums (lib/classification/schema.ts). Required by the JSON
+  // schema but kept nullable here because pre-schema-lock rows in
+  // production may have null values until reclassified.
+  reproducibility: "always" | "often" | "sometimes" | "once" | "unknown" | null
+  impact: "single-user" | "team" | "org" | "fleet" | "unknown" | null
   confidence: number
   summary: string
+  root_cause_hypothesis: string | null
+  suggested_fix: string | null
   evidence_quotes: string[]
   alternate_categories: string[]
+  tags: string[]
   needs_human_review: boolean
   review_reasons: string[]
   model_used: string | null
