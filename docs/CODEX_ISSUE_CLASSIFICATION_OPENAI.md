@@ -47,6 +47,39 @@ Migration: `scripts/003_create_bug_report_classifications.sql`
 
 Traceability is surfaced via source feedback fields (`source_issue_title`, `source_issue_url`, `source_issue_sentiment`) so every classification can be traced to the original web report.
 
+### Triage UI: which schema fields render where
+
+The triage panel shows the full LLM-structured output for the selected record so reviewers don't have to query the database to validate a classification. Every field below comes from the `classifications` row joined to its current observation (see `app/api/classifications/route.ts`).
+
+| Schema field | Source | Where it renders | Notes |
+| --- | --- | --- | --- |
+| `category`, `subcategory` | LLM enum + free-text | Row, breadcrumb (Layer B), reviewer override dropdown | `effective_*` reflects the latest review override |
+| `severity` | LLM enum | Row badge, reviewer override dropdown | `effective_severity` after override |
+| `status` | LLM enum | Row, reviewer override dropdown | `effective_status` after override |
+| `confidence` | LLM 0..1 | Row column, reviewer panel header `C · NN%` badge | Triggers low-confidence hint when `< 0.7` (escalation threshold) |
+| `summary` | LLM ≤ 280 chars | Reviewer panel sub-header | |
+| `reproducibility` | LLM enum (`always` / `often` / `sometimes` / `once` / `unknown`) | `ClassificationContextPanel` enum field | New surface |
+| `impact` | LLM enum (`single-user` / `team` / `org` / `fleet` / `unknown`) | `ClassificationContextPanel` enum field | New surface |
+| `root_cause_hypothesis` | LLM ≤ 400 chars | `ClassificationContextPanel` "Root cause hypothesis" block | New surface |
+| `suggested_fix` | LLM ≤ 600 chars | `ClassificationContextPanel` "Suggested fix" block | New surface |
+| `evidence_quotes` | LLM array (≤ 5, ≤ 240 chars each) | `ClassificationContextPanel` quote list | Tagged "substring-validated against source" — `evidenceQuotesAreSubstrings()` enforces it server-side |
+| `tags` | LLM array (≤ 8, ≤ 32 chars each) | `ClassificationContextPanel` tag chips | New surface |
+| `needs_human_review` | LLM boolean | Row alert-triangle icon, hint banner | Effective value after override |
+| `review_reasons` | LLM array (≤ 4) | `PerRecordPrereqHints` "Flagged for human review" hint | Joined inline so the reviewer sees *why* without expanding |
+| `model_used`, `retried_with_large_model` | Pipeline metadata | `ClassificationContextPanel` provenance footer | "escalated" badge when the row was retried with the large model |
+| `algorithm_version` | Pipeline metadata | Provenance footer + Review History collapsible | Used to date baseline classifications in audit trail |
+| `cluster_id`, `cluster_label`, `cluster_label_confidence`, `cluster_size` | Joined from `mv_observation_current` + `clusters` | Layer-A breadcrumb segment, "Semantic cluster" sub-card, chip-strip filter | Null when clustering hasn't run / embedding failed / below threshold (see CLUSTERING_DESIGN.md §4.5) |
+| `source_issue_url`, `source_issue_title`, `source_issue_sentiment` | Joined from `mv_observation_current` | Row "Source feedback" link + sentiment badge | Traceability — never null after ingest if the observation has a URL |
+
+The triage tab also surfaces the three-layer mental model explicitly via:
+
+- **`LayerExplainerPanel`** — collapsible "How this works" card at the top of the triage tab. Open/closed state persists in `localStorage` under `classification-triage:layer-explainer-open`.
+- **Layer badges** (`A` / `B` / `C`) — mounted on the chip-strip headings, every row breadcrumb, and the reviewer panel header so the doc vocabulary maps to UI surfaces unambiguously.
+- **`PartialPipelineStrip`** — single-line CTA when records exist but the pipeline is behind (`pendingClassification` or `pendingClustering > 0`). Reuses `pickPrimaryCta(prereq)` from `lib/classification/prerequisites.ts` so the CTA decision is identical to the empty-state panel. Hidden when caught up.
+- **`PerRecordPrereqHints`** — per-row hints with `/admin?tab=...` deep-links when the selected record has a Layer-A miss (no `cluster_id`), confidence below the escalation threshold, or `review_reasons` populated.
+
+See `docs/CLUSTERING_DESIGN.md` §7 for the chip-strip / breadcrumb / pipeline-status surfaces. The **vocabulary lock** in that doc is normative: "cluster" always means Layer A, "group" always means Layer B, "classification" always means Layer C — do not introduce synonyms in code or copy.
+
 ## Layered signal view
 
 The classifier is one of three layers in the per-observation `SignalLayers` panel (`components/dashboard/signal-layers.tsx`), alongside the raw report and the deterministic regex fingerprint (`lib/scrapers/bug-fingerprint.ts`). The panel stacks them top-down so an analyst can see *how* each pass contributes:
@@ -54,6 +87,8 @@ The classifier is one of three layers in the per-observation `SignalLayers` pane
 1. **Report** — title + truncated body.
 2. **Regex signals** — error code, top stack frame + line-stable hash, CLI version, OS/shell/editor, model id, repro-marker count, keyword-presence count. Deterministic, cheap, always runs at ingest.
 3. **LLM insights** — the full structured output from `classifications` (subcategory, severity, reproducibility, impact, summary, root-cause hypothesis, suggested fix, tags, evidence quotes, model used). Populated automatically by the ingest-time classification pipeline (§3.1d); the CTA below the layer lets a user force a fresh pass.
+
+> Note: `SignalLayers` and the triage `ClassificationContextPanel` render the same underlying schema. `SignalLayers` is per-observation (one report's full signal stack); `ClassificationContextPanel` is per-classification inside the reviewer queue. They share `lib/classification/schema.ts` so there is no drift in field semantics.
 
 ## Runtime call paths
 
