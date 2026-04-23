@@ -112,10 +112,11 @@ Dashboard UI (app/page.tsx)
 
 ### API + UX contract (compound sub-cluster filter)
 
-- **API:** `GET /api/issues` supports `compound_key` alongside `days`, `source`, and `sentiment`.
-- **Data semantics:** this filter is applied against `mv_observation_current.cluster_key_compound`.
-- **UX behavior:** selecting error-code chips/buttons in the Issues Table or the Priority Matrix tooltip applies `compound_key`; when active, a dismissible chip is shown in the Issues Table filter bar.
-- **Scope clarification:** this is a read-time sub-cluster filter only; it does **not** alter semantic cluster membership.
+- **API:** `GET /api/issues` supports `compound_key` alongside `days`, `source`, and `sentiment`. It also supports optional `cluster_id` (UUID) to filter to Layer A semantic groupings from `mv_observation_current.cluster_id` (same for `as_of` replays, filtered in memory after the RPC). `compound_key` and `cluster_id` are mutually exclusive in the UI: applying one clears the other in the page URL.
+- **Data semantics:** the compound-key filter is applied against `mv_observation_current.cluster_key_compound` (regex / fingerprint audit label). The cluster filter is applied against `cluster_id` (semantic clustering membership in the materialized view).
+- **URL:** shareable deep links use `?fingerprint=<cluster_key_compound or err:…>` and `?cluster=<uuid>` (in addition to existing `?ux=`, `?as_of=`, and admin `?tab=`). The issues table, Story tab, and Classifications triage read these params so a cluster picked in Story can open the same scope in the table and in LLM triage.
+- **UX behavior:** selecting error-code chips/buttons in the Issues Table or the Priority Matrix tooltip sets `?fingerprint=`; a dismissible chip is shown. Semantic cluster drill-downs set `?cluster=`. **Scope clarification:** these are read-time filters only; they do **not** alter semantic cluster membership.
+- **Rollup:** `GET /api/clusters/rollup?days=&category=` returns top clusters by count in the window (from `mv_observation_current` with non-null `cluster_id`), with `label` / `label_confidence` from `clusters` and `classified_count` from `llm_classified_at` — used by the Story tab cluster list; does not invent clusters.
 
 ---
 

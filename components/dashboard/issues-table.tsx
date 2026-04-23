@@ -36,12 +36,16 @@ interface IssuesTableProps {
     sortBy?: string
     order?: string
     compound_key?: string
+    cluster_id?: string | null
   }) => void
   // When set, shows a dismissible chip in the filter bar. Matching the
   // `Cluster: <label>` chip pattern — the user can clear the drill-down
   // from the table itself without scrolling back to the card that seeded
   // it (priority matrix tooltip or fingerprint surge card).
   activeCompoundKey?: string
+  /** Layer-A semantic cluster drill-down; pass `activeClusterId` to show a clear chip. */
+  activeClusterId?: string
+  activeClusterLabel?: string
 }
 
 // Issues table with filters and clickable links
@@ -54,6 +58,8 @@ export function IssuesTable({
   canonicalCount,
   onFilterChange,
   activeCompoundKey,
+  activeClusterId,
+  activeClusterLabel,
 }: IssuesTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState("impact_score")
@@ -152,13 +158,29 @@ export function IssuesTable({
             {activeCompoundKey && (
               <button
                 type="button"
-                onClick={() => onFilterChange({ compound_key: undefined })}
+                onClick={() => onFilterChange({ compound_key: "" })}
                 className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label={`Clear fingerprint filter ${activeCompoundKey}`}
                 title="Clear fingerprint filter"
               >
                 <Badge variant="outline" className="font-mono border-destructive/60 text-destructive">
                   {activeCompoundKey}
+                  <span className="ml-1" aria-hidden>×</span>
+                </Badge>
+              </button>
+            )}
+            {activeClusterId && (
+              <button
+                type="button"
+                onClick={() => onFilterChange({ cluster_id: null })}
+                className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Clear semantic cluster filter"
+                title="Clear semantic cluster filter"
+              >
+                <Badge variant="outline" className="border-primary/60 text-foreground max-w-[min(280px,100%)]">
+                  <span className="truncate">
+                    {activeClusterLabel ?? "Semantic cluster"} <span className="text-muted-foreground">({activeClusterId.slice(0, 8)}…)</span>
+                  </span>
                   <span className="ml-1" aria-hidden>×</span>
                 </Badge>
               </button>

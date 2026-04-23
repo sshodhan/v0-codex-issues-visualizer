@@ -76,6 +76,17 @@ export async function GET(request: NextRequest) {
   // code limited to alphanumerics + underscore so LIKE escaping is moot).
   const errorCodeFromCompound =
     compoundKey && /^err:[A-Za-z0-9_]+$/.test(compoundKey) ? compoundKey.slice(4) : null
+  // Optional Layer-A filter: `clusters` id (read-time; does not change membership)
+  const clusterIdRaw = searchParams.get("cluster_id")?.trim() ?? null
+  const isUuid = (s: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)
+  const clusterId = clusterIdRaw && isUuid(clusterIdRaw) ? clusterIdRaw : null
+  if (clusterIdRaw && !clusterId) {
+    return NextResponse.json(
+      { error: "Invalid cluster_id", message: "cluster_id must be a valid UUID" },
+      { status: 400 },
+    )
+  }
   const sortByRaw = searchParams.get("sortBy") || "impact_score"
   const sortByAliased = SORT_ALIASES[sortByRaw] ?? sortByRaw
   const sortBy = ALLOWED_SORT.has(sortByAliased) ? sortByAliased : "impact_score"
@@ -151,6 +162,9 @@ export async function GET(request: NextRequest) {
         rows = rows.filter((r: any) => r.cluster_key_compound === compoundKey)
       }
     }
+    if (clusterId) {
+      rows = rows.filter((r: any) => r.cluster_id === clusterId)
+    }
 
     // Sort
     rows.sort((a: any, b: any) => {
@@ -202,6 +216,9 @@ export async function GET(request: NextRequest) {
       } else {
         query = query.eq("cluster_key_compound", compoundKey)
       }
+    }
+    if (clusterId) {
+      query = query.eq("cluster_id", clusterId)
     }
 
     const result = await query

@@ -49,6 +49,11 @@ interface ClassificationTriageProps {
   asOfActive: boolean
   /** Issue count in global time window for the selected heuristic category (from stats breakdown). */
   heuristicScopeIssueCount: number
+  /**
+   * When set, the semantic-cluster filter is controlled (e.g. synced with `?cluster=` on the dashboard)
+   * so the Story tab and triage can share one Layer-A cluster id.
+   */
+  semanticClusterControl?: { value: "all" | string; onChange: (id: "all" | string) => void }
 }
 
 const STATUS_OPTIONS = ["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"] as const
@@ -89,6 +94,7 @@ export function ClassificationTriage({
   lastSyncLabel,
   asOfActive,
   heuristicScopeIssueCount,
+  semanticClusterControl,
 }: ClassificationTriageProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [statusOverride, setStatusOverride] = useState<string>("triaged")
@@ -101,7 +107,16 @@ export function ClassificationTriage({
   // (Layer B). `semanticClusterFilter` is the real Layer-A semantic cluster
   // id. The two compose — a record must match both to survive `triageRecords`.
   const [groupFilter, setGroupFilter] = useState<string>("all")
-  const [semanticClusterFilter, setSemanticClusterFilter] = useState<string>("all")
+  const [internalSemanticClusterFilter, setInternalSemanticClusterFilter] = useState<string>("all")
+  const isSemanticClusterControlled = Boolean(semanticClusterControl)
+  const semanticClusterFilter = semanticClusterControl?.value ?? internalSemanticClusterFilter
+  const setSemanticClusterFilter = (id: string) => {
+    if (semanticClusterControl) {
+      semanticClusterControl.onChange(id === "all" ? "all" : id)
+    } else {
+      setInternalSemanticClusterFilter(id)
+    }
+  }
 
   // The global category filter at the top of the dashboard is a
   // *heuristic* slug from `categories.slug` (e.g. "bug",
@@ -203,6 +218,10 @@ export function ClassificationTriage({
   const hasAnyRecords = records.length > 0
   const hasGroups = groups.length > 0
   const hasSemanticClusters = semanticClusters.length > 0
+  const urlClusterInSample =
+    !semanticClusterControl ||
+    semanticClusterControl.value === "all" ||
+    semanticClusters.some((c) => c.id === semanticClusterControl.value)
   const isPipelineEmpty = !isLoading && !hasAnyRecords
   const isScopedEmpty = !isLoading && hasAnyRecords && triageRecords.length === 0
   const emptyStateImpressionRef = useRef<string | null>(null)
@@ -410,8 +429,8 @@ export function ClassificationTriage({
           </div>
         </div>
 
-        {hasSemanticClusters && (
-          <div className="space-y-2 rounded-md border p-3">
+        {(hasSemanticClusters || isSemanticClusterControlled) && (
+          <div className="space-y-2 rounded-md border p-3" id="triage-semantic-clusters">
             <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
               <Layers3 className="h-3.5 w-3.5" />
               Top semantic clusters
@@ -437,6 +456,14 @@ export function ClassificationTriage({
               >
                 All clusters
               </Button>
+              {isSemanticClusterControlled &&
+                semanticClusterControl!.value !== "all" &&
+                !urlClusterInSample && (
+                  <Button size="sm" variant="default" className="gap-2" disabled>
+                    <span className="truncate max-w-[200px]">From link</span>
+                    <Badge variant="secondary">active</Badge>
+                  </Button>
+                )}
               {semanticClusters.map((cluster) => {
                 const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
                   ? cluster.label!

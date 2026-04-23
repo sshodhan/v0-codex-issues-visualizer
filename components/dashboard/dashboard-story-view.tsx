@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { SignalTimelineStory } from "@/components/dashboard/signal-timeline-story"
 import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
-import type { FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
-import { BookOpen, ArrowDown, ExternalLink, TriangleAlert } from "lucide-react"
+import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
+import { BookOpen, ArrowDown, ExternalLink, Layers3, TriangleAlert } from "lucide-react"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
 
@@ -22,6 +22,10 @@ interface DashboardStoryViewProps {
   windowLabel: string
   onDrillErrorCode: (compoundKey: string) => void
   onOpenIssuesTable: () => void
+  clusterRows?: ClusterRollupRow[] | undefined
+  onOpenClusterInTable: (clusterId: string) => void
+  onOpenClusterInTriage: (clusterId: string) => void
+  activeClusterId: string | null
   timeDays: number
   onTimeChange: (d: number) => void
   categoryOptions: CatOpt[]
@@ -42,6 +46,10 @@ export function DashboardStoryView({
   windowLabel,
   onDrillErrorCode,
   onOpenIssuesTable,
+  clusterRows,
+  onOpenClusterInTable,
+  onOpenClusterInTriage,
+  activeClusterId,
   timeDays,
   onTimeChange,
   categoryOptions,
@@ -55,6 +63,12 @@ export function DashboardStoryView({
   const topCats = useMemo(() => groupCategoriesByCount(points).slice(0, 4), [points])
   const surges = fingerprintSurges?.surges ?? []
   const newCodes = fingerprintSurges?.new_in_window ?? []
+  const showClusterSection = (clusterRows?.length ?? 0) > 0
+
+  const clusterDisplayLabel = (r: ClusterRollupRow) => {
+    if (r.label && r.label_confidence != null && r.label_confidence >= 0.6) return r.label
+    return "Unlabelled cluster"
+  }
 
   return (
     <div className="max-w-3xl mx-auto space-y-16 pb-24">
@@ -129,6 +143,50 @@ export function DashboardStoryView({
           </ul>
         )}
       </section>
+
+      {showClusterSection && (
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 text-primary">
+            <Layers3 className="h-5 w-5" />
+            <h3 className="text-2xl font-serif font-semibold">Semantic clusters (Layer A)</h3>
+          </div>
+          <p className="text-muted-foreground leading-relaxed">
+            Top embedding-based groupings in your current time and category window. These are the same{" "}
+            <code className="text-xs bg-muted px-1 rounded">cluster_id</code> values as the issues API and the AI triage
+            tab — open the table to read raw reports, or triage to see how the LLM classified each item in the cluster.
+          </p>
+          <ul className="space-y-2">
+            {(clusterRows ?? []).slice(0, 8).map((r) => (
+              <li
+                key={r.id}
+                className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-border/60 py-3 ${
+                  activeClusterId === r.id ? "bg-muted/20 -mx-2 px-2 rounded-md border border-border/80" : ""
+                }`}
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-foreground truncate">{clusterDisplayLabel(r)}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {r.count} in window · {r.classified_count} with LLM classification timestamp
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onOpenClusterInTable(r.id)}
+                  >
+                    Open in table
+                  </Button>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => onOpenClusterInTriage(r.id)}>
+                    LLM triage
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="space-y-4">
         <div className="flex items-center gap-2 text-destructive">

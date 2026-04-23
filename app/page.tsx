@@ -1,8 +1,8 @@
 "use client"
 
-import { Suspense, useMemo, useState } from "react"
+import { Suspense, useCallback, useMemo, useState } from "react"
 import Link from "next/link"
-import { useSearchParams } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { AsOfBanner } from "@/components/dashboard/as-of-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -36,14 +36,23 @@ import {
   useClassifications,
   useClassificationStats,
   useFingerprintSurges,
+  useClusterRollup,
 } from "@/hooks/use-dashboard-data"
 import { formatDistanceToNow } from "date-fns"
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+function isUuid(s: string): boolean {
+  return UUID_RE.test(s)
+}
 
 // Inner component that uses useSearchParams (requires Suspense boundary)
 function DashboardContentInner() {
   const { version: uxVersion } = useDashboardUxVersion()
   const isV2 = isUxV2(uxVersion)
   const searchParams = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
   const asOfRaw = searchParams.get("as_of")
 
   // Validate and parse as_of parameter
@@ -69,8 +78,37 @@ function DashboardContentInner() {
     sentiment?: string
     sortBy?: string
     order?: string
-    compound_key?: string
   }>({})
+
+  /** Layer-A cluster UUID from `?cluster=` — synced with issues API `cluster_id` and triage filter. */
+  const clusterIdFromUrl = useMemo(() => {
+    const raw = searchParams.get("cluster")?.trim() ?? null
+    return raw && isUuid(raw) ? raw : null
+  }, [searchParams])
+
+  /** Regex fingerprint / compound_key drill-down from `?fingerprint=`. */
+  const compoundKeyFromUrl = useMemo(() => {
+    const raw = searchParams.get("fingerprint")?.trim()
+    if (!raw) return undefined as string | undefined
+    return raw.length > 0 && raw.length < 4000 ? raw : undefined
+  }, [searchParams])
+
+  const applyIssueSearchParams = useCallback(
+    (patch: { clusterId?: string | null; compoundKey?: string | null }) => {
+      const next = new URLSearchParams(searchParams.toString())
+      if ("clusterId" in patch) {
+        if (patch.clusterId) next.set("cluster", patch.clusterId)
+        else next.delete("cluster")
+      }
+      if ("compoundKey" in patch) {
+        if (patch.compoundKey) next.set("fingerprint", patch.compoundKey)
+        else next.delete("fingerprint")
+      }
+      const qs = next.toString()
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams],
+  )
 
   const { stats, isLoading: statsLoading, isError: statsError, refresh: refreshStats } = useDashboardStats({
     days: globalDays || undefined,
@@ -81,10 +119,15 @@ function DashboardContentInner() {
     sentiment: issueFilters.sentiment,
     sortBy: issueFilters.sortBy,
     order: issueFilters.order,
-    compound_key: issueFilters.compound_key,
+    compound_key: compoundKeyFromUrl,
+    cluster_id: clusterIdFromUrl || undefined,
     days: globalDays || undefined,
     category: globalCategory === "all" ? undefined : globalCategory,
     asOf: asOf || undefined,
+  })
+  const { data: clusterRollup } = useClusterRollup({
+    days: globalDays > 0 ? globalDays : undefined,
+    category: globalCategory,
   })
   const { scrape } = useScrape()
   const { classifications, isLoading: classificationsLoading, refresh: refreshClassifications } = useClassifications({
@@ -124,12 +167,46 @@ function DashboardContentInner() {
     }
   }
 
-  const handleFilterChange = (newFilters: typeof issueFilters) => {
-    setIssueFilters((prev) => ({ ...prev, ...newFilters }))
-    // Any fingerprint drill-down should land the user on the issues tab
-    // content. The issues table lives on the dashboard tab, so we scroll
-    // it into view rather than switching tabs.
-    if (newFilters.compound_key !== undefined && typeof window !== "undefined") {
+  const handleFilterChange = (newFilters: {
+    sentiment?: string
+    sortBy?: string
+    order?: string
+    /** Use `""` to clear the fingerprint param from the URL. */
+    compound_key?: string
+    /** Use `null` to clear the cluster param from the URL. */
+    cluster_id?: string | null
+  }) => {
+    const { compound_key, cluster_id, ...tableOnly } = newFilters
+    if (Object.keys(tableOnly).length > 0) {
+      setIssueFilters((prev) => ({ ...prev, ...tableOnly }))
+    }
+
+    if (compound_key !== undefined || cluster_id !== undefined) {
+      const next = new URLSearchParams(searchParams.toString())
+      if (compound_key !== undefined) {
+        if (compound_key) {
+          next.set("fingerprint", compound_key)
+          next.delete("cluster")
+        } else {
+          next.delete("fingerprint")
+        }
+      }
+      if (cluster_id !== undefined) {
+        if (cluster_id) {
+          next.set("cluster", cluster_id)
+          next.delete("fingerprint")
+        } else {
+          next.delete("cluster")
+        }
+      }
+      const qs = next.toString()
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+    }
+
+    const shouldScrollToTable =
+      (compound_key !== undefined && compound_key.length > 0) ||
+      (cluster_id !== undefined && cluster_id !== null)
+    if (shouldScrollToTable && typeof window !== "undefined") {
       requestAnimationFrame(() => {
         document.getElementById("issues-table-anchor")?.scrollIntoView({
           behavior: "smooth",
@@ -173,6 +250,49 @@ function DashboardContentInner() {
     setActiveTab("dashboard")
     handleFilterChange({ compound_key: compoundKey })
   }
+
+  const handleStoryOpenClusterInTable = (clusterId: string) => {
+    setActiveTab("dashboard")
+    handleFilterChange({ cluster_id: clusterId })
+  }
+
+  const handleStoryOpenClusterInTriage = (clusterId: string) => {
+    setActiveTab("classifications")
+    applyIssueSearchParams({ clusterId })
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        document.getElementById("triage-semantic-clusters")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        })
+      })
+    }
+  }
+
+  const handleTriageSemanticClusterUrl = useCallback(
+    (id: string) => {
+      const next = new URLSearchParams(searchParams.toString())
+      if (id === "all") {
+        next.delete("cluster")
+      } else {
+        next.set("cluster", id)
+        next.delete("fingerprint")
+      }
+      const qs = next.toString()
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams],
+  )
+
+  const activeClusterLabel = useMemo(() => {
+    if (!clusterIdFromUrl) return null
+    const row = (clusterRollup?.clusters || []).find((c) => c.id === clusterIdFromUrl)
+    if (!row) return "Semantic cluster"
+    if (row.label && row.label_confidence != null && row.label_confidence >= 0.6) {
+      return row.label
+    }
+    return "Unlabelled cluster"
+  }, [clusterIdFromUrl, clusterRollup])
 
   const categoryOptions = useMemo(() => {
     const dynamic = (stats?.categoryBreakdown || []).map((category) => ({
@@ -500,7 +620,9 @@ function DashboardContentInner() {
                   observationCount={issues.length}
                   canonicalCount={stats?.totalIssues || issues.length}
                   onFilterChange={handleFilterChange}
-                  activeCompoundKey={issueFilters.compound_key}
+                  activeCompoundKey={compoundKeyFromUrl}
+                  activeClusterId={clusterIdFromUrl ?? undefined}
+                  activeClusterLabel={activeClusterLabel ?? undefined}
                 />
               </div>
             </TabsContent>
@@ -516,6 +638,10 @@ function DashboardContentInner() {
                 windowLabel={fingerprintWindowLabel ?? "recent days"}
                 onDrillErrorCode={handleStoryDrillError}
                 onOpenIssuesTable={scrollToIssuesTable}
+                clusterRows={clusterRollup?.clusters}
+                onOpenClusterInTable={handleStoryOpenClusterInTable}
+                onOpenClusterInTriage={handleStoryOpenClusterInTriage}
+                activeClusterId={clusterIdFromUrl}
                 timeDays={globalDays}
                 onTimeChange={setGlobalDays}
                 categoryOptions={categoryOptions}
@@ -550,6 +676,10 @@ function DashboardContentInner() {
                 lastSyncLabel={lastScrapeTime}
                 asOfActive={asOf != null}
                 heuristicScopeIssueCount={heuristicScopeIssueCount}
+                semanticClusterControl={{
+                  value: clusterIdFromUrl ? clusterIdFromUrl : "all",
+                  onChange: handleTriageSemanticClusterUrl,
+                }}
               />
             </TabsContent>
           </Tabs>
