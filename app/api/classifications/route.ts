@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { logServerError } from "@/lib/error-tracking/server-logger"
 
 // Returns classifications joined with the most recent matching
 // classification_reviews row so the queue reflects effective (post-review)
@@ -94,15 +95,19 @@ export async function GET(request: NextRequest) {
     observationIds.length
       ? supabase
           .from("mv_observation_current")
-          .select("observation_id, title, url, sentiment, cluster_id, cluster_key")
+          .select(
+            "observation_id, title, url, sentiment, cluster_id, cluster_key, frequency_count",
+          )
           .in("observation_id", observationIds)
       : Promise.resolve({ data: [] as any[] }),
   ])
 
-  // Second-stage cluster fetch: distinct cluster ids from the observations
-  // above, then resolve label + active member count in two parallel queries.
-  // Kept separate from the first Promise.all because the cluster id set is
-  // not known until `observationRows` resolves.
+  // Second-stage cluster fetch: only labels + confidence. Active member
+  // count (`cluster_size`) comes from `mv_observation_current.frequency_count`
+  // above (backed by the `cluster_frequency` view in scripts/007; already
+  // counts members where detached_at IS NULL) — a separate `cluster_members`
+  // round-trip would duplicate that work. Kept out of the first Promise.all
+  // because the cluster id set is not known until `observationRows` resolves.
   const clusterIds = Array.from(
     new Set(
       (observationRows || [])
@@ -110,21 +115,25 @@ export async function GET(request: NextRequest) {
         .filter((v: string | null): v is string => Boolean(v)),
     ),
   )
-  const [{ data: clusterRows }, { data: memberRows }] = await Promise.all([
-    clusterIds.length
-      ? supabase
-          .from("clusters")
-          .select("id, cluster_key, label, label_confidence")
-          .in("id", clusterIds)
-      : Promise.resolve({ data: [] as any[] }),
-    clusterIds.length
-      ? supabase
-          .from("cluster_members")
-          .select("cluster_id")
-          .in("cluster_id", clusterIds)
-          .is("detached_at", null)
-      : Promise.resolve({ data: [] as any[] }),
-  ])
+  const { data: clusterRows, error: clusterError } = clusterIds.length
+    ? await supabase
+        .from("clusters")
+        .select("id, cluster_key, label, label_confidence")
+        .in("id", clusterIds)
+    : { data: [] as any[], error: null }
+
+  if (clusterError) {
+    // Cluster enrichment failure is non-fatal — the rest of the response
+    // (classifications, reviews, observation traceability) is still useful,
+    // so degrade to null cluster fields rather than 500 the whole queue.
+    // Log to the server error channel so monitoring catches it.
+    logServerError(
+      "api-classifications",
+      "cluster_label_fetch_failed",
+      clusterError,
+      { cluster_id_count: clusterIds.length },
+    )
+  }
 
   const latestReviewByClassification = new Map<string, any>()
   for (const review of reviews || []) {
@@ -138,17 +147,14 @@ export async function GET(request: NextRequest) {
     observationMap.set(o.observation_id, o)
   }
 
-  const memberCountByCluster = new Map<string, number>()
-  for (const m of memberRows || []) {
-    memberCountByCluster.set(m.cluster_id, (memberCountByCluster.get(m.cluster_id) ?? 0) + 1)
-  }
-
-  const clusterMap = new Map<string, { label: string | null; label_confidence: number | null; size: number }>()
+  const clusterMap = new Map<
+    string,
+    { label: string | null; label_confidence: number | null }
+  >()
   for (const c of clusterRows || []) {
     clusterMap.set(c.id, {
       label: c.label ?? null,
       label_confidence: c.label_confidence ?? null,
-      size: memberCountByCluster.get(c.id) ?? 0,
     })
   }
 
@@ -171,13 +177,16 @@ export async function GET(request: NextRequest) {
       source_issue_title: obs?.title ?? null,
       source_issue_sentiment: obs?.sentiment ?? null,
       // Semantic-cluster identity carried from the observation's current
-      // cluster membership. `cluster_key` can be `semantic:<digest>` or
-      // `title:<md5>` — treat as an internal id, not user-facing copy.
+      // cluster membership. `cluster_key` (prefixed `semantic:` or `title:`)
+      // is an internal identifier used by the chip-strip memo to hide
+      // title-hash singletons — never render it in user-visible copy.
+      // `cluster_size` is live (not filtered by `as_of`); clusters carry
+      // no derivation timestamp so as-of replay is intentionally "now" here.
       cluster_id: obs?.cluster_id ?? null,
       cluster_key: obs?.cluster_key ?? null,
       cluster_label: cluster?.label ?? null,
       cluster_label_confidence: cluster?.label_confidence ?? null,
-      cluster_size: cluster?.size ?? null,
+      cluster_size: obs?.cluster_id ? Number(obs?.frequency_count ?? 0) : null,
     }
   })
 

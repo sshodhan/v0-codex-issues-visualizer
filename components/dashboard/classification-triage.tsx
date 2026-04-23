@@ -46,6 +46,25 @@ interface ClassificationTriageProps {
 const STATUS_OPTIONS = ["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"] as const
 const SEVERITY_OPTIONS = ["critical", "high", "medium", "low"] as const
 
+// Cluster-label confidence comes from a self-reported score returned by the
+// labelling model (see lib/storage/semantic-clusters.ts). Raw 2-decimal
+// display (`0.82`) implies a calibrated precision the number does not carry.
+// Bucket at display time; below 0.6 we refuse to show the label at all.
+// Data-scientist review finding M1.
+const LABEL_CONFIDENCE_SHOW_THRESHOLD = 0.6
+const LABEL_CONFIDENCE_HIGH_THRESHOLD = 0.8
+
+function bucketConfidence(confidence: number): "High" | "Medium" {
+  return confidence >= LABEL_CONFIDENCE_HIGH_THRESHOLD ? "High" : "Medium"
+}
+
+function hasTrustedLabel(
+  label: string | null,
+  confidence: number | null,
+): boolean {
+  return label !== null && confidence !== null && confidence >= LABEL_CONFIDENCE_SHOW_THRESHOLD
+}
+
 export function ClassificationTriage({ records, stats, isLoading, activeCategory, timeDays, onRefresh }: ClassificationTriageProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [statusOverride, setStatusOverride] = useState<string>("triaged")
@@ -112,13 +131,29 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
   // observation-level `cluster_id`; records without a cluster membership
   // (clustering not yet run, embedding failed, below similarity threshold)
   // are skipped so the chip strip only shows actionable clusters.
+  //
+  // Deterministic title-hash fallback clusters (`title:<md5>` keys) are
+  // only surfaced when they have multiple members — a `title:` singleton
+  // carries no more information than the existing group-by and would
+  // render as meaningless "Unlabelled cluster · 1 obs" noise next to
+  // real semantic clusters (data-scientist review finding H2).
   const semanticClusters = useMemo(() => {
-    const grouped = new Map<string, { id: string; label: string | null; size: number; total: number }>()
+    type Bucket = {
+      id: string
+      key: string | null
+      label: string | null
+      label_confidence: number | null
+      size: number
+      total: number
+    }
+    const grouped = new Map<string, Bucket>()
     for (const record of globallyFilteredRecords) {
       if (!record.cluster_id) continue
       const current = grouped.get(record.cluster_id) ?? {
         id: record.cluster_id,
+        key: record.cluster_key,
         label: record.cluster_label,
+        label_confidence: record.cluster_label_confidence,
         size: record.cluster_size ?? 0,
         total: 0,
       }
@@ -126,7 +161,8 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
       grouped.set(record.cluster_id, current)
     }
     return Array.from(grouped.values())
-      .sort((a, b) => b.total - a.total)
+      .filter((c) => (c.key?.startsWith("semantic:") ?? false) || c.size >= 2)
+      .sort((a, b) => b.total - a.total || b.size - a.size)
       .slice(0, 10)
   }, [globallyFilteredRecords])
 
@@ -359,31 +395,42 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
                 All clusters
               </Button>
               {semanticClusters.map((cluster) => {
-                const displayLabel = cluster.label ?? "Unlabelled cluster"
+                const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
+                  ? cluster.label!
+                  : "Unlabelled cluster"
+                // Chip text makes in-scope vs total disambiguation explicit:
+                // the primary badge is the number visible right now, the
+                // outline badge (when different) is the total active
+                // membership. Tooltip spells it out for anyone unsure.
+                const chipTitle = `${cluster.total} in current view · ${cluster.size} total observation${cluster.size === 1 ? "" : "s"}`
                 return (
-                  <Button
-                    key={cluster.id}
-                    size="sm"
-                    variant={semanticClusterFilter === cluster.id ? "default" : "outline"}
-                    onClick={() => {
-                      try {
-                        setSemanticClusterFilter(cluster.id)
-                      } catch (error) {
-                        logClientError(error, "ClassificationTriageSemanticClusterFilterError", {
-                          semanticClusterFilter,
-                          targetFilter: cluster.id,
-                          context: "Semantic cluster chip clicked",
-                        })
-                      }
-                    }}
-                    className="gap-2"
-                  >
-                    <span className="truncate max-w-[220px]">{displayLabel}</span>
-                    <Badge variant="secondary">{cluster.total}</Badge>
-                    {cluster.size > cluster.total && (
-                      <Badge variant="outline">{cluster.size} obs</Badge>
-                    )}
-                  </Button>
+                  <Tooltip key={cluster.id}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="sm"
+                        variant={semanticClusterFilter === cluster.id ? "default" : "outline"}
+                        onClick={() => {
+                          try {
+                            setSemanticClusterFilter(cluster.id)
+                          } catch (error) {
+                            logClientError(error, "ClassificationTriageSemanticClusterFilterError", {
+                              semanticClusterFilter,
+                              targetFilter: cluster.id,
+                              context: "Semantic cluster chip clicked",
+                            })
+                          }
+                        }}
+                        className="gap-2"
+                      >
+                        <span className="truncate max-w-[220px]">{displayLabel}</span>
+                        <Badge variant="secondary">{cluster.total} here</Badge>
+                        {cluster.size > cluster.total && (
+                          <Badge variant="outline">{cluster.size} total</Badge>
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{chipTitle}</TooltipContent>
+                  </Tooltip>
                 )
               })}
             </div>
@@ -472,26 +519,31 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
             <p className="text-sm font-medium">Reviewer panel for selected classification</p>
             <p className="text-sm text-muted-foreground">{selected.summary}</p>
 
-            {selected.cluster_id && (
-              <div
-                className="rounded-md border bg-muted/30 p-3 text-sm"
-                title={selected.cluster_key ?? undefined}
-              >
-                <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
-                  <Layers3 className="h-3.5 w-3.5" />
-                  Semantic cluster
-                </p>
-                <p className="mt-1 font-medium">{selected.cluster_label ?? "Unlabelled cluster"}</p>
-                <p className="text-xs text-muted-foreground">
-                  {selected.cluster_size ?? 0} related observation{selected.cluster_size === 1 ? "" : "s"}
-                  {" · "}
-                  confidence{" "}
-                  {selected.cluster_label_confidence != null
-                    ? selected.cluster_label_confidence.toFixed(2)
-                    : "—"}
-                </p>
-              </div>
-            )}
+            {selected.cluster_id &&
+              (selected.cluster_key?.startsWith("semantic:") ||
+                (selected.cluster_size ?? 0) >= 2) && (
+                <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                  <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+                    <Layers3 className="h-3.5 w-3.5" />
+                    Semantic cluster
+                  </p>
+                  <p className="mt-1 font-medium">
+                    {hasTrustedLabel(selected.cluster_label, selected.cluster_label_confidence)
+                      ? selected.cluster_label
+                      : "Unlabelled cluster"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {selected.cluster_size ?? 0} related observation
+                    {(selected.cluster_size ?? 0) === 1 ? "" : "s"}
+                    {hasTrustedLabel(selected.cluster_label, selected.cluster_label_confidence) && (
+                      <>
+                        {" · "}
+                        {bucketConfidence(selected.cluster_label_confidence!)} confidence
+                      </>
+                    )}
+                  </p>
+                </div>
+              )}
 
             {/* Review History Panel */}
             {(selected.latest_review || selected.prior_classification_id) && (
