@@ -99,12 +99,12 @@ export function FingerprintSurgeCard({
                 <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
                 Trending Errors
               </CardTitle>
-              <span className="text-xs text-muted-foreground">
-                {headline} · {windowLabel}
+              <span className={`text-xs font-medium ${hasAnything ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                {hasAnything ? headline : "All clear"}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Current status: <span className={hasAnything ? "font-medium text-amber-600 dark:text-amber-400" : "font-medium text-emerald-600 dark:text-emerald-400"}>{hasAnything ? "attention needed" : "all clear"}</span> · Last Sync: {data?.last_synced ? new Date(data.last_synced).toLocaleString() : "—"}
+              {windowLabel} · Last Sync: {data?.last_synced ? new Date(data.last_synced).toLocaleString() : "—"}
             </p>
             {variant === "v2" && (
               <MethodologyTriggerButton
