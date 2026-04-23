@@ -309,6 +309,17 @@ export interface ClassificationRecord {
   source_issue_url: string | null
   source_issue_title: string | null
   source_issue_sentiment: "positive" | "negative" | "neutral" | null
+  // Semantic-cluster identity for the linked observation. Null when the
+  // observation has no cluster membership (clustering hasn't run, embedding
+  // failed, or below the cosine threshold). `cluster_key` prefix distinguishes
+  // `semantic:<digest>` (real clustering) from `title:<md5>` (fallback); it
+  // is an implementation detail and should not be rendered to users — use
+  // `cluster_label` with an "Unlabelled cluster" placeholder instead.
+  cluster_id: string | null
+  cluster_key: string | null
+  cluster_label: string | null
+  cluster_label_confidence: number | null
+  cluster_size: number | null
 }
 
 export interface ClassificationStats {

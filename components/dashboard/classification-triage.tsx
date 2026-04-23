@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState, useEffect, useRef } from "react"
-import { AlertTriangle, ExternalLink, ShieldCheck, ChevronDown, History } from "lucide-react"
+import { AlertTriangle, ExternalLink, ShieldCheck, ChevronDown, History, Layers3 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -46,6 +46,25 @@ interface ClassificationTriageProps {
 const STATUS_OPTIONS = ["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"] as const
 const SEVERITY_OPTIONS = ["critical", "high", "medium", "low"] as const
 
+// Cluster-label confidence comes from a self-reported score returned by the
+// labelling model (see lib/storage/semantic-clusters.ts). Raw 2-decimal
+// display (`0.82`) implies a calibrated precision the number does not carry.
+// Bucket at display time; below 0.6 we refuse to show the label at all.
+// Data-scientist review finding M1.
+const LABEL_CONFIDENCE_SHOW_THRESHOLD = 0.6
+const LABEL_CONFIDENCE_HIGH_THRESHOLD = 0.8
+
+function bucketConfidence(confidence: number): "High" | "Medium" {
+  return confidence >= LABEL_CONFIDENCE_HIGH_THRESHOLD ? "High" : "Medium"
+}
+
+function hasTrustedLabel(
+  label: string | null,
+  confidence: number | null,
+): boolean {
+  return label !== null && confidence !== null && confidence >= LABEL_CONFIDENCE_SHOW_THRESHOLD
+}
+
 export function ClassificationTriage({ records, stats, isLoading, activeCategory, timeDays, onRefresh }: ClassificationTriageProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [statusOverride, setStatusOverride] = useState<string>("triaged")
@@ -54,7 +73,11 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
   const [reviewer, setReviewer] = useState<string>("")
   const [notes, setNotes] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [clusterFilter, setClusterFilter] = useState<string>("all")
+  // `groupFilter` is the (effective_category › subcategory) triage group
+  // (Layer B). `semanticClusterFilter` is the real Layer-A semantic cluster
+  // id. The two compose — a record must match both to survive `triageRecords`.
+  const [groupFilter, setGroupFilter] = useState<string>("all")
+  const [semanticClusterFilter, setSemanticClusterFilter] = useState<string>("all")
 
   // The global category filter at the top of the dashboard is a
   // *heuristic* slug from `categories.slug` (e.g. "bug",
@@ -88,7 +111,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
     })
   }, [records, effectiveCategoryFilter, timeDays])
 
-  const clusters = useMemo(() => {
+  const groups = useMemo(() => {
     const grouped = new Map<string, { total: number; highRisk: number }>()
     for (const record of globallyFilteredRecords) {
       const key = `${record.effective_category} › ${record.subcategory || "General"}`
@@ -104,31 +127,79 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
       .slice(0, 10)
   }, [globallyFilteredRecords])
 
+  // Real (Layer A) semantic clusters in the current scope. Groups by
+  // observation-level `cluster_id`; records without a cluster membership
+  // (clustering not yet run, embedding failed, below similarity threshold)
+  // are skipped so the chip strip only shows actionable clusters.
+  //
+  // Deterministic title-hash fallback clusters (`title:<md5>` keys) are
+  // only surfaced when they have multiple members — a `title:` singleton
+  // carries no more information than the existing group-by and would
+  // render as meaningless "Unlabelled cluster · 1 obs" noise next to
+  // real semantic clusters (data-scientist review finding H2).
+  const semanticClusters = useMemo(() => {
+    type Bucket = {
+      id: string
+      key: string | null
+      label: string | null
+      label_confidence: number | null
+      size: number
+      total: number
+    }
+    const grouped = new Map<string, Bucket>()
+    for (const record of globallyFilteredRecords) {
+      if (!record.cluster_id) continue
+      const current = grouped.get(record.cluster_id) ?? {
+        id: record.cluster_id,
+        key: record.cluster_key,
+        label: record.cluster_label,
+        label_confidence: record.cluster_label_confidence,
+        size: record.cluster_size ?? 0,
+        total: 0,
+      }
+      current.total += 1
+      grouped.set(record.cluster_id, current)
+    }
+    return Array.from(grouped.values())
+      .filter((c) => (c.key?.startsWith("semantic:") ?? false) || c.size >= 2)
+      .sort((a, b) => b.total - a.total || b.size - a.size)
+      .slice(0, 10)
+  }, [globallyFilteredRecords])
+
   const triageRecords = useMemo(() => {
-    if (clusterFilter === "all") return globallyFilteredRecords
-    return globallyFilteredRecords.filter((record) => `${record.effective_category} › ${record.subcategory || "General"}` === clusterFilter)
-  }, [globallyFilteredRecords, clusterFilter])
+    return globallyFilteredRecords.filter((record) => {
+      const groupMatch =
+        groupFilter === "all" ||
+        `${record.effective_category} › ${record.subcategory || "General"}` === groupFilter
+      const semanticMatch =
+        semanticClusterFilter === "all" || record.cluster_id === semanticClusterFilter
+      return groupMatch && semanticMatch
+    })
+  }, [globallyFilteredRecords, groupFilter, semanticClusterFilter])
   const hasAnyRecords = records.length > 0
-  const hasClusters = clusters.length > 0
+  const hasGroups = groups.length > 0
+  const hasSemanticClusters = semanticClusters.length > 0
   const isPipelineEmpty = !isLoading && !hasAnyRecords
   const isScopedEmpty = !isLoading && hasAnyRecords && triageRecords.length === 0
   const emptyStateImpressionRef = useRef<string | null>(null)
 
-  // Auto-select first record when cluster filter changes
-  const prevClusterFilterRef = useRef(clusterFilter)
+  // Auto-select first record when either filter changes. Tracking both
+  // filters in the ref keeps the detail panel in sync regardless of which
+  // chip strip the reviewer interacts with.
+  const prevFilterKeyRef = useRef(`${groupFilter}|${semanticClusterFilter}`)
   useEffect(() => {
-    if (prevClusterFilterRef.current !== clusterFilter) {
-      prevClusterFilterRef.current = clusterFilter
+    const key = `${groupFilter}|${semanticClusterFilter}`
+    if (prevFilterKeyRef.current !== key) {
+      prevFilterKeyRef.current = key
       if (triageRecords.length > 0) {
         const firstRecord = triageRecords[0]
-        console.log("[v0] Auto-selecting first record in new cluster:", firstRecord.id)
         setSelectedId(firstRecord.id)
         setStatusOverride(firstRecord.effective_status)
         setSeverityOverride(firstRecord.effective_severity)
         setCategoryOverride(firstRecord.effective_category)
       }
     }
-  }, [clusterFilter, triageRecords])
+  }, [groupFilter, semanticClusterFilter, triageRecords])
 
   useEffect(() => {
     const stateKey = isPipelineEmpty ? "pipeline-empty" : isScopedEmpty ? "scoped-empty" : null
@@ -141,16 +212,20 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
     if (emptyStateImpressionRef.current === stateKey) return
     emptyStateImpressionRef.current = stateKey
 
+    // Analytics key `cluster_filter` preserved for back-compat with existing
+    // funnels; populated from the renamed `groupFilter` state.
     void track("classification_triage_empty_state_impression", {
       empty_state: stateKey,
       active_category: activeCategory,
       time_days: timeDays,
-      cluster_filter: clusterFilter,
-      has_clusters: hasClusters,
+      cluster_filter: groupFilter,
+      semantic_cluster_filter: semanticClusterFilter,
+      has_clusters: hasGroups,
+      has_semantic_clusters: hasSemanticClusters,
       records_total: records.length,
       records_in_scope: globallyFilteredRecords.length,
     })
-  }, [activeCategory, clusterFilter, globallyFilteredRecords.length, hasClusters, isPipelineEmpty, isScopedEmpty, records.length, timeDays])
+  }, [activeCategory, groupFilter, semanticClusterFilter, globallyFilteredRecords.length, hasGroups, hasSemanticClusters, isPipelineEmpty, isScopedEmpty, records.length, timeDays])
 
   const selected = useMemo(
     () => triageRecords.find((record) => record.id === selectedId) || null,
@@ -192,7 +267,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
           Classification Triage & Reviewer Workflow
         </CardTitle>
         <CardDescription>
-          Clustered classification lanes make it faster to jump into dense issue pockets and review related reports in one pass.
+          Grouped classification lanes make it faster to jump into dense issue pockets and review related reports in one pass. Semantic clusters (below) surface reports that share a root cause regardless of how they were categorised.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -222,7 +297,7 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
               Global category filter <span className="font-medium">"{activeCategory}"</span>{" "}
               uses the dashboard's heuristic taxonomy (Bug, Feature Request, Performance, …); LLM
               classifications use a different category enum (code-generation-quality,
-              tool-use-failure, …). Showing all LLM classifications in scope. Use the cluster
+              tool-use-failure, …). Showing all LLM classifications in scope. Use the group
               filter below to narrow.
             </p>
           </div>
@@ -242,57 +317,138 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
         )}
 
         <div className="space-y-2 rounded-md border p-3">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Top classification clusters</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Top triage groups</p>
+          <p className="text-xs text-muted-foreground">
+            Virtual lanes by classified category × subcategory.
+          </p>
           <div className="flex flex-wrap gap-2">
             <Tooltip>
               <TooltipTrigger asChild>
                 <span>
                   <Button
                     size="sm"
-                    variant={clusterFilter === "all" ? "default" : "outline"}
-                    disabled={!hasClusters}
+                    variant={groupFilter === "all" ? "default" : "outline"}
+                    disabled={!hasGroups}
                     onClick={() => {
                       try {
-                        setClusterFilter("all")
+                        setGroupFilter("all")
                       } catch (error) {
-                        logClientError(error, "ClassificationTriageClusterFilterError", {
-                          clusterFilter,
+                        logClientError(error, "ClassificationTriageGroupFilterError", {
+                          groupFilter,
                           targetFilter: "all",
-                          context: "All clusters button clicked",
+                          context: "All groups button clicked",
                         })
                       }
                     }}
                   >
-                    All clusters
+                    All groups
                   </Button>
                 </span>
               </TooltipTrigger>
-              {!hasClusters && (
+              {!hasGroups && (
                 <TooltipContent>
-                  Cluster filters are disabled until classification output is available.
+                  Group filters are disabled until classification output is available.
                 </TooltipContent>
               )}
             </Tooltip>
-            {clusters.map((cluster) => (
+            {groups.map((group) => (
               <Button
-                key={cluster.name}
+                key={group.name}
                 size="sm"
-                variant={clusterFilter === cluster.name ? "default" : "outline"}
-                onClick={() => setClusterFilter(cluster.name)}
+                variant={groupFilter === group.name ? "default" : "outline"}
+                onClick={() => setGroupFilter(group.name)}
                 className="gap-2"
               >
-                <span className="truncate max-w-[220px]">{cluster.name}</span>
-                <Badge variant="secondary">{cluster.total}</Badge>
-                {cluster.highRisk > 0 && <Badge variant="destructive">{cluster.highRisk} high</Badge>}
+                <span className="truncate max-w-[220px]">{group.name}</span>
+                <Badge variant="secondary">{group.total}</Badge>
+                {group.highRisk > 0 && <Badge variant="destructive">{group.highRisk} high</Badge>}
               </Button>
             ))}
           </div>
         </div>
 
+        {hasSemanticClusters && (
+          <div className="space-y-2 rounded-md border p-3">
+            <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+              <Layers3 className="h-3.5 w-3.5" />
+              Top semantic clusters
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Embedding-based groupings of observations that share a root cause across categories.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant={semanticClusterFilter === "all" ? "default" : "outline"}
+                onClick={() => {
+                  try {
+                    setSemanticClusterFilter("all")
+                  } catch (error) {
+                    logClientError(error, "ClassificationTriageSemanticClusterFilterError", {
+                      semanticClusterFilter,
+                      targetFilter: "all",
+                      context: "All semantic clusters button clicked",
+                    })
+                  }
+                }}
+              >
+                All clusters
+              </Button>
+              {semanticClusters.map((cluster) => {
+                const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
+                  ? cluster.label!
+                  : "Unlabelled cluster"
+                // Chip text makes in-scope vs total disambiguation explicit:
+                // the primary badge is the number visible right now, the
+                // outline badge (when different) is the total active
+                // membership. Tooltip spells it out for anyone unsure.
+                const chipTitle = `${cluster.total} in current view · ${cluster.size} total observation${cluster.size === 1 ? "" : "s"}`
+                return (
+                  <Tooltip key={cluster.id}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="sm"
+                        variant={semanticClusterFilter === cluster.id ? "default" : "outline"}
+                        onClick={() => {
+                          try {
+                            setSemanticClusterFilter(cluster.id)
+                          } catch (error) {
+                            logClientError(error, "ClassificationTriageSemanticClusterFilterError", {
+                              semanticClusterFilter,
+                              targetFilter: cluster.id,
+                              context: "Semantic cluster chip clicked",
+                            })
+                          }
+                        }}
+                        className="gap-2"
+                      >
+                        <span className="truncate max-w-[220px]">{displayLabel}</span>
+                        <Badge variant="secondary">{cluster.total} here</Badge>
+                        {cluster.size > cluster.total && (
+                          <Badge variant="outline">{cluster.size} total</Badge>
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{chipTitle}</TooltipContent>
+                  </Tooltip>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading classifications...</p>
         ) : isScopedEmpty ? (
-          <p className="text-sm text-muted-foreground">No classifier records in this scope. Adjust global sliders or cluster filter.</p>
+          <p className="text-sm text-muted-foreground">
+            {groupFilter !== "all" && semanticClusterFilter !== "all"
+              ? `No records match both the "${groupFilter}" triage group and the selected semantic cluster. Clear one filter to widen the view.`
+              : groupFilter !== "all"
+                ? `No records match the "${groupFilter}" triage group. Clear it or widen the global sliders.`
+                : semanticClusterFilter !== "all"
+                  ? "No records match the selected semantic cluster. Clear it or widen the global sliders."
+                  : "No classifier records in this scope. Adjust global sliders, the triage-group filter, or the semantic-cluster filter."}
+          </p>
         ) : isPipelineEmpty ? (
           <p className="text-sm text-muted-foreground">Run a scrape + classification job, then refresh this queue.</p>
         ) : (
@@ -362,6 +518,32 @@ export function ClassificationTriage({ records, stats, isLoading, activeCategory
           <div className="space-y-3 rounded-lg border p-4">
             <p className="text-sm font-medium">Reviewer panel for selected classification</p>
             <p className="text-sm text-muted-foreground">{selected.summary}</p>
+
+            {selected.cluster_id &&
+              (selected.cluster_key?.startsWith("semantic:") ||
+                (selected.cluster_size ?? 0) >= 2) && (
+                <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                  <p className="inline-flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+                    <Layers3 className="h-3.5 w-3.5" />
+                    Semantic cluster
+                  </p>
+                  <p className="mt-1 font-medium">
+                    {hasTrustedLabel(selected.cluster_label, selected.cluster_label_confidence)
+                      ? selected.cluster_label
+                      : "Unlabelled cluster"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {selected.cluster_size ?? 0} related observation
+                    {(selected.cluster_size ?? 0) === 1 ? "" : "s"}
+                    {hasTrustedLabel(selected.cluster_label, selected.cluster_label_confidence) && (
+                      <>
+                        {" · "}
+                        {bucketConfidence(selected.cluster_label_confidence!)} confidence
+                      </>
+                    )}
+                  </p>
+                </div>
+              )}
 
             {/* Review History Panel */}
             {(selected.latest_review || selected.prior_classification_id) && (
