@@ -1,6 +1,9 @@
 "use client"
 
 import useSWR from "swr"
+import type { PrerequisiteStatus } from "@/lib/classification/prerequisites"
+
+export type { PrerequisiteStatus }
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
 
@@ -331,6 +334,11 @@ export interface ClassificationStats {
   bySeverity: Record<string, number>
   byStatus: Record<string, number>
   bySentiment: Record<string, number>
+  // Optional so older server payloads during deploy don't break the
+  // type contract. null (not undefined) indicates the prereq fetch
+  // failed server-side — UI should fall back to the generic
+  // "No AI classifications yet" copy in that case.
+  prerequisites?: PrerequisiteStatus | null
 }
 
 export function useClassifications(filters?: {
@@ -361,9 +369,10 @@ export function useClassifications(filters?: {
   }
 }
 
-export function useClassificationStats(options?: { asOf?: string }) {
+export function useClassificationStats(options?: { asOf?: string; days?: number }) {
   const params = new URLSearchParams()
   if (options?.asOf) params.set("as_of", options.asOf)
+  if (options?.days) params.set("days", String(options.days))
   const queryString = params.toString()
   const url = queryString ? `/api/classifications/stats?${queryString}` : "/api/classifications/stats"
 

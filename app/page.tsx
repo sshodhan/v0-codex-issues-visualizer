@@ -92,6 +92,10 @@ function DashboardContentInner() {
   })
   const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats({
     asOf: asOf || undefined,
+    // Prereq panel counts observations in the same window the dashboard
+    // is showing. 0 (= "All time") maps to undefined so the server-side
+    // default (no cutoff) applies.
+    days: globalDays > 0 ? globalDays : undefined,
   })
   const { data: fingerprintSurges, refresh: refreshFingerprintSurges } = useFingerprintSurges(24)
 

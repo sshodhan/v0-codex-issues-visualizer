@@ -153,9 +153,33 @@ Historical `clusterFilter` / "TOP CLASSIFICATION CLUSTERS" / "Clustered classifi
 
 ### UI — triage behavior
 - Triage UI distinguishes:
-  - pipeline-empty (no classifications generated yet),
+  - pipeline-empty (no classifications generated yet) — renders a **pipeline status panel** (see below),
   - scope-empty (filters remove existing records).
 - Group filter controls are disabled when no groups exist, with explicit tooltip guidance.
+
+#### Pipeline status panel
+When the triage queue is empty (no classifications in the current window), the empty state renders a live prerequisite breakdown rather than a generic "no data" message. Data source: `GET /api/classifications/stats?days=<N>` → `prerequisites` field, which runs four parallel count queries against `mv_observation_current` and `scrape_logs`.
+
+Each row reports one prerequisite step with a ✓ / ⚠ / ✗ icon:
+
+| Row | Source | Interpretation |
+| --- | --- | --- |
+| Observations in scope | `mv_observation_current` count filtered by `is_canonical` + window | ✓ > 0 |
+| Semantic clustering | `cluster_id IS NOT NULL` ratio | ✓ 100%, ⚠ partial, ✗ 0% |
+| Classifications | `llm_classified_at IS NOT NULL` ratio | ✓ 100%, ⚠ partial, ✗ 0% |
+| OpenAI API key | `process.env.OPENAI_API_KEY` | ✓ set, ✗ missing |
+| Last scrape | most recent `scrape_logs` row with `source_id IS NOT NULL` | relative time |
+| Last classify-backfill | most recent `scrape_logs` row with `source_id IS NULL` | relative time |
+
+The panel's primary CTA is picked by `pickPrimaryCta(prereq)` in `lib/classification/prerequisites.ts` with deliberate precedence:
+1. `observationsInWindow === 0` → no CTA (upstream fix needed: wait for scrape / check cron).
+2. `!openaiConfigured` → inline warning; no click-through (backfill would 503).
+3. `pendingClassification > 0` → **"Run classify-backfill →"** linking to `/admin?tab=classify-backfill`.
+4. `pendingClustering > 0` (and classification caught up) → **"Rebuild clustering →"** linking to `/admin?tab=clustering`.
+5. All caught up → no CTA (panel shouldn't render anyway; defensive).
+
+When primary is classify-backfill and clustering is also behind, a secondary "Rebuild clustering" button renders alongside to save the reviewer a round-trip. Prereq fetch failures (server-side log via `logServerError` component `api-classifications-stats`) degrade to a minimal fallback panel — no 500, no blank card.
+
 - The semantic-cluster chip strip only renders when at least one in-scope classification has `cluster_id != null`. Records without cluster membership (embedding failed, below-threshold similarity, or clustering not yet run) are simply invisible to the chip strip.
 - Cluster labels render as **"Unlabelled cluster"** when `cluster_label` is null. Raw `cluster_key` values (`semantic:<digest>` or `title:<md5>`) are implementation detail and surface only through a `title=` attribute tooltip — never as user-facing copy.
 - The triage detail panel shows a "Semantic cluster" block with label, member count, and confidence (2dp) whenever the selected record has a `cluster_id`.

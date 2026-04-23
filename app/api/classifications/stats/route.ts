@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { logServerError } from "@/lib/error-tracking/server-logger"
 
 // Aggregates over classifications joined with their latest review (effective
 // state). Traceability coverage is derived from the presence of
@@ -21,6 +22,105 @@ interface ReviewRow {
   severity: string | null
   needs_human_review: boolean | null
   reviewed_at: string
+}
+
+// Prerequisite status of the ingest → cluster → classify pipeline for the
+// current time window. Powers the empty-state panel on the AI triage tab
+// so a reviewer can see which step is blocking (and deep-link to the right
+// admin tab to trigger it) instead of getting a generic "no classifications
+// yet" message. See components/dashboard/classification-triage.tsx.
+//
+// All counts are canonical observations only (is_canonical = true on
+// mv_observation_current) — duplicate/detached rows would distort the
+// progress ratios. `classifiedCount` and `clusteredCount` derive from
+// `llm_classified_at` / `cluster_id` on the same MV so they're already
+// window-filtered by published_at alongside `observationsInWindow`.
+interface PrerequisiteStatus {
+  observationsInWindow: number
+  classifiedCount: number
+  clusteredCount: number
+  pendingClassification: number
+  pendingClustering: number
+  openaiConfigured: boolean
+  lastScrape: { at: string | null; status: string | null }
+  lastClassifyBackfill: { at: string | null; status: string | null }
+}
+
+// Fan out the four prerequisite queries in parallel, resilient to any one
+// of them failing — the panel degrades to nulls rather than 500'ing the
+// stats endpoint. Canonical observations only; the `is_canonical` index
+// makes the count queries cheap. `lastClassifyBackfill` is identified by
+// `source_id IS NULL` (admin + cron share the convention — see
+// app/api/cron/classify-backfill/route.ts).
+async function computePrerequisites(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  publishedAtCutoff: Date | null,
+): Promise<PrerequisiteStatus | null> {
+  try {
+    const cutoffIso = publishedAtCutoff?.toISOString() ?? null
+
+    const obsBase = () => {
+      let q = supabase
+        .from("mv_observation_current")
+        .select("*", { count: "exact", head: true })
+        .eq("is_canonical", true)
+      if (cutoffIso) q = q.gte("published_at", cutoffIso)
+      return q
+    }
+
+    const [obsRes, classifiedRes, clusteredRes, lastScrapeRes, lastBackfillRes] =
+      await Promise.all([
+        obsBase(),
+        obsBase().not("llm_classified_at", "is", null),
+        obsBase().not("cluster_id", "is", null),
+        supabase
+          .from("scrape_logs")
+          .select("started_at, completed_at, status")
+          .not("source_id", "is", null)
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabase
+          .from("scrape_logs")
+          .select("started_at, completed_at, status")
+          .is("source_id", null)
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ])
+
+    const observationsInWindow = obsRes.count ?? 0
+    const classifiedCount = classifiedRes.count ?? 0
+    const clusteredCount = clusteredRes.count ?? 0
+
+    const pickTs = (row: { completed_at?: string | null; started_at?: string | null } | null) =>
+      row?.completed_at ?? row?.started_at ?? null
+
+    return {
+      observationsInWindow,
+      classifiedCount,
+      clusteredCount,
+      pendingClassification: Math.max(0, observationsInWindow - classifiedCount),
+      pendingClustering: Math.max(0, observationsInWindow - clusteredCount),
+      openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
+      lastScrape: {
+        at: pickTs(lastScrapeRes.data),
+        status: (lastScrapeRes.data?.status as string | null) ?? null,
+      },
+      lastClassifyBackfill: {
+        at: pickTs(lastBackfillRes.data),
+        status: (lastBackfillRes.data?.status as string | null) ?? null,
+      },
+    }
+  } catch (error) {
+    logServerError(
+      "api-classifications-stats",
+      "prerequisites_fetch_failed",
+      error,
+      { publishedAtCutoff: publishedAtCutoff?.toISOString() ?? null },
+    )
+    return null
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -53,6 +153,25 @@ export async function GET(request: NextRequest) {
     asOf = parsed
   }
 
+  // Optional `?days=N` window for the prerequisite panel. Mirrors the
+  // pattern used by /api/stats and /api/classifications' global time
+  // filter — unset/0 = all time. The aggregate classification stats
+  // (total, byCategory, …) intentionally stay window-agnostic since the
+  // panel reads prereq fields separately from the totals.
+  const daysRaw = searchParams.get("days")
+  const parsedDays = daysRaw !== null ? Number.parseInt(daysRaw, 10) : NaN
+  const windowDays =
+    Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : null
+  const anchor = asOf ?? new Date()
+  const publishedAtCutoff = windowDays
+    ? new Date(anchor.getTime() - windowDays * 24 * 60 * 60 * 1000)
+    : null
+
+  // Prereq fetch runs in parallel with the classification read below
+  // (they have no data dependency). Keeps p50 close to max(classQuery,
+  // prereqQuery) rather than the sum.
+  const prerequisitesPromise = computePrerequisites(supabase, publishedAtCutoff)
+
   let classificationQuery = supabase
     .from("classifications")
     .select("id, category, severity, status, needs_human_review, observation_id")
@@ -68,6 +187,7 @@ export async function GET(request: NextRequest) {
 
   const rows = (classificationData || []) as ClassificationRow[]
   if (rows.length === 0) {
+    const prerequisites = await prerequisitesPromise
     return NextResponse.json({
       total: 0,
       needsReviewCount: 0,
@@ -77,6 +197,7 @@ export async function GET(request: NextRequest) {
       bySeverity: {},
       byStatus: {},
       bySentiment: { positive: 0, negative: 0, neutral: 0, unknown: 0 },
+      prerequisites,
     })
   }
 
@@ -158,6 +279,8 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  const prerequisites = await prerequisitesPromise
+
   return NextResponse.json({
     total: rows.length,
     needsReviewCount,
@@ -167,5 +290,6 @@ export async function GET(request: NextRequest) {
     bySeverity,
     byStatus,
     bySentiment,
+    prerequisites,
   })
 }
