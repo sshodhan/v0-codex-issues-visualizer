@@ -75,12 +75,12 @@ export function FingerprintSurgeCard({
 
   const headline = useMemo(() => {
     if (surges.length === 0 && newInWindow.length === 0) {
-      return `No fingerprint surges — no error codes are spiking (${windowLabel}).`
+      return `No surges detected (${windowLabel}).`
     }
     if (surges.length === 0) {
-      return `${newInWindow.length} new error code${newInWindow.length === 1 ? "" : "s"} seen (${windowLabel}) · click to filter`
+      return `${newInWindow.length} new code${newInWindow.length === 1 ? "" : "s"} · click to filter`
     }
-    return `${surges.length} fingerprint${surges.length === 1 ? "" : "s"} surging (${windowLabel}) · click to filter`
+    return `${surges.length} code${surges.length === 1 ? "" : "s"} surging · click to filter`
   }, [surges.length, newInWindow.length, windowLabel])
 
   return (
@@ -132,9 +132,12 @@ export function FingerprintSurgeCard({
       {open && (
         <CardContent className="space-y-3">
           {!hasAnything ? (
-            <p className="text-sm text-muted-foreground">
-              No error-code spikes detected for the selected window. Healthy state.
-            </p>
+            <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 p-3">
+              <div className="h-2 w-2 rounded-full bg-emerald-500 flex-shrink-0" />
+              <p className="text-sm text-muted-foreground">
+                Healthy — no error codes are spiking right now.
+              </p>
+            </div>
           ) : (
             <>
               {surges.length > 0 && (
