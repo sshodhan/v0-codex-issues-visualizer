@@ -27,6 +27,7 @@ import { ClassificationTriage } from "@/components/dashboard/classification-tria
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
+import { PipelineFreshnessStrip } from "@/components/dashboard/pipeline-freshness-strip"
 import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
@@ -151,7 +152,12 @@ function DashboardContentInner() {
     limit: 100,
     asOf: asOf || undefined,
   })
-  const { classificationStats, refresh: refreshClassificationStats } = useClassificationStats({
+  const {
+    classificationStats,
+    isLoading: classificationStatsLoading,
+    isError: classificationStatsError,
+    refresh: refreshClassificationStats,
+  } = useClassificationStats({
     asOf: asOf || undefined,
     // Prereq panel counts observations in the same window the dashboard
     // is showing. 0 (= "All time") maps to undefined so the server-side
@@ -485,8 +491,20 @@ function DashboardContentInner() {
     : "Never"
 
   // Classification stats for tab badge
-  const pendingReviewCount = classificationStats?.needsReviewCount ?? 
+  const pendingReviewCount = classificationStats?.needsReviewCount ??
     classifications.filter(r => r.needs_human_review).length
+
+  // Pipeline freshness strip inputs. The strip distinguishes "no issues yet"
+  // from "pipeline not caught up" from "stats feed failed / unknown" — so
+  // `undefined` (still loading) and `null` (server returned no prereqs) are
+  // kept separate rather than collapsed to a healthy-looking zero. See
+  // components/dashboard/pipeline-freshness-strip.tsx.
+  const pipelinePrereq = classificationStatsLoading
+    ? undefined
+    : classificationStats?.prerequisites ?? null
+  const pipelineReviewCount = classificationStatsLoading
+    ? undefined
+    : classificationStats?.needsReviewCount
 
   return (
     <div className="min-h-screen bg-background">
@@ -537,7 +555,21 @@ function DashboardContentInner() {
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-6">
+      <main className="container mx-auto px-4 py-6 space-y-6">
+        {/*
+          Persistent pipeline-freshness strip. Rendered ABOVE the
+          loading/error/empty branching so "no issues in this window" vs
+          "pipeline still catching up" vs "stats feed failed" are visible
+          in every state — not hidden behind the dashboard-loaded gate.
+        */}
+        <PipelineFreshnessStrip
+          prereq={pipelinePrereq}
+          pendingReviewCount={pipelineReviewCount}
+          statsError={Boolean(classificationStatsError)}
+          windowLabel={globalTimeLabel}
+          asOfActive={asOf != null}
+        />
+
         {statsLoading ? (
           <DashboardSkeleton />
         ) : statsError ? (
