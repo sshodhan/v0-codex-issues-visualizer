@@ -43,6 +43,8 @@ interface HeroInsightProps {
   onExploreIssues: (categorySlug: string) => void
   /** Secondary: switch to AI Classifications for triage with category filter */
   onNavigateToCategory?: (slug: string) => void
+  /** Shown on primary CTA so users know the table may use a different time range than the 72h lead story. */
+  issueTableTimeLabel: string
   className?: string
 }
 
@@ -50,6 +52,7 @@ export function HeroInsight({
   topInsight,
   onExploreIssues,
   onNavigateToCategory,
+  issueTableTimeLabel,
   className,
 }: HeroInsightProps) {
   const [interpretationOpen, setInterpretationOpen] = useState(false)
@@ -147,14 +150,19 @@ export function HeroInsight({
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                <Button
-                  onClick={() => onExploreIssues(categorySlug)}
-                  className="gap-2 w-full sm:w-auto"
-                  size="lg"
-                >
-                  View {category} in issues
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
+                <div className="w-full sm:w-auto">
+                  <Button
+                    onClick={() => onExploreIssues(categorySlug)}
+                    className="gap-2 w-full sm:w-auto"
+                    size="lg"
+                  >
+                    View {category} in issues
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+                  <p className="mt-1.5 text-xs text-muted-foreground max-w-sm">
+                    Issues list uses the global time filter: {issueTableTimeLabel} (lead metrics above: last 72h).
+                  </p>
+                </div>
                 <Button
                   onClick={() => onNavigateToCategory?.(categorySlug)}
                   variant="outline"

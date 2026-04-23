@@ -1,9 +1,9 @@
 /** Copy aligned with docs/SCORING.md §8 and docs/ARCHITECTURE.md. */
 
 export const INTERPRETATION_BULLETS = [
-  "Do not use raw post count alone to decide what is urgent. Combine category context, how negative the tone is, and impact.",
-  "Urgency claims are supported by representative source links in each category block so you can verify the signal.",
-  "The composite risk signal in documentation is: negative share × average impact × momentum — use the hero and ranked list as a guide, not a single raw frequency.",
+  "Do not use raw post count alone to decide what is urgent. Combine category context, how negative the tone is, and impact (see SCORING.md §8 for written-summary guidance).",
+  "The hero and realtime list use the runtime `urgencyScore` from `lib/analytics/realtime.ts` — not a separate or fabricated value.",
+  "Representative issues show up to three sample rows with links when the source provided a URL. The full table for your selected days is below.",
 ] as const
 
 export const URGENCY_FORMULA_MARKDOWN = `Urgency rank blends (see lib/analytics/realtime.ts):

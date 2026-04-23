@@ -352,6 +352,7 @@ function DashboardContent() {
                 topInsight={heroInsight}
                 onExploreIssues={handleHeroExploreIssues}
                 onNavigateToCategory={handleNavigateToCategory}
+                issueTableTimeLabel={globalTimeLabel}
               />
 
               {/* Fingerprint Surge Card — answers "is something breaking
