@@ -511,21 +511,45 @@ function DashboardContentInner() {
                 />
               )}
 
-              <HeroInsight
-                topInsight={heroInsight}
-                onExploreIssues={handleHeroExploreIssues}
-                onNavigateToCategory={handleNavigateToCategory}
-                issueTableTimeLabel={globalTimeLabel}
-                variant={isV2 ? "v2" : "v1"}
-              />
-
-              <FingerprintSurgeCard
-                data={fingerprintSurges}
-                windowHours={24}
-                windowLabelForCopy={fingerprintWindowLabel}
-                onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
-                variant={isV2 ? "v2" : "v1"}
-              />
+              {/*
+                V1: fingerprint surges (bug signal) above the hero — original hierarchy.
+                V2: hero-first narrative, then surges (see prior NYT-style work).
+              */}
+              {isV2 ? (
+                <>
+                  <HeroInsight
+                    topInsight={heroInsight}
+                    onExploreIssues={handleHeroExploreIssues}
+                    onNavigateToCategory={handleNavigateToCategory}
+                    issueTableTimeLabel={globalTimeLabel}
+                    variant="v2"
+                  />
+                  <FingerprintSurgeCard
+                    data={fingerprintSurges}
+                    windowHours={24}
+                    windowLabelForCopy={fingerprintWindowLabel}
+                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+                    variant="v2"
+                  />
+                </>
+              ) : (
+                <>
+                  <FingerprintSurgeCard
+                    data={fingerprintSurges}
+                    windowHours={24}
+                    windowLabelForCopy={fingerprintWindowLabel}
+                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+                    variant="v1"
+                  />
+                  <HeroInsight
+                    topInsight={heroInsight}
+                    onExploreIssues={handleHeroExploreIssues}
+                    onNavigateToCategory={handleNavigateToCategory}
+                    issueTableTimeLabel={globalTimeLabel}
+                    variant="v1"
+                  />
+                </>
+              )}
 
               {/* Secondary KPI Cards - Insight-first design */}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
