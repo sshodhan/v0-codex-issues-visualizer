@@ -4,6 +4,7 @@ import { Suspense, useCallback, useMemo, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
 import { AsOfBanner } from "@/components/dashboard/as-of-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RefreshCw, Loader2, BarChart3, BrainCircuit, BookOpen, TrendingUp, Settings } from "lucide-react"
@@ -706,6 +707,45 @@ function DashboardContentInner() {
               {stats.trendData.length > 0 && (
                 <TrendChart data={stats.trendData} />
               )}
+
+              <section className="space-y-3">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <h3 className="text-xl font-semibold">Top Families (primary workflow)</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Family = semantic/title fallback. Variant = regex fingerprint. Triage = LLM + review judgment.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={scrollToIssuesTable}>
+                    Issues table (secondary drill-down)
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {(clusterRollup?.clusters || []).slice(0, 6).map((cluster) => {
+                    const familyLabel =
+                      cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.6
+                        ? cluster.label
+                        : cluster.representative_title || "Unlabelled family"
+                    return (
+                      <Link
+                        key={cluster.id}
+                        href={`/families/${cluster.id}?days=${globalDays}`}
+                        className="block"
+                      >
+                        <Card className="h-full transition-colors hover:border-primary/60 hover:bg-muted/30">
+                          <CardContent className="p-4 space-y-2">
+                            <p className="font-medium line-clamp-2">{familyLabel}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {cluster.count} observations · {cluster.classified_count} triaged ·{" "}
+                              {cluster.source_count ?? 0} sources
+                            </p>
+                          </CardContent>
+                        </Card>
+                      </Link>
+                    )
+                  })}
+                </div>
+              </section>
 
               {/* Issues Table - Deep dive zone */}
               <div id="issues-table-anchor" className="scroll-mt-20">

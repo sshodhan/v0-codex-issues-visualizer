@@ -1,10 +1,12 @@
 "use client"
 
+import Link from "next/link"
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Sparkles, Cpu, Terminal, FileCode2, RefreshCcw } from "lucide-react"
+import { getConfidenceBandDisplay } from "@/lib/classification/confidence-display"
 
 // Layered "how did we reach this signal" panel. Shows three stacked
 // layers for a single observation so users can see how each pass
@@ -263,6 +265,15 @@ export function SignalLayers(props: SignalLayersProps) {
           Cluster key: {compoundKey}
         </p>
       ) : null}
+      <div>
+        <Link
+          href={`/admin?tab=trace&observation=${observationId}`}
+          className="text-[11px] text-primary hover:underline"
+        >
+          Open full observation trace
+        </Link>
+      </div>
+
     </div>
   )
 
@@ -278,6 +289,12 @@ export function SignalLayers(props: SignalLayersProps) {
 }
 
 function LlmDetail({ llm }: { llm: LlmResponse }) {
+  const confidenceDisplay = getConfidenceBandDisplay({
+    confidence: llm.confidence,
+    needsHumanReview: llm.confidence < 0.7,
+    retriedWithLargeModel: llm.retried_with_large_model,
+  })
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -290,8 +307,8 @@ function LlmDetail({ llm }: { llm: LlmResponse }) {
           {llm.model_used}
           {llm.retried_with_large_model ? " ↑" : ""}
         </Badge>
-        <span className="text-[11px] text-muted-foreground">
-          confidence {(llm.confidence * 100).toFixed(0)}%
+        <span className="text-[11px] text-muted-foreground" title={confidenceDisplay.modelScoreLabel}>
+          confidence band · {confidenceDisplay.band}
         </span>
       </div>
       {llm.summary ? (

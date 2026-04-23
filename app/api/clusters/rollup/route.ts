@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
   let q = supabase
     .from("mv_observation_current")
-    .select("cluster_id, llm_classified_at")
+    .select("cluster_id, llm_classified_at, source_name")
     .eq("is_canonical", true)
     .not("cluster_id", "is", null)
 
@@ -49,18 +49,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  const agg = new Map<string, { count: number; classified: number }>()
+  const agg = new Map<string, { count: number; classified: number; sources: Set<string> }>()
   for (const r of rows || []) {
     const id = (r as { cluster_id: string }).cluster_id
     if (!id) continue
-    const cur = agg.get(id) ?? { count: 0, classified: 0 }
+    const cur = agg.get(id) ?? { count: 0, classified: 0, sources: new Set<string>() }
     cur.count += 1
     if ((r as { llm_classified_at: string | null }).llm_classified_at) cur.classified += 1
+    const sourceName = (r as { source_name?: string | null }).source_name
+    if (sourceName) cur.sources.add(sourceName)
     agg.set(id, cur)
   }
 
   const sorted = Array.from(agg.entries())
-    .map(([id, v]) => ({ id, ...v }))
+    .map(([id, v]) => ({ id, count: v.count, classified: v.classified, source_count: v.sources.size }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 50)
 
@@ -81,13 +83,29 @@ export async function GET(request: NextRequest) {
   }
 
   const labelMap = new Map((clusterRows || []).map((c: any) => [c.id, c]))
+
+  const topIds = sorted.map((s) => s.id)
+  const { data: exemplarRows } = await supabase
+    .from("mv_observation_current")
+    .select("cluster_id, title, impact_score")
+    .eq("is_canonical", true)
+    .in("cluster_id", topIds)
+    .order("impact_score", { ascending: false })
+    .limit(300)
+  const exemplarMap = new Map<string, string>()
+  for (const row of exemplarRows || []) {
+    const clusterId = (row as { cluster_id: string | null }).cluster_id
+    const title = (row as { title: string | null }).title
+    if (!clusterId || !title || exemplarMap.has(clusterId)) continue
+    exemplarMap.set(clusterId, title)
+  }
+
   const { data: healthRows, error: hErr } = await supabase
     .from("mv_cluster_health_current")
-    .select("cluster_id, cluster_path, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy")
-    .in(
-      "cluster_id",
-      sorted.map((s) => s.id),
+    .select(
+      "cluster_id, cluster_path, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy",
     )
+    .in("cluster_id", topIds)
 
   if (hErr) {
     return NextResponse.json({ error: hErr.message }, { status: 500 })
@@ -102,8 +120,10 @@ export async function GET(request: NextRequest) {
       count: s.count,
       classified_count: s.classified,
       reviewed_count: health?.reviewed_count ?? 0,
+      source_count: s.source_count,
       label: meta?.label ?? null,
       label_confidence: meta?.label_confidence ?? null,
+      representative_title: exemplarMap.get(s.id) ?? null,
       cluster_path: (health?.cluster_path ?? "fallback") as "semantic" | "fallback",
       fingerprint_hit_rate: Number(health?.fingerprint_hit_rate ?? 0),
       dominant_error_code_share: Number(health?.dominant_error_code_share ?? 0),

@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useMemo, useState, useEffect, useRef } from "react"
 import {
   AlertCircle,
@@ -56,6 +57,7 @@ import { track } from "@vercel/analytics"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ClassificationTabStrip } from "@/components/dashboard/classification-tab-strip"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
+import { getConfidenceBandDisplay } from "@/lib/classification/confidence-display"
 
 interface ClassificationTriageProps {
   records: ClassificationRecord[]
@@ -298,6 +300,13 @@ export function ClassificationTriage({
     () => triageRecords.find((record) => record.id === selectedId) || null,
     [triageRecords, selectedId]
   )
+  const selectedConfidenceDisplay = selected
+    ? getConfidenceBandDisplay({
+        confidence: selected.confidence,
+        needsHumanReview: selected.effective_needs_human_review,
+        retriedWithLargeModel: selected.retried_with_large_model,
+      })
+    : null
 
   const trimmedReviewer = reviewer.trim()
   const canSubmitReview = Boolean(selected) && trimmedReviewer.length > 0
@@ -598,7 +607,13 @@ export function ClassificationTriage({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {triageRecords.map((record) => (
+                {triageRecords.map((record) => {
+                  const confidenceDisplay = getConfidenceBandDisplay({
+                    confidence: record.confidence,
+                    needsHumanReview: record.effective_needs_human_review,
+                    retriedWithLargeModel: record.retried_with_large_model,
+                  })
+                  return (
                   <TableRow
                     key={record.id}
                     onClick={() => {
@@ -618,36 +633,55 @@ export function ClassificationTriage({
                       <LayerBreadcrumb record={record} compact />
                     </TableCell>
                     <TableCell><Badge variant="outline">{record.effective_severity}</Badge></TableCell>
-                    <TableCell>{Math.round(record.confidence * 100)}%</TableCell>
+                    <TableCell>
+                      <span
+                        className="text-xs font-medium"
+                        title={confidenceDisplay.modelScoreLabel}
+                      >
+                        {confidenceDisplay.band}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       <Badge variant="secondary">{record.source_issue_sentiment || "unknown"}</Badge>
                     </TableCell>
                     <TableCell className="max-w-[320px]">
-                      {record.source_issue_url ? (
-                        <a
-                          href={record.source_issue_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-primary hover:underline"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          {record.source_issue_title || "Open source feedback"}
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">missing source URL</span>
-                      )}
+                      <div className="flex flex-col gap-1">
+                        {record.source_issue_url ? (
+                          <a
+                            href={record.source_issue_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            {record.source_issue_title || "Open source feedback"}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">missing source URL</span>
+                        )}
+                        {record.observation_id ? (
+                          <Link
+                            href={`/admin?tab=trace&observation=${record.observation_id}`}
+                            onClick={(event) => event.stopPropagation()}
+                            className="text-xs text-primary hover:underline"
+                          >
+                            Open trace
+                          </Link>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell>{record.effective_status}</TableCell>
                     <TableCell>{formatDistanceToNow(new Date(record.created_at), { addSuffix: true })}</TableCell>
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
           </div>
         )}
 
-        {selected && (
+        {selected && selectedConfidenceDisplay && (
           <div className="space-y-3 rounded-lg border p-4">
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-2">
@@ -655,14 +689,24 @@ export function ClassificationTriage({
                 <Badge
                   variant="outline"
                   className="px-1.5 py-0 text-[10px] font-mono uppercase"
-                  title="Confidence bucket — see 'How this works'"
+                  title={selectedConfidenceDisplay.modelScoreLabel}
                 >
-                  C · {Math.round(selected.confidence * 100)}%
+                  C · {selectedConfidenceDisplay.band}
                 </Badge>
               </div>
               <LayerBreadcrumb record={selected} />
             </div>
             <p className="text-sm text-muted-foreground">{selected.summary}</p>
+            {selected.observation_id ? (
+              <div>
+                <Link
+                  href={`/admin?tab=trace&observation=${selected.observation_id}`}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Open unified observation trace
+                </Link>
+              </div>
+            ) : null}
 
             <PerRecordPrereqHints record={selected} />
 
@@ -1242,6 +1286,11 @@ function LayerBreadcrumb({
 // them. Returns null when there's nothing to flag.
 function PerRecordPrereqHints({ record }: { record: ClassificationRecord }) {
   const hints: Array<{ kind: "warn" | "info"; body: React.ReactNode }> = []
+  const confidenceDisplay = getConfidenceBandDisplay({
+    confidence: record.confidence,
+    needsHumanReview: record.effective_needs_human_review,
+    retriedWithLargeModel: record.retried_with_large_model,
+  })
 
   // Layer-A miss: this classification's observation has no cluster
   // attachment. Either clustering hasn't caught up, embedding failed,
@@ -1272,11 +1321,12 @@ function PerRecordPrereqHints({ record }: { record: ClassificationRecord }) {
       kind: "warn",
       body: (
         <>
-          Low confidence ({Math.round(record.confidence * 100)}%) —{" "}
+          {confidenceDisplay.band} — {confidenceDisplay.summary}{" "}
           {record.retried_with_large_model
             ? "already escalated to the large model"
             : "did not escalate to the large model"}
-          . Manual review recommended.
+          . {confidenceDisplay.nextAction}{" "}
+          <span className="text-muted-foreground">({confidenceDisplay.modelScoreLabel})</span>.
         </>
       ),
     })

@@ -217,8 +217,10 @@ export interface ClusterRollupRow {
   count: number
   classified_count: number
   reviewed_count: number
+  source_count?: number
   label: string | null
   label_confidence: number | null
+  representative_title?: string | null
   cluster_path: "semantic" | "fallback"
   fingerprint_hit_rate: number
   dominant_error_code_share: number
