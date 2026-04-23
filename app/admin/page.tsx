@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
   Loader2,
@@ -135,8 +135,20 @@ interface ClassifyBackfillBatchResult {
 const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "schema"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
+// `useSearchParams()` bails out of static prerender in Next.js 15 and
+// requires a Suspense boundary, or `next build` fails with a prerender
+// error on `/admin`. Keep the hook's caller inside a child component and
+// wrap it below; fallback renders the default tab so the page isn't
+// blank during the client-hydration round-trip.
 export default function AdminPage() {
-  const [secret, setSecret] = useState("")
+  return (
+    <Suspense fallback={<AdminPageContent initialTab="backfill" />}>
+      <AdminPageWithTab />
+    </Suspense>
+  )
+}
+
+function AdminPageWithTab() {
   const searchParams = useSearchParams()
   // Deep-linkable tabs: the AI triage empty-state panel links to
   // `/admin?tab=classify-backfill` (etc.) so reviewers land directly on
@@ -148,6 +160,12 @@ export default function AdminPage() {
       ? (raw as AdminTab)
       : "backfill"
   }, [searchParams])
+
+  return <AdminPageContent initialTab={initialTab} />
+}
+
+function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
+  const [secret, setSecret] = useState("")
 
   return (
     <div className="min-h-screen bg-background">
