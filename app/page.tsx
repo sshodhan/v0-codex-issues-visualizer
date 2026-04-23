@@ -25,6 +25,7 @@ import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
+import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
 import {
   useDashboardStats,
   useIssues,
@@ -90,6 +91,12 @@ function DashboardContent() {
   })
   const { data: fingerprintSurges, refresh: refreshFingerprintSurges } = useFingerprintSurges(24)
 
+  const fingerprintWindowLabel = useMemo(() => {
+    const d = fingerprintSurges?.window_days
+    if (d === undefined) return undefined
+    return d === 1 ? "today vs yesterday" : `last ${d} days`
+  }, [fingerprintSurges])
+
   const handleRefresh = async () => {
     setIsRefreshing(true)
     try {
@@ -126,6 +133,19 @@ function DashboardContent() {
   const handleNavigateToCategory = (slug: string) => {
     setGlobalCategory(slug)
     setActiveTab("classifications")
+  }
+
+  const handleHeroExploreIssues = (categorySlug: string) => {
+    setActiveTab("dashboard")
+    setGlobalCategory(categorySlug)
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        document.getElementById("issues-table-anchor")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        })
+      })
+    }
   }
 
   const categoryOptions = useMemo(() => {
@@ -321,9 +341,16 @@ function DashboardContent() {
 
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
+              <DataProvenanceStrip
+                lastSyncLabel={lastScrapeTime}
+                issueWindowLabel={globalTimeLabel}
+                asOfActive={asOf != null}
+              />
+
               {/* Hero Insight Block - The "Aha" moment */}
               <HeroInsight
                 topInsight={heroInsight}
+                onExploreIssues={handleHeroExploreIssues}
                 onNavigateToCategory={handleNavigateToCategory}
               />
 
@@ -334,6 +361,7 @@ function DashboardContent() {
               <FingerprintSurgeCard
                 data={fingerprintSurges}
                 windowHours={24}
+                windowLabelForCopy={fingerprintWindowLabel}
                 onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
               />
 
@@ -405,7 +433,10 @@ function DashboardContent() {
 
               {/* Real-time insights + competitive mentions */}
               <div className="grid gap-6 lg:grid-cols-2">
-                <RealtimeInsights insights={stats.realtimeInsights} />
+                <RealtimeInsights
+                  insights={stats.realtimeInsights}
+                  skipFirstCategorySlug={heroInsight?.categorySlug}
+                />
                 <CompetitiveMentions
                   mentions={stats.competitiveMentions || []}
                   meta={stats.competitiveMentionsMeta}

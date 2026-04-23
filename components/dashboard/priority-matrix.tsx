@@ -8,12 +8,13 @@ import {
   Scatter,
   XAxis,
   YAxis,
-  Tooltip,
+  Tooltip as RechartsTooltip,
   ResponsiveContainer,
   ReferenceLine,
   ReferenceArea,
 } from "recharts"
-import { AlertTriangle, Eye, TrendingUp } from "lucide-react"
+import { AlertTriangle, Eye, HelpCircle, TrendingUp } from "lucide-react"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface PriorityMatrixProps {
   data: Array<{
@@ -283,7 +284,28 @@ export function PriorityMatrix({ data, onFilterChange }: PriorityMatrixProps) {
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <CardTitle className="text-lg font-semibold text-foreground">Priority Matrix</CardTitle>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-lg font-semibold text-foreground">Priority Matrix</CardTitle>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex text-muted-foreground hover:text-foreground rounded-full"
+                    aria-label="About actionability vs priority score"
+                  >
+                    <HelpCircle className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm text-left">
+                  <p className="text-xs">
+                    Lanes are sorted by <strong>actionability</strong> (impact, frequency, error code,
+                    repro markers, source diversity) per SCORING.md §10.1. <strong>Priority score</strong>{" "}
+                    (impact/frequency blend) is kept for the Escalate / Watch / zone thresholds on the
+                    chart so band semantics stay stable.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <p className="text-sm text-muted-foreground mt-1">
               Ranked by actionability — impact, code-addressability, repro quality, and cross-source confirmation. Click an error-code chip to drill into its observations.
             </p>
@@ -389,7 +411,7 @@ export function PriorityMatrix({ data, onFilterChange }: PriorityMatrixProps) {
                 }}
               />
               
-              <Tooltip
+              <RechartsTooltip
                 cursor={{ strokeDasharray: "3 3", stroke: "hsl(var(--muted-foreground))" }}
                 content={({ active, payload }) => {
                   if (active && payload && payload.length) {

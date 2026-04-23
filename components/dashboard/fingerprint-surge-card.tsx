@@ -5,6 +5,10 @@ import { AlertTriangle, ChevronDown, ChevronUp, Sparkles } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  FingerprintModelDialog,
+  MethodologyTriggerButton,
+} from "@/components/dashboard/methodology-dialogs"
 import type { FingerprintSurgeResponse } from "@/hooks/use-dashboard-data"
 
 // FingerprintSurgeCard — the "is something breaking right now?" widget.
@@ -27,13 +31,17 @@ interface FingerprintSurgeCardProps {
   // cluster_key_compound match so any title/frame combination sharing the
   // code is returned.
   onFilter: (compoundKey: string) => void
+  /** Shown in header; comparison unit matches backend (day-based MV) */
+  windowLabelForCopy?: string
 }
 
 export function FingerprintSurgeCard({
   data,
   windowHours = 24,
   onFilter,
+  windowLabelForCopy,
 }: FingerprintSurgeCardProps) {
+  const [fingerprintInfoOpen, setFingerprintInfoOpen] = useState(false)
   const surges = data?.surges ?? []
   const newInWindow = data?.new_in_window ?? []
   const hasAnything = surges.length > 0 || newInWindow.length > 0
@@ -58,7 +66,9 @@ export function FingerprintSurgeCard({
   // day-granular). Prefer the server's reported `window_days` so copy
   // matches what the data actually compares.
   const windowDays = data?.window_days ?? Math.max(1, Math.ceil(windowHours / 24))
-  const windowLabel = windowDays === 1 ? "today vs yesterday" : `last ${windowDays} days`
+  const windowLabel =
+    windowLabelForCopy ||
+    (windowDays === 1 ? "today vs yesterday" : `last ${windowDays} days`)
 
   const headline = useMemo(() => {
     if (surges.length === 0 && newInWindow.length === 0) {
@@ -80,6 +90,15 @@ export function FingerprintSurgeCard({
               Fingerprint Surges
             </CardTitle>
             <p className="text-sm text-muted-foreground">{headline}</p>
+            <p className="text-xs text-muted-foreground">
+              Compared window: {windowLabel}. Spikes are from deterministic regex
+              fingerprints (not the LLM layer).{" "}
+              <MethodologyTriggerButton
+                label="Why fingerprints?"
+                onClick={() => setFingerprintInfoOpen(true)}
+                className="h-auto p-0 text-xs"
+              />
+            </p>
           </div>
           <div className="flex items-center gap-2">
             {surges.length > 0 && (
@@ -176,6 +195,11 @@ export function FingerprintSurgeCard({
           )}
         </CardContent>
       )}
+
+      <FingerprintModelDialog
+        open={fingerprintInfoOpen}
+        onOpenChange={setFingerprintInfoOpen}
+      />
     </Card>
   )
 }
