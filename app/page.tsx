@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { AsOfBanner } from "@/components/dashboard/as-of-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { RefreshCw, Loader2, BarChart3, BrainCircuit, TrendingUp, Settings } from "lucide-react"
+import { RefreshCw, Loader2, BarChart3, BrainCircuit, BookOpen, TrendingUp, Settings } from "lucide-react"
 import { StatCard, InsightKpiCard } from "@/components/dashboard/stat-card"
 import { HeroInsight, computeHeroInsight } from "@/components/dashboard/hero-insight"
 import { 
@@ -26,6 +26,7 @@ import { ClassificationTriage } from "@/components/dashboard/classification-tria
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
+import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
 import {
@@ -154,6 +155,23 @@ function DashboardContentInner() {
         })
       })
     }
+  }
+
+  const scrollToIssuesTable = () => {
+    setActiveTab("dashboard")
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        document.getElementById("issues-table-anchor")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        })
+      })
+    }
+  }
+
+  const handleStoryDrillError = (compoundKey: string) => {
+    setActiveTab("dashboard")
+    handleFilterChange({ compound_key: compoundKey })
   }
 
   const categoryOptions = useMemo(() => {
@@ -342,16 +360,21 @@ function DashboardContentInner() {
           />
         ) : (
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-            <TabsList className="grid w-full max-w-md grid-cols-2 mx-auto">
-              <TabsTrigger value="dashboard" className="gap-2">
-                <TrendingUp className="h-4 w-4" />
-                Dashboard
+            <TabsList className="grid w-full max-w-2xl grid-cols-3 mx-auto h-auto p-1 gap-0">
+              <TabsTrigger value="dashboard" className="gap-1.5 text-xs sm:text-sm py-2.5">
+                <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                <span className="truncate">Dashboard</span>
               </TabsTrigger>
-              <TabsTrigger value="classifications" className="gap-2 relative">
-                <BrainCircuit className="h-4 w-4" />
-                AI Classifications
+              <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
+                <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                <span className="truncate">Story</span>
+              </TabsTrigger>
+              <TabsTrigger value="classifications" className="gap-1.5 text-xs sm:text-sm py-2.5 relative">
+                <BrainCircuit className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                <span className="truncate sm:hidden">AI</span>
+                <span className="hidden sm:inline truncate">Classifications</span>
                 {pendingReviewCount > 0 && (
-                  <span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 text-xs font-medium text-destructive-foreground">
+                  <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground sm:static sm:ml-1 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-xs">
                     {pendingReviewCount}
                   </span>
                 )}
@@ -482,9 +505,30 @@ function DashboardContentInner() {
               </div>
             </TabsContent>
 
+            <TabsContent value="story" className="mt-6 min-h-screen">
+              <DashboardStoryView
+                issues={issues}
+                issuesLoading={issuesLoading}
+                statsTotalIssues={stats.totalIssues}
+                heroCategoryName={heroInsight?.category ?? null}
+                heroUrgencyLine={heroInsight?.subheadline ?? null}
+                fingerprintSurges={fingerprintSurges}
+                windowLabel={fingerprintWindowLabel ?? "recent days"}
+                onDrillErrorCode={handleStoryDrillError}
+                onOpenIssuesTable={scrollToIssuesTable}
+                timeDays={globalDays}
+                onTimeChange={setGlobalDays}
+                categoryOptions={categoryOptions}
+                categoryValue={globalCategory}
+                onCategoryChange={setGlobalCategory}
+                lastSyncLabel={lastScrapeTime}
+                globalTimeLabel={globalTimeLabel}
+                asOfActive={asOf != null}
+              />
+            </TabsContent>
+
             {/* AI Classifications Tab */}
             <TabsContent value="classifications" className="space-y-6 mt-6">
-              {/* Classification-specific filters */}
               <GlobalFilterBar
                 timeDays={globalDays}
                 onTimeChange={setGlobalDays}
@@ -493,7 +537,6 @@ function DashboardContentInner() {
                 onCategoryChange={setGlobalCategory}
               />
 
-              {/* Full Classification Triage Experience */}
               <ClassificationTriage
                 records={classifications}
                 stats={classificationStats}
