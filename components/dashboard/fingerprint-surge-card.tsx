@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { AlertTriangle, ChevronDown, ChevronUp, Sparkles } from "lucide-react"
+import { Activity, ChevronDown, ChevronUp, Sparkles, TrendingUp, CheckCircle2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -75,13 +75,19 @@ export function FingerprintSurgeCard({
 
   const headline = useMemo(() => {
     if (surges.length === 0 && newInWindow.length === 0) {
-      return `No surges detected (${windowLabel}).`
+      return "All clear"
     }
-    if (surges.length === 0) {
-      return `${newInWindow.length} new code${newInWindow.length === 1 ? "" : "s"} · click to filter`
-    }
-    return `${surges.length} code${surges.length === 1 ? "" : "s"} surging · click to filter`
-  }, [surges.length, newInWindow.length, windowLabel])
+    const parts: string[] = []
+    if (surges.length > 0) parts.push(`${surges.length} spiking`)
+    if (newInWindow.length > 0) parts.push(`${newInWindow.length} new`)
+    return parts.join(" · ")
+  }, [surges.length, newInWindow.length])
+
+  // Calculate max delta for relative bar sizing
+  const maxDelta = useMemo(() => {
+    if (surges.length === 0) return 1
+    return Math.max(...surges.map((s) => s.delta), 1)
+  }, [surges])
 
   return (
     <Card className="bg-card border-border">
@@ -89,39 +95,27 @@ export function FingerprintSurgeCard({
         <div className="flex items-center justify-between gap-2">
           <div className="space-y-1">
             <CardTitle className="text-base font-semibold text-foreground flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden />
-              Fingerprint Surges
+              <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
+              Trending Errors
             </CardTitle>
-            <p className="text-sm text-muted-foreground">{headline}</p>
+            <p className="text-sm text-muted-foreground">
+              {headline}
+              {hasAnything && <span className="text-muted-foreground/70"> · {windowLabel}</span>}
+            </p>
             {variant === "v2" && (
-              <p className="text-xs text-muted-foreground">
-                Compared window: {windowLabel}. Spikes are from deterministic regex
-                fingerprints (not the LLM layer).{" "}
-                <MethodologyTriggerButton
-                  label="Why fingerprints?"
-                  onClick={() => setFingerprintInfoOpen(true)}
-                  className="h-auto p-0 text-xs"
-                />
-              </p>
+              <MethodologyTriggerButton
+                label="How this works"
+                onClick={() => setFingerprintInfoOpen(true)}
+                className="h-auto p-0 text-xs"
+              />
             )}
           </div>
           <div className="flex items-center gap-2">
-            {surges.length > 0 && (
-              <Badge variant="outline" className="border-destructive/60 text-destructive">
-                {surges.length} surging
-              </Badge>
-            )}
-            {newInWindow.length > 0 && (
-              <Badge variant="outline" className="border-amber-500/60 text-amber-500">
-                <Sparkles className="mr-1 h-3 w-3" aria-hidden />
-                {newInWindow.length} new
-              </Badge>
-            )}
             <Button
               variant="ghost"
               size="icon"
               onClick={toggle}
-              aria-label={open ? "Collapse surge details" : "Expand surge details"}
+              aria-label={open ? "Collapse details" : "Expand details"}
               aria-expanded={open}
             >
               {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -130,70 +124,79 @@ export function FingerprintSurgeCard({
         </div>
       </CardHeader>
       {open && (
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4">
           {!hasAnything ? (
-            <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 p-3">
-              <div className="h-2 w-2 rounded-full bg-emerald-500 flex-shrink-0" />
-              <p className="text-sm text-muted-foreground">
-                Healthy — no error codes are spiking right now.
+            <div className="flex flex-col items-center justify-center py-6 text-center">
+              <div className="rounded-full bg-emerald-500/10 p-3 mb-3">
+                <CheckCircle2 className="h-6 w-6 text-emerald-500" />
+              </div>
+              <p className="text-sm font-medium text-foreground">No spikes detected</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Error rates are stable compared to {windowLabel}
               </p>
             </div>
           ) : (
             <>
               {surges.length > 0 && (
-                <ul className="space-y-2" aria-label="Top fingerprint surges">
-                  {surges.map((surge) => (
-                    <li
-                      key={surge.error_code}
-                      className="flex items-center justify-between gap-3 rounded-md border border-border p-2"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Badge
-                          variant="outline"
-                          className="font-mono border-destructive/60 text-destructive"
-                        >
-                          {surge.error_code}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground truncate">
-                          {surge.now_count} now vs {surge.prev_count} prior · {surge.sources}{" "}
-                          source{surge.sources === 1 ? "" : "s"}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <Badge variant="secondary" className="font-mono">
-                          +{surge.delta}
-                        </Badge>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => onFilter(`err:${surge.error_code}`)}
-                          aria-label={`Drill into observations with error code ${surge.error_code}`}
-                        >
-                          Drill in
-                        </Button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+                <div className="space-y-2" role="list" aria-label="Spiking error codes">
+                  {surges.map((surge) => {
+                    const barWidth = Math.max(20, (surge.delta / maxDelta) * 100)
+                    return (
+                      <button
+                        key={surge.error_code}
+                        type="button"
+                        onClick={() => onFilter(`err:${surge.error_code}`)}
+                        className="group w-full text-left rounded-lg border border-border bg-muted/30 p-3 hover:bg-muted/50 hover:border-destructive/40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={`Error code ${surge.error_code}, up ${surge.delta} from ${surge.prev_count} to ${surge.now_count}. Click to filter.`}
+                      >
+                        <div className="flex items-center justify-between gap-3 mb-2">
+                          <div className="flex items-center gap-2">
+                            <code className="text-sm font-mono font-semibold text-foreground">
+                              {surge.error_code}
+                            </code>
+                            <Badge variant="outline" className="border-destructive/60 text-destructive text-xs px-1.5 py-0">
+                              <TrendingUp className="h-3 w-3 mr-1" />
+                              +{surge.delta}
+                            </Badge>
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {surge.sources} source{surge.sources === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-destructive/70 rounded-full transition-all duration-300"
+                              style={{ width: `${barWidth}%` }}
+                            />
+                          </div>
+                          <span className="text-xs tabular-nums text-muted-foreground w-16 text-right">
+                            {surge.prev_count} → {surge.now_count}
+                          </span>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
               )}
 
               {newInWindow.length > 0 && (
-                <div className="pt-1 border-t border-border">
-                  <p className="mb-1 text-xs text-muted-foreground">
-                    New in window (no activity in the prior {windowLabel}):
+                <div className={surges.length > 0 ? "pt-2 border-t border-border" : ""}>
+                  <p className="mb-2 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                    <Sparkles className="h-3 w-3 text-amber-500" />
+                    New this period
                   </p>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex flex-wrap gap-2">
                     {newInWindow.map((row) => (
                       <button
                         key={row.error_code}
                         type="button"
                         onClick={() => onFilter(`err:${row.error_code}`)}
-                        className="inline-flex rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        aria-label={`Drill into new error code ${row.error_code}`}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-sm font-mono text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 hover:border-amber-500/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={`New error code ${row.error_code} with ${row.count} occurrences. Click to filter.`}
                       >
-                        <Badge variant="outline" className="font-mono border-amber-500/60 text-amber-500">
-                          {row.error_code} ({row.count})
-                        </Badge>
+                        {row.error_code}
+                        <span className="text-xs opacity-70">({row.count})</span>
                       </button>
                     ))}
                   </div>
