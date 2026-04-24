@@ -61,6 +61,12 @@ interface RunSummary {
   total: number
   added: number
   errors: string[]
+  refresh?: {
+    degraded: boolean
+    failed: number
+    duration_ms: number
+    views: Array<{ name: string; status: string; duration_ms?: number; error?: string }>
+  }
   bySource: Array<{ source: string; found: number; added: number; status: "success" | "error"; error?: string }>
 }
 
@@ -269,9 +275,27 @@ function buildClassificationCandidate(persisted: {
   }
 }
 
-async function refreshMaterializedViews(supabase: AdminClient): Promise<void> {
-  const { error } = await supabase.rpc("refresh_materialized_views")
+async function refreshMaterializedViews(
+  supabase: AdminClient,
+): Promise<RunSummary["refresh"] | undefined> {
+  const { data, error } = await supabase.rpc("refresh_materialized_views", {
+    max_budget_ms: 15_000,
+  })
   if (error) console.error("[cron] refresh_materialized_views failed:", error)
+  if (error || !data) return undefined
+
+  const parsed = data as {
+    degraded?: boolean
+    failed?: number
+    duration_ms?: number
+    views?: Array<{ name: string; status: string; duration_ms?: number; error?: string }>
+  }
+  return {
+    degraded: parsed.degraded ?? false,
+    failed: parsed.failed ?? 0,
+    duration_ms: parsed.duration_ms ?? 0,
+    views: parsed.views ?? [],
+  }
 }
 
 export async function runAllScrapers(): Promise<RunSummary> {
@@ -379,9 +403,9 @@ export async function runAllScrapers(): Promise<RunSummary> {
 
   // Rebuild materialized views at cron end so the dashboard picks up the new
   // scrape in one step. See docs/ARCHITECTURE.md v10 §3.1c.
-  await refreshMaterializedViews(supabase)
+  const refresh = await refreshMaterializedViews(supabase)
 
-  return { total: totalFound, added: totalAdded, errors, bySource }
+  return { total: totalFound, added: totalAdded, errors, bySource, refresh }
 }
 
 export async function runScraper(slug: string): Promise<RunSummary> {
