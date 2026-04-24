@@ -6,6 +6,7 @@ import useSWR from "swr"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -30,6 +31,13 @@ type FamilyResponse = {
       cluster_key_compound: string | null
     }>
     window_days: number | null
+    reviewed_count: number
+    cluster_path: "semantic" | "fallback"
+    fingerprint_hit_rate: number
+    dominant_error_code_share: number
+    dominant_stack_frame_share: number
+    intra_cluster_similarity_proxy: number
+    nearest_cluster_gap_proxy: number
   } | null
   trend: Array<{ date: string; count: number }>
   variants: Array<{
@@ -63,12 +71,13 @@ export default function FamilyDetailPage() {
   return (
     <main className="container mx-auto px-4 py-8 space-y-6">
       <div className="flex items-center justify-between gap-4">
-        <div>
+        <div className="space-y-2">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Family detail</p>
           <h1 className="text-3xl font-bold">{familyName}</h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-sm text-muted-foreground">
             Family = semantic/title fallback. Variant = regex fingerprint. Triage = LLM + review judgment.
           </p>
+          <ClusterTrustRibbon cluster={data.family} />
         </div>
         <Button asChild variant="outline">
           <Link href={`/?cluster=${clusterId}`}>Open this family in dashboard table</Link>

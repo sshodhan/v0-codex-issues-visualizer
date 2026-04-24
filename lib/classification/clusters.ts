@@ -54,16 +54,39 @@ export interface ClusterSummary {
   size: number
   in_window: number
   classified_count: number
+  reviewed_count: number
+  cluster_path: "semantic" | "fallback"
+  fingerprint_hit_rate: number
+  dominant_error_code_share: number
+  dominant_stack_frame_share: number
+  intra_cluster_similarity_proxy: number
+  nearest_cluster_gap_proxy: number
   samples: ClusterSample[]
+}
+
+export interface ClusterHealthRow {
+  cluster_id: string
+  cluster_path: "semantic" | "fallback"
+  cluster_size: number
+  classified_count: number
+  reviewed_count: number
+  fingerprint_hit_rate: number
+  dominant_error_code_share: number
+  dominant_stack_frame_share: number
+  intra_cluster_similarity_proxy: number
+  nearest_cluster_gap_proxy: number
 }
 
 export function aggregateClusters(
   rows: ClusterObservationRow[],
   labels: ClusterLabelRow[],
+  healthRows: ClusterHealthRow[],
   options: { limit: number; samplesPerCluster: number },
 ): ClusterSummary[] {
   const labelMap = new Map<string, ClusterLabelRow>()
   for (const l of labels) labelMap.set(l.id, l)
+  const healthMap = new Map<string, ClusterHealthRow>()
+  for (const h of healthRows) healthMap.set(h.cluster_id, h)
 
   const byCluster = new Map<
     string,
@@ -104,6 +127,9 @@ export function aggregateClusters(
   return Array.from(byCluster.values())
     .map((entry) => {
       const label = labelMap.get(entry.id) ?? null
+      const health = healthMap.get(entry.id)
+      const clusterPath: "semantic" | "fallback" = health?.cluster_path
+        ?? (entry.cluster_key.startsWith("semantic:") ? "semantic" : "fallback")
       return {
         id: entry.id,
         cluster_key: entry.cluster_key,
@@ -112,6 +138,13 @@ export function aggregateClusters(
         size: entry.size,
         in_window: entry.in_window,
         classified_count: entry.classified_count,
+        reviewed_count: health?.reviewed_count ?? 0,
+        cluster_path: clusterPath,
+        fingerprint_hit_rate: Number(health?.fingerprint_hit_rate ?? 0),
+        dominant_error_code_share: Number(health?.dominant_error_code_share ?? 0),
+        dominant_stack_frame_share: Number(health?.dominant_stack_frame_share ?? 0),
+        intra_cluster_similarity_proxy: Number(health?.intra_cluster_similarity_proxy ?? 0),
+        nearest_cluster_gap_proxy: Number(health?.nearest_cluster_gap_proxy ?? 0),
         samples: entry.samples,
       }
     })

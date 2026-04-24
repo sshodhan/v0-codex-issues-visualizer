@@ -51,6 +51,14 @@ export async function GET(
     .eq("id", clusterId)
     .maybeSingle()
 
+  const { data: clusterHealth } = await supabase
+    .from("mv_cluster_health_current")
+    .select(
+      "cluster_id, cluster_path, cluster_size, classified_count, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy",
+    )
+    .eq("cluster_id", clusterId)
+    .maybeSingle()
+
   const total = rows.length
   const classifiedCount = rows.filter((r: any) => Boolean(r.llm_classified_at)).length
   const sourceCounts = new Map<string, number>()
@@ -164,6 +172,22 @@ export async function GET(
       source_coverage: sourceCoverage,
       representative_observations: representativeObservations,
       window_days: windowDays,
+      reviewed_count: (clusterHealth as any)?.reviewed_count ?? 0,
+      cluster_path:
+        ((clusterHealth as any)?.cluster_path ?? "fallback") as "semantic" | "fallback",
+      fingerprint_hit_rate: Number((clusterHealth as any)?.fingerprint_hit_rate ?? 0),
+      dominant_error_code_share: Number(
+        (clusterHealth as any)?.dominant_error_code_share ?? 0,
+      ),
+      dominant_stack_frame_share: Number(
+        (clusterHealth as any)?.dominant_stack_frame_share ?? 0,
+      ),
+      intra_cluster_similarity_proxy: Number(
+        (clusterHealth as any)?.intra_cluster_similarity_proxy ?? 0,
+      ),
+      nearest_cluster_gap_proxy: Number(
+        (clusterHealth as any)?.nearest_cluster_gap_proxy ?? 0,
+      ),
     },
     trend,
     variants,
