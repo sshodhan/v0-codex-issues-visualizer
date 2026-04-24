@@ -15,6 +15,7 @@ const RAILS: Array<{
   description: string
   score: (cluster: ClusterRollupRow) => number
   tag: "actionability" | "surge" | "review_pressure"
+  metric: (cluster: ClusterRollupRow) => { value: string; caption: string }
 }> = [
   {
     key: "fix_next",
@@ -22,6 +23,11 @@ const RAILS: Array<{
     description: "Highest actionability and concentrated technical signal.",
     score: (cluster) => cluster.rail_scoring?.actionability_input ?? 0,
     tag: "actionability",
+    metric: (cluster) => {
+      const v = cluster.rail_scoring?.actionability_input ?? 0
+      const band = v >= 0.7 ? "High" : v >= 0.4 ? "Med" : "Low"
+      return { value: band, caption: "signal concentration" }
+    },
   },
   {
     key: "breaking_now",
@@ -29,6 +35,10 @@ const RAILS: Array<{
     description: "Largest current-window surge by family volume.",
     score: (cluster) => cluster.rail_scoring?.surge_input ?? cluster.count,
     tag: "surge",
+    metric: (cluster) => ({
+      value: String(cluster.rail_scoring?.surge_input ?? cluster.count),
+      caption: "in window",
+    }),
   },
   {
     key: "review_now",
@@ -36,6 +46,10 @@ const RAILS: Array<{
     description: "Most immediate human-review pressure in triage.",
     score: (cluster) => cluster.rail_scoring?.review_pressure_input ?? Math.max(0, cluster.count - cluster.reviewed_count),
     tag: "review_pressure",
+    metric: (cluster) => ({
+      value: String(cluster.rail_scoring?.review_pressure_input ?? Math.max(0, cluster.count - cluster.reviewed_count)),
+      caption: "unreviewed",
+    }),
   },
 ]
 
@@ -164,12 +178,15 @@ export function V3View({
                   <RailEmptyState railKey={rail.key} pipelineState={pipelineState} days={days} />
                 ) : (
                   topClusters.map((cluster, idx) => {
-                    const scoreValue = rail.score(cluster)
+                    const m = rail.metric(cluster)
                     return (
                       <div key={cluster.id} className="rounded-md border border-border p-3 space-y-2">
                         <div className="flex items-start justify-between gap-2">
                           <p className="text-sm font-medium line-clamp-2">{idx + 1}. {getFamilyLabel(cluster)}</p>
-                          <Badge variant="secondary" className="shrink-0">{scoreValue.toFixed(2)}</Badge>
+                          <div className="flex flex-col items-end shrink-0 text-right">
+                            <span className="text-base font-semibold tabular-nums">{m.value}</span>
+                            <span className="text-[10px] text-muted-foreground leading-none">{m.caption}</span>
+                          </div>
                         </div>
                         <p className="text-xs text-muted-foreground">{cluster.why_surfaced || "representative semantic cluster"}</p>
                         <p className="text-xs text-muted-foreground">{cluster.count} observations · {cluster.reviewed_count} reviewed</p>
