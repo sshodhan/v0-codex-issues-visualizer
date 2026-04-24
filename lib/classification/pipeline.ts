@@ -1,10 +1,10 @@
 import { z } from "zod"
 import type { createAdminClient } from "@/lib/supabase/admin"
 import { toClassificationPayload, type ClassificationApiRecord } from "@/lib/classification/mapping"
-import { CLASSIFIER_SYSTEM_PROMPT } from "@/lib/classification/prompt"
 import { buildClassificationUserTurn } from "@/lib/classification/report-summary"
-import { CLASSIFICATION_SCHEMA, evidenceQuotesAreSubstrings, validateEnumFields } from "@/lib/classification/schema"
+import { evidenceQuotesAreSubstrings, validateEnumFields } from "@/lib/classification/schema"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
+import { requestClassifierResponse } from "@/lib/classification/openai-responses"
 import { recordClassification } from "@/lib/storage/derivations"
 import { recordProcessingEvent } from "@/lib/storage/processing-events"
 import {
@@ -95,32 +95,7 @@ async function runClassifier(userTurn: string, model: string): Promise<Classific
     throw new Error("OPENAI_API_KEY is not configured")
   }
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.2,
-      input: [
-        { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
-        { role: "user", content: userTurn },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: CLASSIFICATION_SCHEMA,
-      },
-    }),
-  })
-
-  if (!response.ok) {
-    const errorBody = await response.text()
-    throw new Error(`OpenAI error: ${response.status} ${errorBody}`)
-  }
-
-  const payload = (await response.json()) as unknown
+  const payload = await requestClassifierResponse(apiKey, userTurn, model)
   return parseResponseJson(payload)
 }
 
