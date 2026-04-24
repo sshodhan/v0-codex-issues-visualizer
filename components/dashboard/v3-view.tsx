@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { ClusterRollupRow } from "@/hooks/use-dashboard-data"
 import type { PipelineStateSummary } from "@/lib/classification/pipeline-state"
+import { composeWhySurfaced } from "@/lib/classification/why-surfaced"
+import { SURGE_CHIP_THRESHOLD_PCT } from "@/lib/classification/rollup-constants"
 
 type RailKey = "fix_next" | "breaking_now" | "review_now"
 
@@ -35,10 +37,29 @@ const RAILS: Array<{
     description: "Largest current-window surge by family volume.",
     score: (cluster) => cluster.rail_scoring?.surge_input ?? cluster.count,
     tag: "surge",
-    metric: (cluster) => ({
-      value: String(cluster.rail_scoring?.surge_input ?? cluster.count),
-      caption: "in window",
-    }),
+    metric: (cluster) => {
+      const pct = cluster.surge_delta_pct
+      const windowHours = cluster.surge_window_hours ?? 6
+      // Real delta available — render signed percentage.
+      if (pct != null) {
+        if (pct === 0) return { value: "stable", caption: `${windowHours}h trend` }
+        const sign = pct > 0 ? "+" : ""
+        return { value: `${sign}${pct}%`, caption: `${windowHours}h trend` }
+      }
+      // New cluster: recent window has observations, prior was empty.
+      // Don't fabricate a percentage; show the count honestly.
+      const recent = cluster.recent_window_count ?? 0
+      const prior = cluster.prior_window_count ?? 0
+      if (recent > 0 && prior === 0) {
+        return { value: String(recent), caption: `new in ${windowHours}h` }
+      }
+      // Sample too small for a percentage; fall back to the in-window
+      // total so the card still communicates volume.
+      return {
+        value: String(cluster.rail_scoring?.surge_input ?? cluster.count),
+        caption: "in window",
+      }
+    },
   },
   {
     key: "review_now",
@@ -94,17 +115,33 @@ function OriginChip({ path }: { path: "semantic" | "fallback" }) {
 }
 
 function StateChips({ cluster }: { cluster: ClusterRollupRow }) {
-  const tags = cluster.rail_scoring?.rail_tags ?? []
+  // Priority: severity first (strongest "fix this" signal), then surge
+  // (time-bucketed), then review pressure. Capped at 2 chips so the
+  // header row doesn't wrap on narrow layouts. Severity is already
+  // gated upstream: `dominant_severity` is null unless the cluster is
+  // ≥50% classified, so "HIGH SEVERITY" never shows on thin data.
   const chips: Array<{ label: string; className: string }> = []
-  if (tags.includes("surge")) chips.push({ label: "SURGE", className: "border-amber-500/40 text-amber-600 text-[10px] font-medium px-1.5 py-0" })
-  if (tags.includes("review_pressure")) chips.push({ label: "NEEDS REVIEW", className: "border-red-400/40 text-red-500 text-[10px] font-medium px-1.5 py-0" })
-  if (tags.includes("actionability") && (cluster.rail_scoring?.actionability_input ?? 0) >= 0.7) {
-    chips.push({ label: "HIGH SIGNAL", className: "border-violet-500/40 text-violet-600 text-[10px] font-medium px-1.5 py-0" })
+
+  if (cluster.dominant_severity === "critical") {
+    chips.push({ label: "CRITICAL", className: "border-red-500/60 text-red-600 text-[10px] font-medium px-1.5 py-0" })
+  } else if (cluster.dominant_severity === "high") {
+    chips.push({ label: "HIGH SEVERITY", className: "border-orange-500/50 text-orange-600 text-[10px] font-medium px-1.5 py-0" })
   }
+
+  const surgePct = cluster.surge_delta_pct
+  if (surgePct != null && surgePct >= SURGE_CHIP_THRESHOLD_PCT) {
+    chips.push({ label: "SURGE DETECTED", className: "border-amber-500/40 text-amber-600 text-[10px] font-medium px-1.5 py-0" })
+  }
+
+  const reviewPressure = cluster.rail_scoring?.review_pressure_input ?? 0
+  if (reviewPressure >= 5) {
+    chips.push({ label: "NEEDS REVIEW", className: "border-red-400/40 text-red-500 text-[10px] font-medium px-1.5 py-0" })
+  }
+
   if (chips.length === 0) return null
   return (
     <>
-      {chips.map((c) => (
+      {chips.slice(0, 2).map((c) => (
         <Badge key={c.label} variant="outline" className={c.className}>{c.label}</Badge>
       ))}
     </>
@@ -175,13 +212,28 @@ function ClusterCard({
         </div>
       </div>
 
-      {/* Why surfaced */}
-      {cluster.why_surfaced ? (
-        <p className="flex items-start gap-1 text-xs text-muted-foreground">
-          <Sparkles className="size-3 mt-0.5 shrink-0" />
-          {cluster.why_surfaced}
-        </p>
-      ) : null}
+      {/* Why surfaced — prefer composed narrative from real cluster
+          numbers; fall back to the server's legacy 4-rule decision-tree
+          string when no clause passes its gating threshold, so we never
+          regress on what the card shows. */}
+      {(() => {
+        const composed = composeWhySurfaced({
+          avg_impact: cluster.avg_impact,
+          dominant_severity: cluster.dominant_severity,
+          negative_sentiment_pct: cluster.negative_sentiment_pct,
+          surge_delta_pct: cluster.surge_delta_pct,
+          surge_window_hours: cluster.surge_window_hours,
+          review_pressure_input: cluster.rail_scoring?.review_pressure_input,
+        })
+        const text = composed ?? cluster.why_surfaced
+        if (!text) return null
+        return (
+          <p className="flex items-start gap-1 text-xs text-muted-foreground">
+            <Sparkles className="size-3 mt-0.5 shrink-0" />
+            {text}
+          </p>
+        )
+      })()}
 
       {/* Three-panel body */}
       <div className="border-t pt-2 space-y-3">

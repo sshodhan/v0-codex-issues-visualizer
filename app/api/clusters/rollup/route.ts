@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { buildPipelineStateSummary } from "@/lib/classification/pipeline-state"
 import { logServerError } from "@/lib/error-tracking/server-logger"
+import { CLUSTER_SURGE_WINDOW_HOURS } from "@/lib/classification/rollup-constants"
+import {
+  dominantSeverity as computeDominantSeverity,
+  negativeSentimentPct as computeNegativeSentimentPct,
+  surgeDeltaPct as computeSurgeDeltaPct,
+} from "@/lib/classification/cluster-gating"
 
 /**
  * GET /api/clusters/rollup?days=30&category=bug
@@ -186,7 +192,15 @@ export async function GET(request: NextRequest) {
     return tags
   }
 
-  const [healthResult, fpResult] = await Promise.all([
+  // Two time-bucketed windows for surge_delta_pct. The windows are
+  // CLUSTER_SURGE_WINDOW_HOURS wide; we compare the most recent window
+  // to the prior window. Matches the scrape cron cadence — see
+  // lib/classification/rollup-constants.ts and vercel.json crons.
+  const nowMs = Date.now()
+  const recentWindowStart = new Date(nowMs - CLUSTER_SURGE_WINDOW_HOURS * 60 * 60 * 1000)
+  const priorWindowStart = new Date(nowMs - 2 * CLUSTER_SURGE_WINDOW_HOURS * 60 * 60 * 1000)
+
+  const [healthResult, fpResult, recentWindowResult, priorWindowResult] = await Promise.all([
     supabase
       .from("mv_cluster_health_current")
       .select(
@@ -194,9 +208,10 @@ export async function GET(request: NextRequest) {
       )
       .in("cluster_id", topIds),
     // Fingerprint enrichment for the top clusters: aggregates regex
-    // variants, breadth (sources + OS), and avg_impact so V3 cards can
-    // render the Trust & Completeness / Regex Variants / Sources & Env
-    // panels without a second round-trip.
+    // variants, breadth (sources + OS), severity/sentiment distributions,
+    // and avg_impact so V3 cards can render the Trust & Completeness /
+    // Regex Variants / Sources & Env panels + state chips + why-surfaced
+    // narrative without a second round-trip.
     //
     // Sampling note: we cap at 2000 rows total across the top 50 clusters
     // (≈40 rows per cluster on average). Ordering by cluster_id then
@@ -204,14 +219,36 @@ export async function GET(request: NextRequest) {
     // high-signal observations; a single very-large cluster can still
     // consume more than its share, but we'd rather undersample tail
     // clusters than run 50 serial queries on the hot path.
+    //
+    // `llm_severity`, `sentiment`, `sentiment_score` added in Tier 2A
+    // (v16 of ARCHITECTURE.md) to back the HIGH SEVERITY / CRITICAL
+    // state chip and the "N% negative sentiment" clause in why-surfaced.
     supabase
       .from("mv_observation_current")
-      .select("cluster_id, error_code, top_stack_frame, fp_os, fp_shell, cli_version, model_id, source_name, impact_score")
+      .select("cluster_id, error_code, top_stack_frame, fp_os, fp_shell, cli_version, model_id, source_name, impact_score, llm_severity, sentiment, sentiment_score")
       .eq("is_canonical", true)
       .in("cluster_id", topIds)
       .order("cluster_id", { ascending: true })
       .order("impact_score", { ascending: false })
       .limit(2000),
+    // Time-bucketed count for the "recent" window (last N hours).
+    // Lightweight — just cluster_id + published_at for gate bucketing.
+    supabase
+      .from("mv_observation_current")
+      .select("cluster_id")
+      .eq("is_canonical", true)
+      .in("cluster_id", topIds)
+      .gte("published_at", recentWindowStart.toISOString()),
+    // Prior-window count (N..2N hours ago). Empty denominator is handled
+    // via MIN_PRIOR_WINDOW_FOR_SURGE gating downstream — we simply return
+    // surge_delta_pct = null for those clusters rather than dividing by 0.
+    supabase
+      .from("mv_observation_current")
+      .select("cluster_id")
+      .eq("is_canonical", true)
+      .in("cluster_id", topIds)
+      .gte("published_at", priorWindowStart.toISOString())
+      .lt("published_at", recentWindowStart.toISOString()),
   ])
 
   if (healthResult.error) {
@@ -222,7 +259,27 @@ export async function GET(request: NextRequest) {
     logServerError("clusters-rollup", "fingerprint_query_failed", fpResult.error, { topClusterCount: topIds.length })
     return NextResponse.json({ error: fpResult.error.message, pipeline_state }, { status: 500 })
   }
+  // Surge-window query failures are non-fatal: the cards still render
+  // without the "+N% 6h trend" affordance. Log and continue so one broken
+  // MV read doesn't 500 the whole V3 surface.
+  if (recentWindowResult.error) {
+    logServerError("clusters-rollup", "recent_window_query_failed", recentWindowResult.error, { topClusterCount: topIds.length })
+  }
+  if (priorWindowResult.error) {
+    logServerError("clusters-rollup", "prior_window_query_failed", priorWindowResult.error, { topClusterCount: topIds.length })
+  }
   const healthMap = new Map((healthResult.data || []).map((h: any) => [h.cluster_id, h]))
+
+  const recentWindowCounts = new Map<string, number>()
+  for (const row of (recentWindowResult.data || []) as Array<{ cluster_id: string | null }>) {
+    if (!row.cluster_id) continue
+    recentWindowCounts.set(row.cluster_id, (recentWindowCounts.get(row.cluster_id) ?? 0) + 1)
+  }
+  const priorWindowCounts = new Map<string, number>()
+  for (const row of (priorWindowResult.data || []) as Array<{ cluster_id: string | null }>) {
+    if (!row.cluster_id) continue
+    priorWindowCounts.set(row.cluster_id, (priorWindowCounts.get(row.cluster_id) ?? 0) + 1)
+  }
 
   type FpRow = {
     cluster_id: string | null
@@ -234,9 +291,14 @@ export async function GET(request: NextRequest) {
     model_id: string | null
     source_name: string | null
     impact_score: number | null
+    llm_severity: string | null
+    sentiment: string | null
+    sentiment_score: number | null
   }
 
   type RegexVariant = { kind: "err" | "stack" | "env" | "sdk"; value: string }
+  type SeverityDist = { low: number; medium: number; high: number; critical: number }
+  type SentimentDist = { positive: number; neutral: number; negative: number }
   type ClusterFpAgg = {
     errorCodes: Map<string, number>
     stackFrames: Map<string, number>
@@ -245,6 +307,14 @@ export async function GET(request: NextRequest) {
     sdkVersions: Map<string, number>
     sourceCountMap: Map<string, number>
     impactScores: number[]
+    severity: SeverityDist
+    /** Count of observations that actually had an LLM severity set.
+     *  Divisor for the severity distribution. */
+    severityClassifiedCount: number
+    sentiment: SentimentDist
+    /** Count of observations that had any sentiment label — divisor for
+     *  the negative_sentiment_pct computation. */
+    sentimentLabelledCount: number
   }
 
   const fpAggMap = new Map<string, ClusterFpAgg>()
@@ -258,6 +328,10 @@ export async function GET(request: NextRequest) {
       sdkVersions: new Map<string, number>(),
       sourceCountMap: new Map<string, number>(),
       impactScores: [] as number[],
+      severity: { low: 0, medium: 0, high: 0, critical: 0 },
+      severityClassifiedCount: 0,
+      sentiment: { positive: 0, neutral: 0, negative: 0 },
+      sentimentLabelledCount: 0,
     }
     if (row.error_code) agg.errorCodes.set(row.error_code, (agg.errorCodes.get(row.error_code) ?? 0) + 1)
     if (row.top_stack_frame) agg.stackFrames.set(row.top_stack_frame, (agg.stackFrames.get(row.top_stack_frame) ?? 0) + 1)
@@ -266,6 +340,18 @@ export async function GET(request: NextRequest) {
     if (row.cli_version) agg.sdkVersions.set(row.cli_version, (agg.sdkVersions.get(row.cli_version) ?? 0) + 1)
     if (row.source_name) agg.sourceCountMap.set(row.source_name, (agg.sourceCountMap.get(row.source_name) ?? 0) + 1)
     if (row.impact_score != null) agg.impactScores.push(Number(row.impact_score))
+    // LLM severity comes from `classifications.severity` joined on the
+    // MV (nullable until the LLM pass has run). Count only classified
+    // rows so the denominator reflects the subset the dominant_severity
+    // call actually looks at — the 50%-classified gate is enforced
+    // downstream where we assemble the final cluster object.
+    if (row.llm_severity === "low") { agg.severity.low += 1; agg.severityClassifiedCount += 1 }
+    else if (row.llm_severity === "medium") { agg.severity.medium += 1; agg.severityClassifiedCount += 1 }
+    else if (row.llm_severity === "high") { agg.severity.high += 1; agg.severityClassifiedCount += 1 }
+    else if (row.llm_severity === "critical") { agg.severity.critical += 1; agg.severityClassifiedCount += 1 }
+    if (row.sentiment === "positive") { agg.sentiment.positive += 1; agg.sentimentLabelledCount += 1 }
+    else if (row.sentiment === "neutral") { agg.sentiment.neutral += 1; agg.sentimentLabelledCount += 1 }
+    else if (row.sentiment === "negative") { agg.sentiment.negative += 1; agg.sentimentLabelledCount += 1 }
     fpAggMap.set(row.cluster_id, agg)
   }
 
@@ -302,6 +388,15 @@ export async function GET(request: NextRequest) {
     return Math.round(avg * 10) / 10
   }
 
+  // Gating helpers live in lib/classification/cluster-gating.ts so the
+  // honesty invariants (severity gated by classified share, sentiment
+  // pct gated by min cluster size, surge gated by prior-window size)
+  // can be unit-tested without standing up a Supabase client.
+  const buildDominantSeverity = (agg: ClusterFpAgg | undefined, classifiedShare: number) =>
+    agg ? computeDominantSeverity(agg.severity, agg.severityClassifiedCount, classifiedShare) : null
+  const buildNegativeSentimentPct = (agg: ClusterFpAgg | undefined) =>
+    agg ? computeNegativeSentimentPct(agg.sentiment, agg.sentimentLabelledCount) : null
+
   const clusters = sorted.map((s) => {
     const meta = labelMap.get(s.id)
     const health = healthMap.get(s.id)
@@ -317,6 +412,11 @@ export async function GET(request: NextRequest) {
     const exemplar = exemplarMap.get(s.id)
     const classifiedShare = s.count > 0 ? Math.round((s.classified / s.count) * 100) / 100 : 0
     const humanReviewedShare = s.count > 0 ? Math.round((reviewedCount / s.count) * 100) / 100 : 0
+    const dominantSeverity = buildDominantSeverity(fpAgg, classifiedShare)
+    const negativeSentimentPct = buildNegativeSentimentPct(fpAgg)
+    const recentWindowCount = recentWindowCounts.get(s.id) ?? 0
+    const priorWindowCount = priorWindowCounts.get(s.id) ?? 0
+    const surgeDeltaPct = computeSurgeDeltaPct(recentWindowCount, priorWindowCount)
     return {
       id: s.id,
       count: s.count,
@@ -345,6 +445,14 @@ export async function GET(request: NextRequest) {
       avg_impact: buildAvgImpact(fpAgg),
       regex_variants: buildRegexVariants(fpAgg),
       breadth: buildBreadth(fpAgg),
+      severity_distribution: fpAgg?.severity ?? { low: 0, medium: 0, high: 0, critical: 0 },
+      dominant_severity: dominantSeverity,
+      sentiment_distribution: fpAgg?.sentiment ?? { positive: 0, neutral: 0, negative: 0 },
+      negative_sentiment_pct: negativeSentimentPct,
+      surge_delta_pct: surgeDeltaPct,
+      surge_window_hours: CLUSTER_SURGE_WINDOW_HOURS,
+      recent_window_count: recentWindowCount,
+      prior_window_count: priorWindowCount,
     }
   })
 
