@@ -29,6 +29,7 @@ import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
 import { PipelineFreshnessStrip } from "@/components/dashboard/pipeline-freshness-strip"
 import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
+import { V3View } from "@/components/dashboard/v3-view"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
@@ -804,6 +805,8 @@ function DashboardContentInner() {
 
             {/* V3 Tab */}
             <TabsContent value="v3" className="space-y-8 mt-6">
+              {uxVersion === "v3" ? <V3View clusters={clusterRollup?.clusters || []} days={globalDays} /> : null}
+
               {isV2 && (
                 <DataProvenanceStrip
                   lastSyncLabel={lastScrapeTime}
