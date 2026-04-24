@@ -1,6 +1,7 @@
 "use client"
 
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
+import type { PipelineStateSummary } from "@/lib/classification/pipeline-state"
 
 type Props = {
   lastSyncLabel: string
@@ -9,6 +10,7 @@ type Props = {
   issueCountInScope: number
   /** LLM triage row count in current scope (after time + known LLM category filter) */
   classificationRowCount: number
+  pipelineState?: PipelineStateSummary | null
 }
 
 /**
@@ -20,6 +22,7 @@ export function ClassificationTabStrip({
   timeDays,
   issueCountInScope,
   classificationRowCount,
+  pipelineState,
 }: Props) {
   const timeLabel = timeDays === 0 ? "All time" : `Last ${timeDays} days`
   return (
@@ -28,6 +31,7 @@ export function ClassificationTabStrip({
         lastSyncLabel={lastSyncLabel}
         issueWindowLabel={timeLabel}
         asOfActive={asOfActive}
+        pipelineState={pipelineState}
       />
       <p className="text-xs text-muted-foreground border border-dashed border-border/80 rounded-md px-3 py-2 bg-muted/20">
         <span className="font-medium text-foreground">This tab: </span>

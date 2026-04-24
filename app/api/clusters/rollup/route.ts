@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { buildPipelineStateSummary } from "@/lib/classification/pipeline-state"
 
 /**
  * GET /api/clusters/rollup?days=30&category=bug
@@ -27,9 +28,70 @@ export async function GET(request: NextRequest) {
       .eq("slug", categorySlug)
     categoryIds = (catRows || []).map((r: { id: string }) => r.id)
     if (categoryIds.length === 0) {
-      return NextResponse.json({ clusters: [] })
+      return NextResponse.json({
+        clusters: [],
+        pipeline_state: buildPipelineStateSummary({
+          observationsInWindow: 0,
+          classifiedCount: 0,
+          clusteredCount: 0,
+        }),
+      })
     }
   }
+
+  const buildObsCountQuery = () => {
+    let q = supabase
+      .from("mv_observation_current")
+      .select("*", { count: "exact", head: true })
+      .eq("is_canonical", true)
+    if (categoryIds) q = q.in("category_id", categoryIds)
+    if (days) {
+      const daysAgo = new Date()
+      daysAgo.setDate(daysAgo.getDate() - days)
+      q = q.gte("published_at", daysAgo.toISOString())
+    }
+    return q
+  }
+  const buildClassifiedCountQuery = () => {
+    let q = supabase
+      .from("mv_observation_current")
+      .select("*", { count: "exact", head: true })
+      .eq("is_canonical", true)
+      .not("llm_classified_at", "is", null)
+    if (categoryIds) q = q.in("category_id", categoryIds)
+    if (days) {
+      const daysAgo = new Date()
+      daysAgo.setDate(daysAgo.getDate() - days)
+      q = q.gte("published_at", daysAgo.toISOString())
+    }
+    return q
+  }
+  const buildClusteredCountQuery = () => {
+    let q = supabase
+      .from("mv_observation_current")
+      .select("*", { count: "exact", head: true })
+      .eq("is_canonical", true)
+      .not("cluster_id", "is", null)
+    if (categoryIds) q = q.in("category_id", categoryIds)
+    if (days) {
+      const daysAgo = new Date()
+      daysAgo.setDate(daysAgo.getDate() - days)
+      q = q.gte("published_at", daysAgo.toISOString())
+    }
+    return q
+  }
+
+  const [obsCountRes, classifiedCountRes, clusteredCountRes] = await Promise.all([
+    buildObsCountQuery(),
+    buildClassifiedCountQuery(),
+    buildClusteredCountQuery(),
+  ])
+  const pipeline_state = buildPipelineStateSummary({
+    observationsInWindow: obsCountRes.count ?? 0,
+    classifiedCount: classifiedCountRes.count ?? 0,
+    clusteredCount: clusteredCountRes.count ?? 0,
+    sourceHealthy: !obsCountRes.error && !classifiedCountRes.error && !clusteredCountRes.error,
+  })
 
   let q = supabase
     .from("mv_observation_current")
@@ -46,7 +108,7 @@ export async function GET(request: NextRequest) {
 
   const { data: rows, error } = await q
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: error.message, pipeline_state }, { status: 500 })
   }
 
   const agg = new Map<string, { count: number; classified: number; sources: Set<string> }>()
@@ -67,7 +129,7 @@ export async function GET(request: NextRequest) {
     .slice(0, 50)
 
   if (sorted.length === 0) {
-    return NextResponse.json({ clusters: [] })
+    return NextResponse.json({ clusters: [], pipeline_state })
   }
 
   const { data: clusterRows, error: cErr } = await supabase
@@ -79,7 +141,7 @@ export async function GET(request: NextRequest) {
     )
 
   if (cErr) {
-    return NextResponse.json({ error: cErr.message }, { status: 500 })
+    return NextResponse.json({ error: cErr.message, pipeline_state }, { status: 500 })
   }
 
   const labelMap = new Map((clusterRows || []).map((c: any) => [c.id, c]))
@@ -129,7 +191,7 @@ export async function GET(request: NextRequest) {
     .in("cluster_id", topIds)
 
   if (hErr) {
-    return NextResponse.json({ error: hErr.message }, { status: 500 })
+    return NextResponse.json({ error: hErr.message, pipeline_state }, { status: 500 })
   }
   const healthMap = new Map((healthRows || []).map((h: any) => [h.cluster_id, h]))
 
@@ -171,5 +233,5 @@ export async function GET(request: NextRequest) {
     }
   })
 
-  return NextResponse.json({ clusters })
+  return NextResponse.json({ clusters, pipeline_state })
 }

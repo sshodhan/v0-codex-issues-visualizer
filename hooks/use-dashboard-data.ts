@@ -2,6 +2,7 @@
 
 import useSWR from "swr"
 import type { PrerequisiteStatus } from "@/lib/classification/prerequisites"
+import type { PipelineStateSummary } from "@/lib/classification/pipeline-state"
 
 export type { PrerequisiteStatus }
 
@@ -247,9 +248,10 @@ export function useClusterRollup(options: { days?: number; category: string }) {
   if (options.category && options.category !== "all") params.set("category", options.category)
   const qs = params.toString()
   const url = qs ? `/api/clusters/rollup?${qs}` : "/api/clusters/rollup"
-  const { data, error, isLoading, mutate } = useSWR<{ clusters: ClusterRollupRow[] }>(url, fetcher, {
-    refreshInterval: 120_000,
-  })
+  const { data, error, isLoading, mutate } = useSWR<{
+    clusters: ClusterRollupRow[]
+    pipeline_state: PipelineStateSummary
+  }>(url, fetcher, { refreshInterval: 120_000 })
   return { data, isLoading, isError: error, refresh: mutate }
 }
 
@@ -324,6 +326,7 @@ export interface ClustersResponse {
   clusters: ClusterSummary[]
   windowDays: number | null
   source: "observations"
+  pipeline_state: PipelineStateSummary
 }
 
 // Direct cluster read from /api/clusters, independent of the
@@ -456,6 +459,7 @@ export interface ClassificationStats {
   // failed server-side — UI should fall back to the generic
   // "No AI classifications yet" copy in that case.
   prerequisites?: PrerequisiteStatus | null
+  pipeline_state?: PipelineStateSummary
 }
 
 export function useClassifications(filters?: {

@@ -58,6 +58,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ClassificationTabStrip } from "@/components/dashboard/classification-tab-strip"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { getConfidenceBandDisplay } from "@/lib/classification/confidence-display"
+import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
 
 interface ClassificationTriageProps {
   records: ClassificationRecord[]
@@ -362,6 +363,15 @@ export function ClassificationTriage({
             timeDays={timeDays}
             issueCountInScope={heuristicScopeIssueCount}
             classificationRowCount={globallyFilteredRecords.length}
+            pipelineState={stats?.pipeline_state ?? null}
+          />
+        )}
+        {!isV2 && (
+          <DataProvenanceStrip
+            lastSyncLabel={lastSyncLabel}
+            issueWindowLabel={timeDays === 0 ? "All time" : `Last ${timeDays} days`}
+            asOfActive={asOfActive}
+            pipelineState={stats?.pipeline_state ?? null}
           />
         )}
 
