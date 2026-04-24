@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import type { createAdminClient } from "@/lib/supabase/admin"
+import { extractResponsesOutputText } from "@/lib/classification/openai-responses"
 import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import { attachToCluster } from "@/lib/storage/clusters"
 import { recordProcessingEvent } from "@/lib/storage/processing-events"
@@ -151,11 +152,12 @@ async function labelSemanticCluster(titles: string[]): Promise<{
   })
 
   if (!response.ok) return null
-  const payload = (await response.json()) as { output_text?: string }
-  if (typeof payload.output_text !== "string") return null
+  const payload = (await response.json()) as unknown
+  const outputText = extractResponsesOutputText(payload)
+  if (typeof outputText !== "string") return null
 
   try {
-    const parsed = JSON.parse(payload.output_text) as {
+    const parsed = JSON.parse(outputText) as {
       label?: string
       rationale?: string
       confidence?: number

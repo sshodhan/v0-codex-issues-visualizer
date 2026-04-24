@@ -4,7 +4,7 @@ import { toClassificationPayload, type ClassificationApiRecord } from "@/lib/cla
 import { buildClassificationUserTurn } from "@/lib/classification/report-summary"
 import { evidenceQuotesAreSubstrings, validateEnumFields } from "@/lib/classification/schema"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
-import { requestClassifierResponse } from "@/lib/classification/openai-responses"
+import { extractResponsesOutputText, requestClassifierResponse } from "@/lib/classification/openai-responses"
 import { recordClassification } from "@/lib/storage/derivations"
 import { recordProcessingEvent } from "@/lib/storage/processing-events"
 import {
@@ -79,11 +79,10 @@ export class ClassificationValidationError extends Error {
 }
 
 function parseResponseJson(responseJson: unknown): ClassificationApiRecord {
-  const asRecord = responseJson as Record<string, unknown>
-  const outputText = asRecord.output_text
+  const outputText = extractResponsesOutputText(responseJson)
 
   if (typeof outputText !== "string") {
-    throw new Error("Model returned no output_text")
+    throw new Error("Model returned no parseable text output")
   }
 
   return JSON.parse(outputText) as ClassificationApiRecord
