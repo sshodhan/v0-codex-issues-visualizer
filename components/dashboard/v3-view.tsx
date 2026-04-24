@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { ClusterRollupRow } from "@/hooks/use-dashboard-data"
+import type { PipelineStateSummary } from "@/lib/classification/pipeline-state"
 
 type RailKey = "fix_next" | "breaking_now" | "review_now"
 
@@ -55,7 +56,94 @@ function getTopClusters(clusters: ClusterRollupRow[], railTag: "actionability" |
     .slice(0, 3)
 }
 
-export function V3View({ clusters, days }: { clusters: ClusterRollupRow[]; days: number }) {
+function RailEmptyState({
+  railKey,
+  pipelineState,
+  days,
+}: {
+  railKey: RailKey
+  pipelineState: PipelineStateSummary | null | undefined
+  days: number
+}) {
+  if (!pipelineState) {
+    return <p className="text-sm text-muted-foreground">Loading pipeline state…</p>
+  }
+
+  if (pipelineState.data_state === "degraded") {
+    const { degraded_reason } = pipelineState
+    if (degraded_reason === "source_query_failed") {
+      return (
+        <div className="space-y-2 text-sm text-muted-foreground">
+          <p>Data source failed to respond — cluster rankings may be stale.</p>
+          <Link href="/admin" className="text-xs text-primary hover:underline">Open admin panel</Link>
+        </div>
+      )
+    }
+    if (degraded_reason === "openai_unconfigured") {
+      return (
+        <div className="space-y-2 text-sm text-muted-foreground">
+          <p>LLM classification is unavailable (OPENAI_API_KEY not configured). Clusters may be unclassified.</p>
+          <Link href="/admin" className="text-xs text-primary hover:underline">Open admin panel</Link>
+        </div>
+      )
+    }
+    if (degraded_reason === "classify_backfill_failed") {
+      return (
+        <div className="space-y-2 text-sm text-muted-foreground">
+          <p>Classify backfill failed — rankings may be outdated.</p>
+          <Link href="/admin?tab=classify-backfill" className="text-xs text-primary hover:underline">Re-run classify backfill</Link>
+        </div>
+      )
+    }
+    return (
+      <div className="space-y-2 text-sm text-muted-foreground">
+        <p>Pipeline error detected.</p>
+        <Link href="/admin" className="text-xs text-primary hover:underline">Open admin panel</Link>
+      </div>
+    )
+  }
+
+  if (pipelineState.data_state === "empty_healthy") {
+    return (
+      <div className="space-y-2 text-sm text-muted-foreground">
+        <p>No observations in the current {days}-day window.</p>
+        <span className="text-xs">Try widening the time range using the days filter.</span>
+      </div>
+    )
+  }
+
+  // healthy or pending_classification — rail is genuinely quiet
+  const { observations_in_window, clustered_count } = pipelineState
+  if (railKey === "fix_next") {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No clusters with concentrated error signal in this window ({observations_in_window} observations, {clustered_count} clustered).
+      </p>
+    )
+  }
+  if (railKey === "breaking_now") {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No surge detected — activity is within normal range for this window.
+      </p>
+    )
+  }
+  return (
+    <p className="text-sm text-muted-foreground">
+      All clusters reviewed — triage is clear for this window.
+    </p>
+  )
+}
+
+export function V3View({
+  clusters,
+  days,
+  pipelineState,
+}: {
+  clusters: ClusterRollupRow[]
+  days: number
+  pipelineState?: PipelineStateSummary | null
+}) {
   return (
     <section className="space-y-3">
       <div>
@@ -73,7 +161,7 @@ export function V3View({ clusters, days }: { clusters: ClusterRollupRow[]; days:
               </CardHeader>
               <CardContent className="space-y-3">
                 {topClusters.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No clusters available in this window.</p>
+                  <RailEmptyState railKey={rail.key} pipelineState={pipelineState} days={days} />
                 ) : (
                   topClusters.map((cluster, idx) => {
                     const scoreValue = rail.score(cluster)
