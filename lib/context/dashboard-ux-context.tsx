@@ -10,7 +10,7 @@ import {
 } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
-export type DashboardUxVersion = "v1" | "v2"
+export type DashboardUxVersion = "v1" | "v2" | "v3"
 
 const STORAGE_KEY = "codex-dashboard-ux-version"
 
@@ -20,7 +20,7 @@ const DashboardUxContext = createContext<{
 } | null>(null)
 
 function parseParam(raw: string | null): DashboardUxVersion | null {
-  if (raw === "v1" || raw === "v2") return raw
+  if (raw === "v1" || raw === "v2" || raw === "v3") return raw
   return null
 }
 
