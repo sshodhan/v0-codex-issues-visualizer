@@ -805,7 +805,7 @@ function DashboardContentInner() {
 
             {/* V3 Tab */}
             <TabsContent value="v3" className="space-y-8 mt-6">
-              {uxVersion === "v3" ? <V3View clusters={clusterRollup?.clusters || []} days={globalDays} /> : null}
+              {uxVersion === "v3" ? <V3View clusters={clusterRollup?.clusters || []} days={globalDays} pipelineState={clusterRollup?.pipeline_state} /> : null}
 
               {isV2 && (
                 <DataProvenanceStrip

@@ -183,21 +183,124 @@ export async function GET(request: NextRequest) {
     return tags
   }
 
-  const { data: healthRows, error: hErr } = await supabase
-    .from("mv_cluster_health_current")
-    .select(
-      "cluster_id, cluster_path, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy",
-    )
-    .in("cluster_id", topIds)
+  const [healthResult, fpResult] = await Promise.all([
+    supabase
+      .from("mv_cluster_health_current")
+      .select(
+        "cluster_id, cluster_path, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy",
+      )
+      .in("cluster_id", topIds),
+    // Fingerprint enrichment for the top clusters: aggregates regex
+    // variants, breadth (sources + OS), and avg_impact so V3 cards can
+    // render the Trust & Completeness / Regex Variants / Sources & Env
+    // panels without a second round-trip.
+    //
+    // Sampling note: we cap at 2000 rows total across the top 50 clusters
+    // (≈40 rows per cluster on average). Ordering by cluster_id then
+    // impact_score DESC makes the sample deterministic and biases toward
+    // high-signal observations; a single very-large cluster can still
+    // consume more than its share, but we'd rather undersample tail
+    // clusters than run 50 serial queries on the hot path.
+    supabase
+      .from("mv_observation_current")
+      .select("cluster_id, error_code, top_stack_frame, fp_os, fp_shell, cli_version, model_id, source_name, impact_score")
+      .eq("is_canonical", true)
+      .in("cluster_id", topIds)
+      .order("cluster_id", { ascending: true })
+      .order("impact_score", { ascending: false })
+      .limit(2000),
+  ])
 
-  if (hErr) {
-    return NextResponse.json({ error: hErr.message, pipeline_state }, { status: 500 })
+  if (healthResult.error) {
+    return NextResponse.json({ error: healthResult.error.message, pipeline_state }, { status: 500 })
   }
-  const healthMap = new Map((healthRows || []).map((h: any) => [h.cluster_id, h]))
+  if (fpResult.error) {
+    return NextResponse.json({ error: fpResult.error.message, pipeline_state }, { status: 500 })
+  }
+  const healthMap = new Map((healthResult.data || []).map((h: any) => [h.cluster_id, h]))
+
+  type FpRow = {
+    cluster_id: string | null
+    error_code: string | null
+    top_stack_frame: string | null
+    fp_os: string | null
+    fp_shell: string | null
+    cli_version: string | null
+    model_id: string | null
+    source_name: string | null
+    impact_score: number | null
+  }
+
+  type RegexVariant = { kind: "err" | "stack" | "env" | "sdk"; value: string }
+  type ClusterFpAgg = {
+    errorCodes: Map<string, number>
+    stackFrames: Map<string, number>
+    osTokens: Map<string, number>
+    shellTokens: Map<string, number>
+    sdkVersions: Map<string, number>
+    sourceCountMap: Map<string, number>
+    impactScores: number[]
+  }
+
+  const fpAggMap = new Map<string, ClusterFpAgg>()
+  for (const row of (fpResult.data || []) as FpRow[]) {
+    if (!row.cluster_id) continue
+    const agg: ClusterFpAgg = fpAggMap.get(row.cluster_id) ?? {
+      errorCodes: new Map<string, number>(),
+      stackFrames: new Map<string, number>(),
+      osTokens: new Map<string, number>(),
+      shellTokens: new Map<string, number>(),
+      sdkVersions: new Map<string, number>(),
+      sourceCountMap: new Map<string, number>(),
+      impactScores: [] as number[],
+    }
+    if (row.error_code) agg.errorCodes.set(row.error_code, (agg.errorCodes.get(row.error_code) ?? 0) + 1)
+    if (row.top_stack_frame) agg.stackFrames.set(row.top_stack_frame, (agg.stackFrames.get(row.top_stack_frame) ?? 0) + 1)
+    if (row.fp_os) agg.osTokens.set(row.fp_os, (agg.osTokens.get(row.fp_os) ?? 0) + 1)
+    if (row.fp_shell) agg.shellTokens.set(row.fp_shell, (agg.shellTokens.get(row.fp_shell) ?? 0) + 1)
+    if (row.cli_version) agg.sdkVersions.set(row.cli_version, (agg.sdkVersions.get(row.cli_version) ?? 0) + 1)
+    if (row.source_name) agg.sourceCountMap.set(row.source_name, (agg.sourceCountMap.get(row.source_name) ?? 0) + 1)
+    if (row.impact_score != null) agg.impactScores.push(Number(row.impact_score))
+    fpAggMap.set(row.cluster_id, agg)
+  }
+
+  const topNByCount = <T>(m: Map<T, number>, n: number): T[] =>
+    [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([k]) => k)
+
+  const buildRegexVariants = (agg: ClusterFpAgg | undefined): RegexVariant[] => {
+    if (!agg) return []
+    const variants: RegexVariant[] = []
+    for (const v of topNByCount(agg.errorCodes, 2)) variants.push({ kind: "err", value: String(v) })
+    for (const v of topNByCount(agg.stackFrames, 2)) variants.push({ kind: "stack", value: String(v) })
+    // "env" chips surface OS first, then shell — they're both env signals
+    // but distinct enough that we don't collapse them into a single map.
+    const envCombined = new Map<string, number>()
+    for (const [k, v] of agg.osTokens.entries()) envCombined.set(k, v)
+    for (const [k, v] of agg.shellTokens.entries()) envCombined.set(k, (envCombined.get(k) ?? 0) + v)
+    for (const v of topNByCount(envCombined, 2)) variants.push({ kind: "env", value: String(v) })
+    for (const v of topNByCount(agg.sdkVersions, 1)) variants.push({ kind: "sdk", value: `CLI v${v}` })
+    return variants.slice(0, 8)
+  }
+
+  const buildBreadth = (agg: ClusterFpAgg | undefined) => {
+    const sources: Record<string, number> = {}
+    if (agg) {
+      for (const [k, v] of agg.sourceCountMap.entries()) sources[k] = v
+    }
+    const os = agg ? topNByCount(agg.osTokens, 4).map(String) : []
+    return { sources, os }
+  }
+
+  const buildAvgImpact = (agg: ClusterFpAgg | undefined): number | null => {
+    if (!agg || agg.impactScores.length === 0) return null
+    const avg = agg.impactScores.reduce((a, b) => a + b, 0) / agg.impactScores.length
+    return Math.round(avg * 10) / 10
+  }
 
   const clusters = sorted.map((s) => {
     const meta = labelMap.get(s.id)
     const health = healthMap.get(s.id)
+    const fpAgg = fpAggMap.get(s.id)
     const reviewedCount = Number(health?.reviewed_count ?? 0)
     const actionabilityInput = Number(
       ((Number(health?.fingerprint_hit_rate ?? 0) * 0.5) +
@@ -207,6 +310,8 @@ export async function GET(request: NextRequest) {
     const surgeInput = s.count
     const reviewPressureInput = Math.max(0, s.count - reviewedCount)
     const exemplar = exemplarMap.get(s.id)
+    const classifiedShare = s.count > 0 ? Math.round((s.classified / s.count) * 100) / 100 : 0
+    const humanReviewedShare = s.count > 0 ? Math.round((reviewedCount / s.count) * 100) / 100 : 0
     return {
       id: s.id,
       count: s.count,
@@ -230,6 +335,11 @@ export async function GET(request: NextRequest) {
       dominant_stack_frame_share: Number(health?.dominant_stack_frame_share ?? 0),
       intra_cluster_similarity_proxy: Number(health?.intra_cluster_similarity_proxy ?? 0),
       nearest_cluster_gap_proxy: Number(health?.nearest_cluster_gap_proxy ?? 0),
+      classified_share: classifiedShare,
+      human_reviewed_share: humanReviewedShare,
+      avg_impact: buildAvgImpact(fpAgg),
+      regex_variants: buildRegexVariants(fpAgg),
+      breadth: buildBreadth(fpAgg),
     }
   })
 
