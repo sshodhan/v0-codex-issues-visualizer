@@ -109,6 +109,27 @@ interface SampleKey {
   cluster_key: string
 }
 
+interface ClusterBatchResult {
+  processed: number
+  attached: number
+  detached?: number
+  nextCursor: string | null
+  done: boolean
+  refreshedMvs?: boolean
+  sampleKeys?: SampleKey[]
+}
+
+interface ClusterBatchRow {
+  id: number
+  cursor: string | null
+  status: "queued" | "running" | "completed" | "failed" | "aborted"
+  processed: number
+  attached: number
+  detached: number
+  error: string | null
+  sampleKeys: SampleKey[]
+}
+
 interface ClassifyBackfillStats {
   /** Unclassified canonical rows at or above MIN_IMPACT_SCORE — what
    *  "Run until done" will actually process. */
@@ -137,6 +158,18 @@ interface ClassifyBackfillBatchResult {
   failed: number
   failures: ClassifyBackfillFailure[]
   refreshedMvs: boolean
+}
+
+function dedupeClassifyFailures(items: ClassifyBackfillFailure[]): ClassifyBackfillFailure[] {
+  const seen = new Set<string>()
+  const deduped: ClassifyBackfillFailure[] = []
+  for (const item of items) {
+    const key = `${item.observationId}::${item.reason}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(item)
+  }
+  return deduped
 }
 
 interface ObservationTraceResponse {
@@ -514,6 +547,18 @@ async function explainAdminFailure(res: Response): Promise<string> {
   return body ? `HTTP ${res.status}: ${body}` : `HTTP ${res.status}`
 }
 
+function makeAdminHttpError(status: number, message: string) {
+  const err = new Error(message) as Error & { status?: number }
+  err.status = status
+  return err
+}
+
+function shouldLogAdminClientError(error: unknown) {
+  const status = (error as { status?: number })?.status
+  // 401/403 are expected until the operator provides x-admin-secret.
+  return status !== 401 && status !== 403
+}
+
 // ============================================================================
 // Backfill panel
 // ============================================================================
@@ -543,12 +588,14 @@ function BackfillPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/backfill-derivations", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as BackfillStats
       setStats(data)
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-backfill-stats-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-backfill-stats-failed")
+      }
     } finally {
       setStatsLoading(false)
     }
@@ -582,7 +629,7 @@ function BackfillPanel({ secret }: { secret: string }) {
           body: JSON.stringify({ cursor, limit: CHUNK_SIZE, dryRun }),
         })
         if (!res.ok) {
-          throw new Error(await explainAdminFailure(res))
+          throw makeAdminHttpError(res.status, await explainAdminFailure(res))
         }
         const data = await res.json()
         setProcessed((p) => p + (data.processed as number))
@@ -604,7 +651,9 @@ function BackfillPanel({ secret }: { secret: string }) {
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
-        logClientError(e, "admin-backfill-run-failed", { dryRun })
+        if (shouldLogAdminClientError(e)) {
+          logClientError(e, "admin-backfill-run-failed", { dryRun })
+        }
       }
     } finally {
       abortRef.current = null
@@ -841,6 +890,8 @@ function ClusteringPanel({ secret }: { secret: string }) {
   const [attached, setAttached] = useState(0)
   const [detached, setDetached] = useState(0)
   const [sampleKeys, setSampleKeys] = useState<SampleKey[]>([])
+  const [batchRows, setBatchRows] = useState<ClusterBatchRow[]>([])
+  const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
   const [refreshedMvs, setRefreshedMvs] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
@@ -852,12 +903,14 @@ function ClusteringPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/cluster", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as ClusterStats
       setStats(data)
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-cluster-stats-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-cluster-stats-failed")
+      }
     } finally {
       setStatsLoading(false)
     }
@@ -884,6 +937,8 @@ function ClusteringPanel({ secret }: { secret: string }) {
     setAttached(0)
     setDetached(0)
     setSampleKeys([])
+    setBatchRows([])
+    setSelectedBatchId(null)
     setRunError(null)
     setRefreshedMvs(false)
 
@@ -891,9 +946,26 @@ function ClusteringPanel({ secret }: { secret: string }) {
     abortRef.current = abort
     let cursor: string | null = null
     let seenSamples = false
+    let batchIdCounter = 1
 
     try {
       while (!abort.signal.aborted) {
+        const batchId = batchIdCounter++
+        setBatchRows((rows) => [
+          ...rows,
+          {
+            id: batchId,
+            cursor,
+            status: "running",
+            processed: 0,
+            attached: 0,
+            detached: 0,
+            error: null,
+            sampleKeys: [],
+          },
+        ])
+        if (selectedBatchId == null) setSelectedBatchId(batchId)
+
         const res = await fetch("/api/admin/cluster", {
           method: "POST",
           signal: abort.signal,
@@ -906,9 +978,43 @@ function ClusteringPanel({ secret }: { secret: string }) {
           }),
         })
         if (!res.ok) {
-          throw new Error(await explainAdminFailure(res))
+          const message = await explainAdminFailure(res)
+          setBatchRows((rows) =>
+            rows.map((row) =>
+              row.id === batchId ? { ...row, status: "failed", error: message } : row,
+            ),
+          )
+          const error = makeAdminHttpError(res.status, message)
+          if (shouldLogAdminClientError(error)) {
+            logClientError(error, "admin-cluster-batch-failed", {
+              batchId,
+              cursor,
+              redetach,
+              status: res.status,
+            })
+          }
+          throw error
         }
-        const data = await res.json()
+        const data = (await res.json()) as ClusterBatchResult
+        const batchProcessed = Number(data.processed ?? 0)
+        const batchAttached = Number(data.attached ?? 0)
+        const batchDetached = typeof data.detached === "number" ? data.detached : 0
+
+        setBatchRows((rows) =>
+          rows.map((row) =>
+            row.id === batchId
+              ? {
+                  ...row,
+                  status: "completed",
+                  processed: batchProcessed,
+                  attached: batchAttached,
+                  detached: batchDetached,
+                  sampleKeys: Array.isArray(data.sampleKeys) ? data.sampleKeys : [],
+                }
+              : row,
+          ),
+        )
+
         setProcessed((p) => p + (data.processed as number))
         setAttached((a) => a + (data.attached ?? 0))
         if (typeof data.detached === "number") {
@@ -925,7 +1031,16 @@ function ClusteringPanel({ secret }: { secret: string }) {
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
-        logClientError(e, "admin-cluster-rebuild-failed", { redetach })
+        if (shouldLogAdminClientError(e)) {
+          logClientError(e, "admin-cluster-rebuild-failed", { redetach })
+        }
+      } else {
+        setBatchRows((rows) => {
+          const next = [...rows]
+          const idx = next.findIndex((row) => row.status === "running")
+          if (idx >= 0) next[idx] = { ...next[idx], status: "aborted", error: "Aborted by user" }
+          return next
+        })
       }
     } finally {
       abortRef.current = null
@@ -940,6 +1055,8 @@ function ClusteringPanel({ secret }: { secret: string }) {
     stats && stats.observations > 0
       ? Math.min(100, (processed / stats.observations) * 100)
       : 0
+  const selectedBatch =
+    selectedBatchId != null ? batchRows.find((row) => row.id === selectedBatchId) ?? null : null
 
   return (
     <Card>
@@ -1178,6 +1295,100 @@ function ClusteringPanel({ secret }: { secret: string }) {
             </CollapsibleContent>
           </Collapsible>
         )}
+
+        {batchRows.length > 0 && (
+          <Collapsible defaultOpen>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                Cluster batches ({batchRows.length})
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-2 space-y-3">
+              <div className="overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Batch</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Processed</TableHead>
+                      <TableHead>Attached</TableHead>
+                      {redetach && <TableHead>Detached</TableHead>}
+                      <TableHead>Cursor</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {batchRows.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="font-mono text-xs">#{row.id}</TableCell>
+                        <TableCell>
+                          <Badge variant={row.status === "completed" ? "default" : row.status === "failed" ? "destructive" : "secondary"}>
+                            {row.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="tabular-nums">{row.processed.toLocaleString()}</TableCell>
+                        <TableCell className="tabular-nums">{row.attached.toLocaleString()}</TableCell>
+                        {redetach && <TableCell className="tabular-nums">{row.detached.toLocaleString()}</TableCell>}
+                        <TableCell className="max-w-[220px] truncate font-mono text-[11px]" title={row.cursor ?? "start"}>
+                          {row.cursor ?? "start"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant={selectedBatchId === row.id ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => setSelectedBatchId(row.id)}
+                          >
+                            View
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {selectedBatch && (
+                <div className="rounded-md border p-3 space-y-2">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-medium">Batch #{selectedBatch.id}</span>
+                    <Badge variant={selectedBatch.status === "completed" ? "default" : selectedBatch.status === "failed" ? "destructive" : "secondary"}>
+                      {selectedBatch.status}
+                    </Badge>
+                  </div>
+                  {selectedBatch.error && (
+                    <div className="text-xs text-destructive">{selectedBatch.error}</div>
+                  )}
+                  {selectedBatch.sampleKeys.length > 0 ? (
+                    <div className="overflow-x-auto rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Title</TableHead>
+                            <TableHead>Cluster key</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {selectedBatch.sampleKeys.map((k) => (
+                            <TableRow key={`${selectedBatch.id}-${k.id}`}>
+                              <TableCell className="max-w-[520px] truncate" title={k.title}>
+                                {k.title}
+                              </TableCell>
+                              <TableCell className="font-mono text-xs">{k.cluster_key}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      No sample keys captured for this batch yet (placeholder row).
+                    </div>
+                  )}
+                </div>
+              )}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
       </CardContent>
     </Card>
   )
@@ -1222,7 +1433,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/classify-backfill", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as ClassifyBackfillStats
       setStats(data)
       setLimit((current) =>
@@ -1230,7 +1441,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       )
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-classify-backfill-stats-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-classify-backfill-stats-failed")
+      }
     } finally {
       setStatsLoading(false)
     }
@@ -1260,7 +1473,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         headers: authHeaders(secret),
         body: JSON.stringify({ dryRun: true, limit }),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as {
         pendingCandidates: number
         wouldProcess: number
@@ -1271,7 +1484,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       })
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-classify-backfill-dryrun-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-classify-backfill-dryrun-failed")
+      }
     } finally {
       setRunning(null)
     }
@@ -1287,14 +1502,16 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         headers: authHeaders(secret),
         body: JSON.stringify({ limit }),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as ClassifyBackfillBatchResult
       setLastBatch(data)
-      setFailures(data.failures ?? [])
+      setFailures(dedupeClassifyFailures(data.failures ?? []))
       setRefreshedMvs(data.refreshedMvs)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-classify-backfill-batch-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-classify-backfill-batch-failed")
+      }
     } finally {
       setRunning(null)
       await loadStats()
@@ -1333,7 +1550,10 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           body: JSON.stringify({ dryRun: true, limit }),
         })
         if (!pendingRes.ok) {
-          throw new Error(await explainAdminFailure(pendingRes))
+          throw makeAdminHttpError(
+            pendingRes.status,
+            await explainAdminFailure(pendingRes),
+          )
         }
         const pendingData = (await pendingRes.json()) as {
           pendingCandidates: number
@@ -1352,7 +1572,10 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           consecutiveErrors += 1
           const msg = await explainAdminFailure(res)
           if (consecutiveErrors >= 3) {
-            throw new Error(`Aborted after 3 consecutive errors: ${msg}`)
+            throw makeAdminHttpError(
+              res.status,
+              `Aborted after 3 consecutive errors: ${msg}`,
+            )
           }
           await new Promise((r) => setTimeout(r, 1000 * consecutiveErrors))
           continue
@@ -1368,7 +1591,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         }))
         if (data.failures?.length) {
           collectedFailures.push(...data.failures)
-          setFailures([...collectedFailures])
+          setFailures(dedupeClassifyFailures(collectedFailures))
         }
         if (data.refreshedMvs) finalRefreshedMvs = true
 
@@ -1383,7 +1606,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
-        logClientError(e, "admin-classify-backfill-loop-failed")
+        if (shouldLogAdminClientError(e)) {
+          logClientError(e, "admin-classify-backfill-loop-failed")
+        }
       }
     } finally {
       abortRef.current = null
@@ -1709,12 +1934,14 @@ function SchemaVerificationPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/verify-schema", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as VerifyReport
       setReport(data)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-verify-schema-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-verify-schema-failed")
+      }
     } finally {
       setLoading(false)
     }

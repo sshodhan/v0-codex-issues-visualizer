@@ -1,7 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { buildClassifierResponsesBody, requestClassifierResponse } from "../lib/classification/openai-responses.ts"
+import {
+  buildClassifierResponsesBody,
+  extractResponsesOutputText,
+  requestClassifierResponse,
+} from "../lib/classification/openai-responses.ts"
 
 test("classifier /v1/responses body uses text.format json_schema and omits response_format", () => {
   const body = buildClassifierResponsesBody("report_text: sample", "gpt-5-mini") as Record<string, unknown>
@@ -61,5 +65,29 @@ test("requestClassifierResponse sends text.format body via fetch and preserves d
   await assert.rejects(
     () => requestClassifierResponse("test-key", "report_text: sample", "gpt-5-mini", failingFetch),
     /schema validation failed: confidence is required/,
+  )
+})
+
+test("extractResponsesOutputText supports output_text and output[] content block shapes", () => {
+  assert.equal(
+    extractResponsesOutputText({ output_text: "{\"category\":\"bug\"}" }),
+    "{\"category\":\"bug\"}",
+  )
+
+  assert.equal(
+    extractResponsesOutputText({
+      output: [
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: "{\"category\":\"feature\"}",
+            },
+          ],
+        },
+      ],
+    }),
+    "{\"category\":\"feature\"}",
   )
 })
