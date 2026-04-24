@@ -236,6 +236,11 @@ export interface ClusterRollupRow {
   dominant_stack_frame_share: number
   intra_cluster_similarity_proxy: number
   nearest_cluster_gap_proxy: number
+  classified_share?: number
+  human_reviewed_share?: number
+  avg_impact?: number | null
+  regex_variants?: Array<{ kind: "err" | "stack" | "env" | "sdk"; value: string }>
+  breadth?: { sources: Record<string, number>; os: string[] }
 }
 
 /**

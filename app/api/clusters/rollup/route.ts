@@ -183,21 +183,100 @@ export async function GET(request: NextRequest) {
     return tags
   }
 
-  const { data: healthRows, error: hErr } = await supabase
-    .from("mv_cluster_health_current")
-    .select(
-      "cluster_id, cluster_path, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy",
-    )
-    .in("cluster_id", topIds)
+  const [healthResult, fpResult] = await Promise.all([
+    supabase
+      .from("mv_cluster_health_current")
+      .select(
+        "cluster_id, cluster_path, reviewed_count, fingerprint_hit_rate, dominant_error_code_share, dominant_stack_frame_share, intra_cluster_similarity_proxy, nearest_cluster_gap_proxy",
+      )
+      .in("cluster_id", topIds),
+    supabase
+      .from("mv_observation_current")
+      .select("cluster_id, error_code, top_stack_frame, fp_os, fp_shell, cli_version, model_id, source_name, impact_score")
+      .eq("is_canonical", true)
+      .in("cluster_id", topIds)
+      .limit(500),
+  ])
 
-  if (hErr) {
-    return NextResponse.json({ error: hErr.message, pipeline_state }, { status: 500 })
+  if (healthResult.error) {
+    return NextResponse.json({ error: healthResult.error.message, pipeline_state }, { status: 500 })
   }
-  const healthMap = new Map((healthRows || []).map((h: any) => [h.cluster_id, h]))
+  const healthMap = new Map((healthResult.data || []).map((h: any) => [h.cluster_id, h]))
+
+  type FpRow = {
+    cluster_id: string | null
+    error_code: string | null
+    top_stack_frame: string | null
+    fp_os: string | null
+    fp_shell: string | null
+    cli_version: string | null
+    model_id: string | null
+    source_name: string | null
+    impact_score: number | null
+  }
+
+  type RegexVariant = { kind: "err" | "stack" | "env" | "sdk"; value: string }
+  type ClusterFpAgg = {
+    errorCodes: Map<string, number>
+    stackFrames: Map<string, number>
+    envTokens: Map<string, number>
+    sdkVersions: Map<string, number>
+    sourceCountMap: Map<string, number>
+    impactScores: number[]
+  }
+
+  const fpAggMap = new Map<string, ClusterFpAgg>()
+  for (const row of (fpResult.data || []) as FpRow[]) {
+    if (!row.cluster_id) continue
+    const agg: ClusterFpAgg = fpAggMap.get(row.cluster_id) ?? {
+      errorCodes: new Map<string, number>(),
+      stackFrames: new Map<string, number>(),
+      envTokens: new Map<string, number>(),
+      sdkVersions: new Map<string, number>(),
+      sourceCountMap: new Map<string, number>(),
+      impactScores: [] as number[],
+    }
+    if (row.error_code) agg.errorCodes.set(row.error_code, (agg.errorCodes.get(row.error_code) ?? 0) + 1)
+    if (row.top_stack_frame) agg.stackFrames.set(row.top_stack_frame, (agg.stackFrames.get(row.top_stack_frame) ?? 0) + 1)
+    const envToken = row.fp_os || row.fp_shell
+    if (envToken) agg.envTokens.set(envToken, (agg.envTokens.get(envToken) ?? 0) + 1)
+    if (row.cli_version) agg.sdkVersions.set(row.cli_version, (agg.sdkVersions.get(row.cli_version) ?? 0) + 1)
+    if (row.source_name) agg.sourceCountMap.set(row.source_name, (agg.sourceCountMap.get(row.source_name) ?? 0) + 1)
+    if (row.impact_score != null) agg.impactScores.push(Number(row.impact_score))
+    fpAggMap.set(row.cluster_id, agg)
+  }
+
+  const buildRegexVariants = (agg: ClusterFpAgg | undefined): RegexVariant[] => {
+    if (!agg) return []
+    const variants: RegexVariant[] = []
+    const topN = <T>(m: Map<T, number>, n: number): T[] =>
+      [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([k]) => k)
+    for (const v of topN(agg.errorCodes, 2)) variants.push({ kind: "err", value: String(v) })
+    for (const v of topN(agg.stackFrames, 2)) variants.push({ kind: "stack", value: String(v) })
+    for (const v of topN(agg.envTokens, 2)) variants.push({ kind: "env", value: String(v) })
+    for (const v of topN(agg.sdkVersions, 1)) variants.push({ kind: "sdk", value: `CLI v${v}` })
+    return variants.slice(0, 8)
+  }
+
+  const buildBreadth = (agg: ClusterFpAgg | undefined) => {
+    const sources: Record<string, number> = {}
+    if (agg) {
+      for (const [k, v] of agg.sourceCountMap.entries()) sources[k] = v
+    }
+    const os: string[] = agg ? [...new Set([...agg.envTokens.keys()].slice(0, 4))] : []
+    return { sources, os }
+  }
+
+  const buildAvgImpact = (agg: ClusterFpAgg | undefined): number | null => {
+    if (!agg || agg.impactScores.length === 0) return null
+    const avg = agg.impactScores.reduce((a, b) => a + b, 0) / agg.impactScores.length
+    return Math.round(avg * 10) / 10
+  }
 
   const clusters = sorted.map((s) => {
     const meta = labelMap.get(s.id)
     const health = healthMap.get(s.id)
+    const fpAgg = fpAggMap.get(s.id)
     const reviewedCount = Number(health?.reviewed_count ?? 0)
     const actionabilityInput = Number(
       ((Number(health?.fingerprint_hit_rate ?? 0) * 0.5) +
@@ -207,6 +286,8 @@ export async function GET(request: NextRequest) {
     const surgeInput = s.count
     const reviewPressureInput = Math.max(0, s.count - reviewedCount)
     const exemplar = exemplarMap.get(s.id)
+    const classifiedShare = s.count > 0 ? Math.round((s.classified / s.count) * 100) / 100 : 0
+    const humanReviewedShare = s.count > 0 ? Math.round((reviewedCount / s.count) * 100) / 100 : 0
     return {
       id: s.id,
       count: s.count,
@@ -230,6 +311,11 @@ export async function GET(request: NextRequest) {
       dominant_stack_frame_share: Number(health?.dominant_stack_frame_share ?? 0),
       intra_cluster_similarity_proxy: Number(health?.intra_cluster_similarity_proxy ?? 0),
       nearest_cluster_gap_proxy: Number(health?.nearest_cluster_gap_proxy ?? 0),
+      classified_share: classifiedShare,
+      human_reviewed_share: humanReviewedShare,
+      avg_impact: buildAvgImpact(fpAgg),
+      regex_variants: buildRegexVariants(fpAgg),
+      breadth: buildBreadth(fpAgg),
     }
   })
 
