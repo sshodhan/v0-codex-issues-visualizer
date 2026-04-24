@@ -18,6 +18,7 @@ test("classifier /v1/responses body uses text.format json_schema and omits respo
   assert.ok(typeof format.schema === "object" && format.schema !== null)
   assert.equal(format.strict, true)
   assert.equal("response_format" in body, false)
+  assert.equal("temperature" in body, false)
 })
 
 test("requestClassifierResponse sends text.format body via fetch and preserves downstream error payload text", async () => {
@@ -42,6 +43,7 @@ test("requestClassifierResponse sends text.format body via fetch and preserves d
 
   assert.ok(seenBody)
   assert.equal("response_format" in (seenBody as Record<string, unknown>), false)
+  assert.equal("temperature" in (seenBody as Record<string, unknown>), false)
   const sentText = (seenBody as Record<string, unknown>).text as Record<string, unknown>
   assert.equal(((sentText.format as Record<string, unknown>).type), "json_schema")
 
