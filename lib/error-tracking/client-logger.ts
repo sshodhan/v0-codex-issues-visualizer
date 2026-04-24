@@ -7,6 +7,9 @@ export interface ClientErrorPayload {
   url?: string
   userAgent?: string
   timestamp: string
+  /** "error" = something broke; "info" = structured event (lifecycle
+   *  success/start). The server routes these to different log streams. */
+  level?: "error" | "info"
   additionalInfo?: Record<string, unknown>
 }
 
@@ -42,7 +45,37 @@ export function logClientError(
       url: canUseWindow() ? window.location.href : undefined,
       userAgent: canUseWindow() ? window.navigator.userAgent : undefined,
       timestamp: new Date().toISOString(),
+      level: "error",
       additionalInfo,
+    })
+  } catch {
+    // Intentionally silent.
+  }
+}
+
+/**
+ * Structured event log for client-side operations that we want visible
+ * in Vercel logs — e.g. each classify-backfill batch that starts,
+ * succeeds, or fails. Distinct from `logClientError` in that it doesn't
+ * imply something broke; it's a breadcrumb for operators reconstructing
+ * what an admin did and what happened.
+ *
+ * Flows through the same `/api/log-client-error` endpoint but with
+ * `level: "info"` so the server can route it to a non-alert stream.
+ */
+export function logClientEvent(
+  eventName: string,
+  context?: Record<string, unknown>,
+) {
+  try {
+    postClientError({
+      errorType: eventName,
+      message: eventName,
+      url: canUseWindow() ? window.location.href : undefined,
+      userAgent: canUseWindow() ? window.navigator.userAgent : undefined,
+      timestamp: new Date().toISOString(),
+      level: "info",
+      additionalInfo: context,
     })
   } catch {
     // Intentionally silent.

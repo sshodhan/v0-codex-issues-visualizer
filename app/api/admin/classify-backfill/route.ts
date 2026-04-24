@@ -80,14 +80,15 @@ export async function GET(request: NextRequest) {
 
   const supabase = createAdminClient()
   try {
-    // Issue five counts in parallel — same MV, same canonical index,
-    // so the cost is dominated by the round-trip and this is one trip.
+    // Issue five counts in parallel. `allSettled` (not `all`) so a single
+    // slow or flaky count doesn't 500 the whole panel — the UI treats
+    // null as "—" and the operator still sees everything that succeeded.
+    // This matters because in production we've observed transient count
+    // failures under load (admin POST + UI auto-refetch stepping on each
+    // other) where a single query timeout would blank the whole view.
     //
-    //   atThresholdWindowed  : what "Run until done" would process if
-    //                          the admin switches the route to windowed
-    //                          semantics (future); also the closest
-    //                          apples-to-apples with the banner for
-    //                          the operator's chosen threshold.
+    //   atThresholdWindowed  : closest apples-to-apples with the banner
+    //                          for the operator's chosen threshold.
     //   atDefaultWindowed    : what the dashboard banner's high-impact
     //                          count is — the reference point for the
     //                          "change from default" callout.
@@ -100,19 +101,59 @@ export async function GET(request: NextRequest) {
     //                          the "Pending candidates" tile.
     //   allImpactAllTime     : every unclassified row ever. Explains
     //                          the global deferral backlog.
-    const [
-      atThresholdWindowed,
-      atDefaultWindowed,
-      allImpactWindowed,
-      atThresholdAllTime,
-      allImpactAllTime,
-    ] = await Promise.all([
+    const countLabels = [
+      "atThresholdWindowed",
+      "atDefaultWindowed",
+      "allImpactWindowed",
+      "atThresholdAllTime",
+      "allImpactAllTime",
+    ] as const
+    const settled = await Promise.allSettled([
       countBackfillCandidates(supabase, { minImpactScore, publishedSince }),
       countBackfillCandidates(supabase, { minImpactScore: MIN_IMPACT_SCORE, publishedSince }),
       countBackfillCandidatesAllImpact(supabase, { publishedSince }),
       countBackfillCandidates(supabase, { minImpactScore }),
       countBackfillCandidatesAllImpact(supabase),
     ])
+    const values: Partial<Record<(typeof countLabels)[number], number>> = {}
+    const failed: Array<{ label: string; reason: string }> = []
+    for (let i = 0; i < countLabels.length; i += 1) {
+      const label = countLabels[i]
+      const result = settled[i]
+      if (result.status === "fulfilled") {
+        values[label] = result.value
+      } else {
+        logServerError("classify-backfill", "count_partial_failure", result.reason, {
+          label,
+          windowDays,
+          minImpactScore,
+        })
+        failed.push({
+          label,
+          reason: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        })
+      }
+    }
+
+    // If *every* count failed the panel has nothing useful to render —
+    // return 500 so the admin UI shows its error state instead of a
+    // confusing "all zeros" matrix. Any successful subset is fine to
+    // ship; the UI renders null as "—".
+    if (failed.length === countLabels.length) {
+      return NextResponse.json(
+        {
+          error: "All candidate count queries failed",
+          failed,
+        },
+        { status: 500 },
+      )
+    }
+
+    const atThresholdWindowed = values.atThresholdWindowed ?? null
+    const atDefaultWindowed = values.atDefaultWindowed ?? null
+    const allImpactWindowed = values.allImpactWindowed ?? null
+    const atThresholdAllTime = values.atThresholdAllTime ?? null
+    const allImpactAllTime = values.allImpactAllTime ?? null
 
     return NextResponse.json({
       // Back-compat fields (existing UI consumers continue to read these).
@@ -135,6 +176,10 @@ export async function GET(request: NextRequest) {
         atThresholdAllTime,
         allImpactAllTime,
       },
+      // When a subset of counts failed, tell the operator which ones
+      // so they can retry or adjust scope. Empty when everything
+      // succeeded — the UI hides this section entirely.
+      warnings: failed.length > 0 ? { failedCounts: failed } : undefined,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

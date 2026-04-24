@@ -49,7 +49,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { logClientError } from "@/lib/error-tracking/client-logger"
+import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
   CheckResult,
   VerifyReport,
@@ -133,8 +133,9 @@ interface ClusterBatchRow {
 interface ClassifyBackfillStats {
   /** All-time count of unclassified canonical rows at or above the
    *  effective threshold. What "Run until done" will actually
-   *  process today (POST is all-time by design). */
-  pendingCandidates: number
+   *  process today (POST is all-time by design). Nullable when the
+   *  underlying count query failed (partial-failure tolerance). */
+  pendingCandidates: number | null
   /** All-time count regardless of impact score — the global deferral
    *  backlog. Preserved for back-compat with earlier panel UI. */
   pendingCandidatesAllImpact?: number
@@ -153,13 +154,22 @@ interface ClassifyBackfillStats {
     startIso: string | null
   }
   /** Full count breakdown across (threshold × window) quadrants so the
-   *  panel can render a comparison matrix that aligns with the banner. */
+   *  panel can render a comparison matrix that aligns with the banner.
+   *  Individual fields can be null when that specific count query failed
+   *  (partial-failure tolerance) — the UI renders null as "—". */
   counts?: {
-    atThresholdWindowed: number
-    atDefaultWindowed: number
-    allImpactWindowed: number
-    atThresholdAllTime: number
-    allImpactAllTime: number
+    atThresholdWindowed: number | null
+    atDefaultWindowed: number | null
+    allImpactWindowed: number | null
+    atThresholdAllTime: number | null
+    allImpactAllTime: number | null
+  }
+  /** Present when one or more count queries failed but others succeeded.
+   *  Lets the admin UI surface a warning banner with the specific labels
+   *  that didn't load so operators know which tiles are stale rather
+   *  than silently seeing "—" everywhere. */
+  warnings?: {
+    failedCounts: Array<{ label: string; reason: string }>
   }
 }
 
@@ -596,6 +606,16 @@ async function explainAdminFailure(res: Response): Promise<string> {
   }
   if (res.status === 503) {
     return "ADMIN_SECRET is not configured on the server. Set the env var and redeploy."
+  }
+  if (res.status === 504) {
+    // Vercel's generic 504 for exceeded maxDuration — classify batches
+    // hit this when OpenAI latency + MV refresh blow past the 60s function
+    // cap. Actionable message beats the raw FUNCTION_INVOCATION_TIMEOUT.
+    return (
+      "Request timed out at 60s (Vercel function limit). For classify-backfill this usually means the batch " +
+      "was larger than gpt-5-mini can finish in time — reduce the batch limit (try 5), or avoid running while " +
+      "the 03:00 UTC cron tick is active. Try again; nothing was committed."
+    )
   }
   let body = ""
   try {
@@ -1541,11 +1561,16 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
   }, [secret])
 
   // When the operator changes threshold or window, refetch the stats so
-  // every count on the panel reflects the new scope. Debounce via the
-  // useEffect tick — React already batches rapid keystrokes.
+  // every count on the panel reflects the new scope. Debounced 300ms so
+  // typing "56" in the threshold input only fires one request, not two,
+  // and so rapid arrow-key jogging on the Window select doesn't pile
+  // five concurrent refetches on top of any in-flight POST.
   useEffect(() => {
     if (stats === null) return // initial load handled above
-    loadStats({ threshold: parsedThreshold, days: windowDays })
+    const timer = setTimeout(() => {
+      loadStats({ threshold: parsedThreshold, days: windowDays })
+    }, 300)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parsedThreshold, windowDays])
 
@@ -1562,10 +1587,27 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
     setRefreshedMvs(false)
   }
 
+  // Build the structured context object that accompanies every
+  // classify-backfill lifecycle event (start/success/failure). Captures
+  // enough state that a future reader of the logs can reconstruct
+  // exactly what the operator did — threshold, window, batch size,
+  // authoritative config values — without having to stitch multiple
+  // logs together.
+  const buildBackfillContext = (extra: Record<string, unknown> = {}) => ({
+    threshold: parsedThreshold,
+    thresholdDiverges,
+    defaultThreshold,
+    windowDays,
+    limit,
+    ...extra,
+  })
+
   const runDryRun = async () => {
     if (running) return
     setRunning("dryRun")
     resetBeforeRun()
+    const startedAt = Date.now()
+    logClientEvent("admin-classify-backfill-dryrun-started", buildBackfillContext())
     try {
       const res = await fetch("/api/admin/classify-backfill", {
         method: "POST",
@@ -1583,10 +1625,26 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         wouldProcess: data.wouldProcess,
         minImpactScore: data.minImpactScore,
       })
+      logClientEvent(
+        "admin-classify-backfill-dryrun-succeeded",
+        buildBackfillContext({
+          durationMs: Date.now() - startedAt,
+          pendingCandidates: data.pendingCandidates,
+          wouldProcess: data.wouldProcess,
+          effectiveThreshold: data.minImpactScore,
+        }),
+      )
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e))
       if (shouldLogAdminClientError(e)) {
-        logClientError(e, "admin-classify-backfill-dryrun-failed")
+        logClientError(
+          e,
+          "admin-classify-backfill-dryrun-failed",
+          buildBackfillContext({
+            durationMs: Date.now() - startedAt,
+            httpStatus: (e as { status?: number }).status,
+          }),
+        )
       }
     } finally {
       setRunning(null)
@@ -1597,6 +1655,8 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
     if (running) return
     setRunning("batch")
     resetBeforeRun()
+    const startedAt = Date.now()
+    logClientEvent("admin-classify-backfill-batch-started", buildBackfillContext())
     try {
       const res = await fetch("/api/admin/classify-backfill", {
         method: "POST",
@@ -1608,10 +1668,28 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       setLastBatch(data)
       setFailures(dedupeClassifyFailures(data.failures ?? []))
       setRefreshedMvs(data.refreshedMvs)
+      logClientEvent(
+        "admin-classify-backfill-batch-succeeded",
+        buildBackfillContext({
+          durationMs: Date.now() - startedAt,
+          candidates: data.candidates,
+          classified: data.classified,
+          skipped: data.skipped,
+          failed: data.failed,
+          refreshedMvs: data.refreshedMvs,
+        }),
+      )
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e))
       if (shouldLogAdminClientError(e)) {
-        logClientError(e, "admin-classify-backfill-batch-failed")
+        logClientError(
+          e,
+          "admin-classify-backfill-batch-failed",
+          buildBackfillContext({
+            durationMs: Date.now() - startedAt,
+            httpStatus: (e as { status?: number }).status,
+          }),
+        )
       }
     } finally {
       setRunning(null)
@@ -1629,14 +1707,26 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
     let consecutiveErrors = 0
     const collectedFailures: ClassifyBackfillFailure[] = []
     let finalRefreshedMvs = false
+    const loopStartedAt = Date.now()
+    const loopAcc = { classified: 0, skipped: 0, failed: 0, batches: 0 }
+    logClientEvent(
+      "admin-classify-backfill-loop-started",
+      buildBackfillContext({
+        initialPendingAtThreshold:
+          stats && stats.pendingCandidates !== null ? stats.pendingCandidates : null,
+      }),
+    )
 
     try {
       // Use the stats count as an upper bound on iterations so a
       // pathological server always-returns-nonzero bug can't run
-      // forever. /ceil(limit, pending) + slack is generous.
-      let safetyIterations = stats
-        ? Math.ceil(stats.pendingCandidates / Math.max(1, limit)) + 5
-        : 200
+      // forever. /ceil(limit, pending) + slack is generous. Null pending
+      // (partial count failure) falls back to the conservative 200-iter
+      // cap so the loop still terminates.
+      let safetyIterations =
+        stats && stats.pendingCandidates !== null
+          ? Math.ceil(stats.pendingCandidates / Math.max(1, limit)) + 5
+          : 200
 
       while (!abort.signal.aborted && safetyIterations-- > 0) {
         // Last known pending count: once we've processed a batch we
@@ -1688,12 +1778,23 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         consecutiveErrors = 0
         const data = (await res.json()) as ClassifyBackfillBatchResult
         setLastBatch(data)
-        setLoopTotals((t) => ({
-          classified: t.classified + data.classified,
-          skipped: t.skipped + data.skipped,
-          failed: t.failed + data.failed,
-          batches: t.batches + 1,
-        }))
+        loopAcc.classified += data.classified
+        loopAcc.skipped += data.skipped
+        loopAcc.failed += data.failed
+        loopAcc.batches += 1
+        setLoopTotals({ ...loopAcc })
+        logClientEvent(
+          "admin-classify-backfill-loop-batch",
+          buildBackfillContext({
+            batchIndex: loopAcc.batches,
+            candidates: data.candidates,
+            classified: data.classified,
+            skipped: data.skipped,
+            failed: data.failed,
+            refreshedMvs: data.refreshedMvs,
+            isFinalBatch,
+          }),
+        )
         if (data.failures?.length) {
           collectedFailures.push(...data.failures)
           setFailures(dedupeClassifyFailures(collectedFailures))
@@ -1708,12 +1809,45 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         await new Promise((r) => setTimeout(r, 500))
       }
       setRefreshedMvs(finalRefreshedMvs)
+      logClientEvent(
+        "admin-classify-backfill-loop-succeeded",
+        buildBackfillContext({
+          durationMs: Date.now() - loopStartedAt,
+          totalBatches: loopAcc.batches,
+          totalClassified: loopAcc.classified,
+          totalSkipped: loopAcc.skipped,
+          totalFailed: loopAcc.failed,
+          failureCount: collectedFailures.length,
+          refreshedMvs: finalRefreshedMvs,
+          aborted: abort.signal.aborted,
+        }),
+      )
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
         if (shouldLogAdminClientError(e)) {
-          logClientError(e, "admin-classify-backfill-loop-failed")
+          logClientError(
+            e,
+            "admin-classify-backfill-loop-failed",
+            buildBackfillContext({
+              durationMs: Date.now() - loopStartedAt,
+              totalBatches: loopAcc.batches,
+              totalClassified: loopAcc.classified,
+              totalFailed: loopAcc.failed,
+              consecutiveErrors,
+              httpStatus: (e as { status?: number }).status,
+            }),
+          )
         }
+      } else {
+        logClientEvent(
+          "admin-classify-backfill-loop-aborted",
+          buildBackfillContext({
+            durationMs: Date.now() - loopStartedAt,
+            totalBatches: loopAcc.batches,
+            totalClassified: loopAcc.classified,
+          }),
+        )
       }
     } finally {
       abortRef.current = null
@@ -1765,6 +1899,28 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           <Alert variant="destructive">
             <AlertTitle>Failed to load stats</AlertTitle>
             <AlertDescription>{statsError}</AlertDescription>
+          </Alert>
+        )}
+
+        {stats?.warnings?.failedCounts && stats.warnings.failedCounts.length > 0 && (
+          <Alert variant="destructive">
+            <AlertTitle>
+              Partial stats failure — {stats.warnings.failedCounts.length} of 5 counts didn&apos;t load
+            </AlertTitle>
+            <AlertDescription>
+              <p className="text-xs">
+                Tiles below show &ldquo;—&rdquo; for the counts that failed. Try refreshing; if
+                the same counts fail again, check Vercel logs for{" "}
+                <span className="font-mono">classify-backfill count_partial_failure</span>.
+              </p>
+              <ul className="mt-1 list-disc pl-5 text-[11px] leading-tight">
+                {stats.warnings.failedCounts.map((f) => (
+                  <li key={f.label}>
+                    <span className="font-mono">{f.label}</span>: {f.reason}
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
           </Alert>
         )}
 
@@ -1894,7 +2050,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
             <StatTile
               label="Below-threshold backlog"
               value={
-                stats && stats.pendingCandidatesAllImpact !== undefined
+                stats &&
+                stats.pendingCandidatesAllImpact != null &&
+                stats.pendingCandidates != null
                   ? Math.max(0, stats.pendingCandidatesAllImpact - stats.pendingCandidates)
                   : undefined
               }
@@ -2077,7 +2235,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           <Alert>
             <AlertTitle>All caught up at threshold {parsedThreshold}</AlertTitle>
             <AlertDescription>
-              0 pending at this threshold, all-time. {stats.pendingCandidatesAllImpact !== undefined && stats.pendingCandidatesAllImpact > 0 ? (
+              0 pending at this threshold, all-time. {stats.pendingCandidatesAllImpact != null && stats.pendingCandidatesAllImpact > 0 ? (
                 <>
                   {stats.pendingCandidatesAllImpact.toLocaleString()} unclassified
                   observations remain below the threshold — lower the threshold above to
