@@ -154,6 +154,18 @@ interface ClassifyBackfillBatchResult {
   refreshedMvs: boolean
 }
 
+function dedupeClassifyFailures(items: ClassifyBackfillFailure[]): ClassifyBackfillFailure[] {
+  const seen = new Set<string>()
+  const deduped: ClassifyBackfillFailure[] = []
+  for (const item of items) {
+    const key = `${item.observationId}::${item.reason}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(item)
+  }
+  return deduped
+}
+
 interface ObservationTraceResponse {
   observation: {
     observation_id: string
@@ -529,6 +541,18 @@ async function explainAdminFailure(res: Response): Promise<string> {
   return body ? `HTTP ${res.status}: ${body}` : `HTTP ${res.status}`
 }
 
+function makeAdminHttpError(status: number, message: string) {
+  const err = new Error(message) as Error & { status?: number }
+  err.status = status
+  return err
+}
+
+function shouldLogAdminClientError(error: unknown) {
+  const status = (error as { status?: number })?.status
+  // 401/403 are expected until the operator provides x-admin-secret.
+  return status !== 401 && status !== 403
+}
+
 // ============================================================================
 // Backfill panel
 // ============================================================================
@@ -558,12 +582,14 @@ function BackfillPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/backfill-derivations", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as BackfillStats
       setStats(data)
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-backfill-stats-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-backfill-stats-failed")
+      }
     } finally {
       setStatsLoading(false)
     }
@@ -597,7 +623,7 @@ function BackfillPanel({ secret }: { secret: string }) {
           body: JSON.stringify({ cursor, limit: CHUNK_SIZE, dryRun }),
         })
         if (!res.ok) {
-          throw new Error(await explainAdminFailure(res))
+          throw makeAdminHttpError(res.status, await explainAdminFailure(res))
         }
         const data = await res.json()
         setProcessed((p) => p + (data.processed as number))
@@ -619,7 +645,9 @@ function BackfillPanel({ secret }: { secret: string }) {
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
-        logClientError(e, "admin-backfill-run-failed", { dryRun })
+        if (shouldLogAdminClientError(e)) {
+          logClientError(e, "admin-backfill-run-failed", { dryRun })
+        }
       }
     } finally {
       abortRef.current = null
@@ -869,12 +897,14 @@ function ClusteringPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/cluster", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as ClusterStats
       setStats(data)
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-cluster-stats-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-cluster-stats-failed")
+      }
     } finally {
       setStatsLoading(false)
     }
@@ -948,13 +978,16 @@ function ClusteringPanel({ secret }: { secret: string }) {
               row.id === batchId ? { ...row, status: "failed", error: message } : row,
             ),
           )
-          logClientError(new Error(message), "admin-cluster-batch-failed", {
-            batchId,
-            cursor,
-            redetach,
-            status: res.status,
-          })
-          throw new Error(message)
+          const error = makeAdminHttpError(res.status, message)
+          if (shouldLogAdminClientError(error)) {
+            logClientError(error, "admin-cluster-batch-failed", {
+              batchId,
+              cursor,
+              redetach,
+              status: res.status,
+            })
+          }
+          throw error
         }
         const data = (await res.json()) as ClusterBatchResult
         const batchProcessed = Number(data.processed ?? 0)
@@ -992,7 +1025,9 @@ function ClusteringPanel({ secret }: { secret: string }) {
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
-        logClientError(e, "admin-cluster-rebuild-failed", { redetach })
+        if (shouldLogAdminClientError(e)) {
+          logClientError(e, "admin-cluster-rebuild-failed", { redetach })
+        }
       } else {
         setBatchRows((rows) => {
           const next = [...rows]
@@ -1392,7 +1427,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/classify-backfill", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as ClassifyBackfillStats
       setStats(data)
       setLimit((current) =>
@@ -1400,7 +1435,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       )
     } catch (e) {
       setStatsError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-classify-backfill-stats-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-classify-backfill-stats-failed")
+      }
     } finally {
       setStatsLoading(false)
     }
@@ -1430,7 +1467,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         headers: authHeaders(secret),
         body: JSON.stringify({ dryRun: true, limit }),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as {
         pendingCandidates: number
         wouldProcess: number
@@ -1441,7 +1478,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       })
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-classify-backfill-dryrun-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-classify-backfill-dryrun-failed")
+      }
     } finally {
       setRunning(null)
     }
@@ -1457,14 +1496,16 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         headers: authHeaders(secret),
         body: JSON.stringify({ limit }),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as ClassifyBackfillBatchResult
       setLastBatch(data)
-      setFailures(data.failures ?? [])
+      setFailures(dedupeClassifyFailures(data.failures ?? []))
       setRefreshedMvs(data.refreshedMvs)
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-classify-backfill-batch-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-classify-backfill-batch-failed")
+      }
     } finally {
       setRunning(null)
       await loadStats()
@@ -1503,7 +1544,10 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           body: JSON.stringify({ dryRun: true, limit }),
         })
         if (!pendingRes.ok) {
-          throw new Error(await explainAdminFailure(pendingRes))
+          throw makeAdminHttpError(
+            pendingRes.status,
+            await explainAdminFailure(pendingRes),
+          )
         }
         const pendingData = (await pendingRes.json()) as {
           pendingCandidates: number
@@ -1522,7 +1566,10 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           consecutiveErrors += 1
           const msg = await explainAdminFailure(res)
           if (consecutiveErrors >= 3) {
-            throw new Error(`Aborted after 3 consecutive errors: ${msg}`)
+            throw makeAdminHttpError(
+              res.status,
+              `Aborted after 3 consecutive errors: ${msg}`,
+            )
           }
           await new Promise((r) => setTimeout(r, 1000 * consecutiveErrors))
           continue
@@ -1538,7 +1585,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
         }))
         if (data.failures?.length) {
           collectedFailures.push(...data.failures)
-          setFailures([...collectedFailures])
+          setFailures(dedupeClassifyFailures(collectedFailures))
         }
         if (data.refreshedMvs) finalRefreshedMvs = true
 
@@ -1553,7 +1600,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
     } catch (e) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
-        logClientError(e, "admin-classify-backfill-loop-failed")
+        if (shouldLogAdminClientError(e)) {
+          logClientError(e, "admin-classify-backfill-loop-failed")
+        }
       }
     } finally {
       abortRef.current = null
@@ -1872,12 +1921,14 @@ function SchemaVerificationPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/verify-schema", {
         headers: authHeaders(secret),
       })
-      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as VerifyReport
       setReport(data)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-      logClientError(e, "admin-verify-schema-failed")
+      if (shouldLogAdminClientError(e)) {
+        logClientError(e, "admin-verify-schema-failed")
+      }
     } finally {
       setLoading(false)
     }

@@ -94,3 +94,27 @@ export function evidenceQuotesAreSubstrings(payload: { evidence_quotes?: unknown
 
   return quotes.every((quote) => typeof quote === "string" && inputText.includes(quote))
 }
+
+export function sanitizeEvidenceQuotes(
+  payload: { evidence_quotes?: unknown },
+  inputText: string,
+): string[] {
+  const quotes = payload.evidence_quotes
+  if (!Array.isArray(quotes)) return []
+
+  const unique: string[] = []
+  const seen = new Set<string>()
+
+  for (const quote of quotes) {
+    if (typeof quote !== "string") continue
+    const normalized = quote.trim()
+    if (!normalized) continue
+    if (!inputText.includes(normalized)) continue
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    unique.push(normalized)
+    if (unique.length >= 5) break
+  }
+
+  return unique
+}
