@@ -11,46 +11,31 @@ import {
   XCircle,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
+import type { PrerequisiteStatus } from "@/lib/classification/prerequisites"
+import {
+  derivePipelineFreshness,
+  type MetricDisplay,
+  type PipelineFreshnessState,
+  type PipelineFreshnessViewModel,
+} from "@/lib/dashboard/pipeline-freshness"
 
-// Persistent pipeline-freshness strip. Distinguishes "no issues yet" from
-// "pipeline not caught up" from "data stale / failing" so a viewer never
-// misreads a quiet board as a healthy board.
+// Thin renderer over `derivePipelineFreshness`. All state decisions live
+// in lib/dashboard/pipeline-freshness.ts so the logic is unit-testable
+// without a React runtime. This file only owns visual concerns
+// (tone → class, icon, badge styling).
 //
-// Tone rubric (the ONLY legal states):
-//   unknown  — prereq fetch is loading or server returned null. Explicit copy,
-//              no implicit "all green".
-//   failure  — last scrape run failed, OR prereqs missing and stats error.
-//   degraded — observations exist but classify/cluster are behind, OR last
-//              classify-backfill failed. Admin CTA rendered.
-//   empty    — pipeline caught up, but 0 observations in the current window.
-//              This is the "no issues" surface — called out explicitly so
-//              nobody confuses it with "pipeline hasn't run".
-//   healthy  — observations exist and classify + cluster are at 100%.
-//
-// NB: "pending high-impact review" is sourced from the classification stats
-// needsReviewCount (the audit queue count used by the tab badge). When the
-// stats endpoint is still loading we render "—" rather than 0 — a zero here
-// would look reassuring while meaning "we didn't ask yet".
-//
-// Rendered from app/page.tsx (dashboard + triage) and referenced here as a
-// persistent surface, NOT only inside empty states (see task spec step 3).
-
-export type PipelineFreshnessTone =
-  | "unknown"
-  | "failure"
-  | "degraded"
-  | "empty"
-  | "healthy"
+// Persistent by design: mounted ABOVE the loading/error/empty branching
+// in app/page.tsx so "no issues" vs "pipeline not caught up" is visible
+// in every state and across dashboard + triage tabs (see task spec §3).
 
 interface PipelineFreshnessStripProps {
   /** `null` = server returned null (prereqs fetch failed). `undefined` = still loading. */
   prereq: PrerequisiteStatus | null | undefined
-  /** Needs-human-review count from /api/classifications/stats. `undefined` = still loading. */
+  /** needs_human_review count from /api/classifications/stats. `undefined` = still loading. */
   pendingReviewCount: number | undefined
-  /** `true` = the /api/classifications/stats fetch errored out. */
+  /** `true` when the /api/classifications/stats fetch errored out. */
   statsError?: boolean
-  /** Context label (e.g. "Last 30 days" or "All time") so the ratios are anchored. */
+  /** Context label (e.g. "Last 30 days" or "All time") so ratios are anchored. */
   windowLabel: string
   /** When set, shows "as-of replay" banner with a link back to live. */
   asOfActive?: boolean
@@ -65,84 +50,58 @@ export function PipelineFreshnessStrip({
   asOfActive = false,
   className,
 }: PipelineFreshnessStripProps) {
-  const tone = decideTone({ prereq, statsError })
-
-  const classified = ratio(prereq?.classifiedCount, prereq?.observationsInWindow)
-  const clustered = ratio(prereq?.clusteredCount, prereq?.observationsInWindow)
-  const lastScrapeLabel = formatMaybeDate(prereq?.lastScrape.at)
-  const lastScrapeStatus = prereq?.lastScrape.status ?? null
-  const lastBackfillStatus = prereq?.lastClassifyBackfill.status ?? null
-
-  const { headline, subtext, cta } = describe({
-    tone,
-    prereq: prereq ?? null,
+  const vm = derivePipelineFreshness({
+    prereq,
+    pendingReviewCount,
     statsError,
     windowLabel,
+    formatTimestamp: (iso) =>
+      formatDistanceToNow(new Date(iso), { addSuffix: true }),
   })
 
-  const toneStyles = getToneStyles(tone)
+  const toneStyles = getToneStyles(vm.state)
+  const ariaLabel = `Pipeline status: ${vm.state}. ${vm.headline}`
 
   return (
     <div
       role="status"
       aria-live="polite"
+      aria-label={ariaLabel}
+      data-testid="pipeline-freshness-strip"
+      data-state={vm.state}
+      data-reason={vm.reason}
       className={`flex flex-col gap-2 rounded-md border px-3 py-2 text-sm ${toneStyles.container} ${className ?? ""}`}
     >
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
         <span className={`mt-0.5 flex-shrink-0 ${toneStyles.icon}`}>
-          <ToneIcon tone={tone} />
+          <ToneIcon state={vm.state} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="font-medium text-foreground">{headline}</p>
-          {subtext && (
-            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{subtext}</p>
+          <p className="font-medium text-foreground">{vm.headline}</p>
+          {vm.subtext && (
+            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+              {vm.subtext}
+            </p>
           )}
         </div>
-        <Badge variant="outline" className={`text-[10px] font-mono uppercase ${toneStyles.badge}`}>
-          {tone}
+        <Badge
+          variant="outline"
+          className={`text-[10px] font-mono uppercase ${toneStyles.badge}`}
+        >
+          {vm.state}
         </Badge>
       </div>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-4">
-        <MetricCell
-          label="Last scrape"
-          value={lastScrapeLabel}
-          status={lastScrapeStatus === "failed" ? "failure" : "neutral"}
-          missingText="no record"
-        />
-        <MetricCell
-          label="Clustered"
-          value={classified == null || clustered == null ? null : clustered.label}
-          status={clustered?.status ?? (prereq === undefined ? "unknown" : "unknown")}
-          missingText={prereq === undefined ? "loading" : "unknown"}
-        />
-        <MetricCell
-          label="Classified"
-          value={classified?.label ?? null}
-          status={classified?.status ?? (prereq === undefined ? "unknown" : "unknown")}
-          missingText={prereq === undefined ? "loading" : "unknown"}
-        />
-        <MetricCell
-          label="Needs review"
-          value={
-            pendingReviewCount === undefined
-              ? null
-              : `${pendingReviewCount} high-impact`
-          }
-          status={
-            pendingReviewCount === undefined
-              ? "unknown"
-              : pendingReviewCount > 0
-                ? "attention"
-                : "ok"
-          }
-          missingText="loading"
-        />
+        <MetricCell metric={vm.metrics.lastScrape} />
+        <MetricCell metric={vm.metrics.clustered} />
+        <MetricCell metric={vm.metrics.classified} />
+        <MetricCell metric={vm.metrics.pendingReview} />
       </div>
 
-      {(lastBackfillStatus === "failed" || asOfActive || cta) && (
+      {(vm.flags.lastClassifyBackfillFailed || asOfActive || vm.cta) && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          {lastBackfillStatus === "failed" && (
+          {vm.flags.lastClassifyBackfillFailed && (
             <span className="inline-flex items-center gap-1 text-destructive">
               <AlertTriangle className="h-3.5 w-3.5" />
               Last classify-backfill run: failed
@@ -159,12 +118,12 @@ export function PipelineFreshnessStrip({
               </Link>
             </span>
           )}
-          {cta && (
+          {vm.cta && (
             <a
-              href={cta.href}
+              href={vm.cta.href}
               className={`ml-auto inline-flex items-center gap-1 font-medium hover:underline ${toneStyles.ctaLink}`}
             >
-              {cta.label}
+              {vm.cta.label}
               <ArrowRight className="h-3 w-3" />
             </a>
           )}
@@ -172,15 +131,17 @@ export function PipelineFreshnessStrip({
         </div>
       )}
 
-      {!(lastBackfillStatus === "failed" || asOfActive || cta) && (
+      {!(vm.flags.lastClassifyBackfillFailed || asOfActive || vm.cta) && (
         <p className="text-xs text-muted-foreground">Window: {windowLabel}</p>
       )}
     </div>
   )
 }
 
-function ToneIcon({ tone }: { tone: PipelineFreshnessTone }) {
-  switch (tone) {
+export type { PipelineFreshnessViewModel }
+
+function ToneIcon({ state }: { state: PipelineFreshnessState }) {
+  switch (state) {
     case "healthy":
       return <CheckCircle2 className="h-4 w-4" aria-hidden />
     case "empty":
@@ -194,183 +155,41 @@ function ToneIcon({ tone }: { tone: PipelineFreshnessTone }) {
   }
 }
 
-function MetricCell({
-  label,
-  value,
-  status,
-  missingText,
-}: {
-  label: string
-  value: string | null
-  status: "ok" | "attention" | "failure" | "unknown" | "neutral"
-  missingText: string
-}) {
+function MetricCell({ metric }: { metric: MetricDisplay }) {
   const valueTone =
-    status === "failure"
+    metric.status === "failure"
       ? "text-destructive"
-      : status === "attention"
+      : metric.status === "attention"
         ? "text-amber-600 dark:text-amber-400"
-        : status === "unknown"
+        : metric.status === "unknown"
           ? "text-muted-foreground italic"
           : "text-foreground"
+  // Explicit placeholder when value is missing — never a healthy-looking
+  // fallback like "100%" or "0". Matches the task's "no silent fallback"
+  // rule (see lib/dashboard/pipeline-freshness.ts).
+  const displayValue = metric.value ?? "Unavailable"
   return (
     <div className="flex flex-col">
-      <span className="uppercase tracking-wide text-[10px] opacity-70">{label}</span>
-      <span className={`text-xs font-medium tabular-nums ${valueTone}`}>
-        {value ?? missingText}
+      <span className="uppercase tracking-wide text-[10px] opacity-70">
+        {metric.label}
+      </span>
+      <span
+        className={`text-xs font-medium tabular-nums ${valueTone}`}
+        aria-label={metric.value ? undefined : `${metric.label}: unavailable`}
+      >
+        {displayValue}
       </span>
     </div>
   )
 }
 
-function decideTone({
-  prereq,
-  statsError,
-}: {
-  prereq: PrerequisiteStatus | null | undefined
-  statsError: boolean
-}): PipelineFreshnessTone {
-  // An explicit fetch error outranks the loading-vs-null distinction: a
-  // failing stats endpoint must never look like an unknown-but-benign state.
-  if (statsError) return "failure"
-  if (prereq === undefined) return "unknown"
-  if (prereq === null) return "unknown"
-
-  if (prereq.lastScrape.status === "failed") return "failure"
-  if (!prereq.openaiConfigured && prereq.observationsInWindow > 0) return "failure"
-
-  if (prereq.observationsInWindow === 0) return "empty"
-
-  if (prereq.pendingClassification > 0 || prereq.pendingClustering > 0) {
-    return "degraded"
-  }
-  if (prereq.lastClassifyBackfill.status === "failed") return "degraded"
-
-  return "healthy"
-}
-
-function describe({
-  tone,
-  prereq,
-  statsError,
-  windowLabel,
-}: {
-  tone: PipelineFreshnessTone
-  prereq: PrerequisiteStatus | null
-  statsError: boolean
-  windowLabel: string
-}): {
-  headline: string
-  subtext: string | null
-  cta: { href: string; label: string } | null
-} {
-  if (tone === "unknown") {
-    return {
-      headline: "Pipeline status unavailable",
-      subtext: statsError
-        ? "We couldn't load the pipeline health feed. Numbers below may be out of date."
-        : "Checking scrape, clustering, and classification readiness…",
-      cta: null,
-    }
-  }
-
-  if (tone === "failure") {
-    if (!prereq) {
-      return {
-        headline: "Pipeline health feed failed",
-        subtext:
-          "The /api/classifications/stats prerequisite block returned null. Check server logs — the numbers below are best-effort only.",
-        cta: { href: "/admin", label: "Open admin" },
-      }
-    }
-    if (!prereq.openaiConfigured) {
-      return {
-        headline: "OpenAI API key missing — classify pipeline cannot run",
-        subtext:
-          "Classifications will 503 until OPENAI_API_KEY is set in the project env. Existing data is shown as-is.",
-        cta: { href: "/admin", label: "Open admin" },
-      }
-    }
-    return {
-      headline: "Last scrape failed",
-      subtext: `The most recent scrape run ended in a failure state. Data in ${windowLabel} may be stale.`,
-      cta: { href: "/admin", label: "Investigate in admin" },
-    }
-  }
-
-  if (tone === "empty") {
-    return {
-      headline: "No issues in this window",
-      subtext: `Pipeline is caught up, but 0 observations fall inside ${windowLabel}. Widen the time range or trigger a scrape.`,
-      cta: null,
-    }
-  }
-
-  if (tone === "degraded" && prereq) {
-    const cta = pickPrimaryCta(prereq)
-    const parts: string[] = []
-    if (prereq.pendingClassification > 0) {
-      parts.push(`${prereq.pendingClassification} awaiting classification`)
-    }
-    if (prereq.pendingClustering > 0) {
-      parts.push(`${prereq.pendingClustering} awaiting clustering`)
-    }
-    if (prereq.lastClassifyBackfill.status === "failed") {
-      parts.push("last classify-backfill failed")
-    }
-    return {
-      headline: "Pipeline not caught up",
-      subtext: parts.length > 0
-        ? `${parts.join(" · ")}. Numbers below are a partial view until backlog clears.`
-        : "Some pipeline steps are behind; numbers below are a partial view.",
-      cta:
-        cta.kind === "classify-backfill" || cta.kind === "clustering"
-          ? { href: cta.href, label: cta.label }
-          : cta.kind === "openai-missing"
-            ? { href: "/admin", label: "Configure OpenAI key" }
-            : null,
-    }
-  }
-
-  // healthy
-  return {
-    headline: "Pipeline caught up",
-    subtext: prereq
-      ? `${prereq.classifiedCount}/${prereq.observationsInWindow} classified · ${prereq.clusteredCount}/${prereq.observationsInWindow} clustered in ${windowLabel}.`
-      : null,
-    cta: null,
-  }
-}
-
-function ratio(
-  have: number | null | undefined,
-  total: number | null | undefined,
-): { label: string; status: "ok" | "attention" | "unknown" } | null {
-  if (have === undefined || total === undefined) return null
-  if (have === null || total === null) return null
-  if (total === 0) return { label: "0 / 0", status: "unknown" }
-  const pct = Math.round((have / total) * 100)
-  const status = have >= total ? "ok" : "attention"
-  return { label: `${have} / ${total} (${pct}%)`, status }
-}
-
-function formatMaybeDate(at: string | null | undefined): string | null {
-  if (at === undefined) return null
-  if (at === null) return null
-  try {
-    return formatDistanceToNow(new Date(at), { addSuffix: true })
-  } catch {
-    return null
-  }
-}
-
-function getToneStyles(tone: PipelineFreshnessTone): {
+function getToneStyles(state: PipelineFreshnessState): {
   container: string
   icon: string
   badge: string
   ctaLink: string
 } {
-  switch (tone) {
+  switch (state) {
     case "healthy":
       return {
         container: "border-emerald-500/30 bg-emerald-500/5",
