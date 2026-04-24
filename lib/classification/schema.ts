@@ -4,7 +4,7 @@ import {
   REPRODUCIBILITY_ENUM,
   SEVERITY_ENUM,
   STATUS_ENUM,
-} from "@/lib/classification/taxonomy"
+} from "./taxonomy.ts"
 
 export const CLASSIFICATION_SCHEMA = {
   name: "codex_issue_classification",
