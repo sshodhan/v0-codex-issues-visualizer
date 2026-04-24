@@ -48,12 +48,26 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { logClientError } from "@/lib/error-tracking/client-logger"
 import type {
   CheckResult,
   VerifyReport,
 } from "@/lib/schema/expected-manifest"
+import {
+  matchesFilters,
+  type CronKind,
+  type CronRun,
+  type CronRunFilters,
+  type RunStatus,
+} from "@/lib/cron-runs/shape"
 
 const CHUNK_SIZE = 500
 
@@ -166,7 +180,7 @@ interface ProcessingEventItem {
   created_at: string
 }
 
-const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema"] as const
+const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema", "cron"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
 // `useSearchParams()` bails out of static prerender in Next.js 15 and
@@ -244,6 +258,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="clustering">Clustering</TabsTrigger>
             <TabsTrigger value="trace">Observation trace</TabsTrigger>
             <TabsTrigger value="schema">Schema verification</TabsTrigger>
+            <TabsTrigger value="cron">Cron jobs</TabsTrigger>
           </TabsList>
           <TabsContent value="backfill">
             <BackfillPanel secret={secret} />
@@ -259,6 +274,9 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           </TabsContent>
           <TabsContent value="schema">
             <SchemaVerificationPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="cron">
+            <CronJobsPanel secret={secret} />
           </TabsContent>
         </Tabs>
       </main>
@@ -1926,4 +1944,331 @@ function groupChecks(checks: CheckResult[]): Array<[string, CheckResult[]]> {
     if (!GROUP_ORDER.includes(g)) ordered.push([g, arr])
   }
   return ordered
+}
+
+// ============================================================================
+// Cron jobs panel
+// ============================================================================
+
+interface CronScheduleEntry {
+  cron: CronKind
+  path: string
+  schedule: string
+}
+
+interface CronAvailableSource {
+  slug: string
+  name: string
+}
+
+interface CronRunsResponse {
+  runs: CronRun[]
+  schedules: CronScheduleEntry[]
+  availableSources: CronAvailableSource[]
+  lastByCron: Record<CronKind, CronRun | null>
+  limit: number
+}
+
+const ALL_CRONS = "__all__"
+const ALL_SOURCES = "__all__"
+const ALL_STATUSES = "__all__"
+
+const STATUS_OPTIONS: RunStatus[] = ["pending", "running", "completed", "failed"]
+
+function CronJobsPanel({ secret }: { secret: string }) {
+  const [data, setData] = useState<CronRunsResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const [cronFilter, setCronFilter] = useState<CronKind | typeof ALL_CRONS>(
+    ALL_CRONS,
+  )
+  const [sourceFilter, setSourceFilter] = useState<string>(ALL_SOURCES)
+  const [statusFilter, setStatusFilter] = useState<
+    RunStatus | typeof ALL_STATUSES
+  >(ALL_STATUSES)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch("/api/admin/cron-runs?limit=100", {
+        headers: authHeaders(secret),
+      })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const body = (await res.json()) as CronRunsResponse
+      setData(body)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      logClientError(e, "admin-cron-runs-failed")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secret])
+
+  // Selecting classify-backfill forces the source filter back to "all",
+  // since those rows don't have a source and the combined filter would
+  // render an empty table with no hint why.
+  useEffect(() => {
+    if (cronFilter === "classify-backfill" && sourceFilter !== ALL_SOURCES) {
+      setSourceFilter(ALL_SOURCES)
+    }
+  }, [cronFilter, sourceFilter])
+
+  const filtered = useMemo(() => {
+    if (!data) return []
+    const filters: CronRunFilters = {}
+    if (cronFilter !== ALL_CRONS) filters.cron = cronFilter
+    if (sourceFilter !== ALL_SOURCES) filters.sourceSlug = sourceFilter
+    if (statusFilter !== ALL_STATUSES) filters.status = statusFilter
+    return data.runs.filter((r) => matchesFilters(r, filters))
+  }, [data, cronFilter, sourceFilter, statusFilter])
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle>Cron jobs</CardTitle>
+            <CardDescription>
+              Chronological feed of cron runs from <code>scrape_logs</code>.
+              The scrape cron writes one row per source per tick; the
+              classify-backfill cron writes one row per tick with{" "}
+              <code>source_id = null</code>. Shows up to 100 most-recent
+              runs.
+            </CardDescription>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={load}
+            disabled={loading}
+          >
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error && (
+          <Alert variant="destructive">
+            <AlertTitle>Failed to load cron runs</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {data && (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {data.schedules.map((s) => {
+                const last = data.lastByCron[s.cron] ?? null
+                return (
+                  <div key={s.cron} className="rounded-md border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-medium">{s.cron}</div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          {s.path}
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="font-mono">
+                        {s.schedule}
+                      </Badge>
+                    </div>
+                    {last ? (
+                      <div className="mt-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <CronStatusBadge status={last.status} />
+                          <span className="text-muted-foreground">
+                            last run{" "}
+                            {new Date(last.started_at).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-muted-foreground">
+                          {last.source ? (
+                            <>
+                              source <span className="font-mono">{last.source.slug}</span> ·{" "}
+                            </>
+                          ) : null}
+                          {formatDuration(last.duration_ms)} ·{" "}
+                          {last.issues_found.toLocaleString()} found ·{" "}
+                          {last.issues_added.toLocaleString()} added
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        No runs recorded yet.
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  Cron
+                </label>
+                <Select
+                  value={cronFilter}
+                  onValueChange={(v) =>
+                    setCronFilter(v as CronKind | typeof ALL_CRONS)
+                  }
+                >
+                  <SelectTrigger className="h-9 w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_CRONS}>All crons</SelectItem>
+                    <SelectItem value="scrape">scrape</SelectItem>
+                    <SelectItem value="classify-backfill">
+                      classify-backfill
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  Source
+                </label>
+                <Select
+                  value={sourceFilter}
+                  onValueChange={setSourceFilter}
+                  disabled={cronFilter === "classify-backfill"}
+                >
+                  <SelectTrigger className="h-9 w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_SOURCES}>All sources</SelectItem>
+                    {data.availableSources.map((s) => (
+                      <SelectItem key={s.slug} value={s.slug}>
+                        {s.slug}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  Status
+                </label>
+                <Select
+                  value={statusFilter}
+                  onValueChange={(v) =>
+                    setStatusFilter(v as RunStatus | typeof ALL_STATUSES)
+                  }
+                >
+                  <SelectTrigger className="h-9 w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_STATUSES}>All statuses</SelectItem>
+                    {STATUS_OPTIONS.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="ml-auto text-xs text-muted-foreground">
+                {filtered.length} of {data.runs.length} run
+                {data.runs.length === 1 ? "" : "s"}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[190px]">Started</TableHead>
+                    <TableHead>Cron</TableHead>
+                    <TableHead>Source</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Duration</TableHead>
+                    <TableHead className="text-right">Found</TableHead>
+                    <TableHead className="text-right">Added</TableHead>
+                    <TableHead>Error</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filtered.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={8}
+                        className="text-center text-sm text-muted-foreground"
+                      >
+                        No runs match the current filters.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filtered.map((r) => (
+                      <TableRow key={r.id}>
+                        <TableCell className="font-mono text-xs">
+                          {new Date(r.started_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {r.cron}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {r.source ? r.source.slug : "—"}
+                        </TableCell>
+                        <TableCell>
+                          <CronStatusBadge status={r.status} />
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {formatDuration(r.duration_ms)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {r.issues_found.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {r.issues_added.toLocaleString()}
+                        </TableCell>
+                        <TableCell
+                          className="max-w-[320px] truncate text-xs text-muted-foreground"
+                          title={r.error_message ?? ""}
+                        >
+                          {r.error_message ?? "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function CronStatusBadge({ status }: { status: RunStatus }) {
+  const variant =
+    status === "completed"
+      ? "default"
+      : status === "failed"
+        ? "destructive"
+        : "secondary"
+  return <Badge variant={variant}>{status}</Badge>
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms === null) return "—"
+  if (ms < 1000) return `${ms}ms`
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  const remS = Math.round(s - m * 60)
+  return `${m}m ${remS}s`
 }
