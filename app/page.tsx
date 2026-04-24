@@ -49,6 +49,12 @@ function isUuid(s: string): boolean {
   return UUID_RE.test(s)
 }
 
+const TAB_VALUES = ["v3", "dashboard", "story", "classifications"] as const
+type ActiveTab = (typeof TAB_VALUES)[number]
+function isActiveTab(value: string): value is ActiveTab {
+  return (TAB_VALUES as readonly string[]).includes(value)
+}
+
 // Inner component that uses useSearchParams (requires Suspense boundary)
 function DashboardContentInner() {
   const { version: uxVersion } = useDashboardUxVersion()
@@ -73,7 +79,7 @@ function DashboardContentInner() {
     return asOfRaw
   }, [asOfRaw])
 
-  const [activeTab, setActiveTab] = useState("dashboard")
+  const [activeTab, setActiveTab] = useState<ActiveTab>("v3")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [globalDays, setGlobalDays] = useState(30)
   const [globalCategory, setGlobalCategory] = useState("all")
@@ -246,7 +252,7 @@ function DashboardContentInner() {
   }
 
   const handleHeroExploreIssues = (categorySlug: string) => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => {
@@ -259,7 +265,7 @@ function DashboardContentInner() {
   }
 
   const scrollToIssuesTable = () => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => {
         document.getElementById("issues-table-anchor")?.scrollIntoView({
@@ -271,12 +277,12 @@ function DashboardContentInner() {
   }
 
   const handleStoryDrillError = (compoundKey: string) => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     handleFilterChange({ compound_key: compoundKey })
   }
 
   const handleStoryOpenClusterInTable = (clusterId: string) => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     handleFilterChange({ cluster_id: clusterId })
   }
 
@@ -586,8 +592,18 @@ function DashboardContentInner() {
             isRefreshing={isRefreshing}
           />
         ) : (
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-            <TabsList className="grid w-full max-w-2xl grid-cols-3 mx-auto h-auto p-1 gap-0">
+          <Tabs
+            value={activeTab}
+            onValueChange={(value) => {
+              if (isActiveTab(value)) setActiveTab(value)
+            }}
+            className="space-y-6"
+          >
+            <TabsList className="grid w-full max-w-2xl grid-cols-4 mx-auto h-auto p-1 gap-0">
+              <TabsTrigger value="v3" className="gap-1.5 text-xs sm:text-sm py-2.5">
+                <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                <span className="truncate">V3</span>
+              </TabsTrigger>
               <TabsTrigger value="dashboard" className="gap-1.5 text-xs sm:text-sm py-2.5">
                 <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
                 <span className="truncate">Dashboard</span>
@@ -608,8 +624,9 @@ function DashboardContentInner() {
               </TabsTrigger>
             </TabsList>
 
-            {/* Dashboard Tab */}
-            <TabsContent value="dashboard" className="space-y-8 mt-6">
+            {/* V3 + Dashboard Tabs share the same workflow content for now. */}
+            {(["v3", "dashboard"] as const).map((tabValue) => (
+              <TabsContent key={tabValue} value={tabValue} className="space-y-8 mt-6">
               {isV2 && (
                 <DataProvenanceStrip
                   lastSyncLabel={lastScrapeTime}
@@ -796,7 +813,8 @@ function DashboardContentInner() {
                   activeClusterLabel={activeClusterLabel ?? undefined}
                 />
               </div>
-            </TabsContent>
+              </TabsContent>
+            ))}
 
             <TabsContent value="story" className="mt-6 min-h-screen">
               <DashboardStoryView
