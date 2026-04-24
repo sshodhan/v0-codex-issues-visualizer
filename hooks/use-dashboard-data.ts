@@ -241,6 +241,19 @@ export interface ClusterRollupRow {
   avg_impact?: number | null
   regex_variants?: Array<{ kind: "err" | "stack" | "env" | "sdk"; value: string }>
   breadth?: { sources: Record<string, number>; os: string[] }
+  // Tier 2A — truth-first V3 card fidelity. All optional so stale SWR
+  // caches from older deploys render cleanly. Gating rules enforced
+  // server-side in app/api/clusters/rollup/route.ts — the server sets
+  // the *_pct / dominant_* fields to null when the underlying sample
+  // is too small to be meaningful.
+  severity_distribution?: { low: number; medium: number; high: number; critical: number }
+  dominant_severity?: "low" | "medium" | "high" | "critical" | null
+  sentiment_distribution?: { positive: number; neutral: number; negative: number }
+  negative_sentiment_pct?: number | null
+  surge_delta_pct?: number | null
+  surge_window_hours?: number
+  recent_window_count?: number
+  prior_window_count?: number
 }
 
 /**
