@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { logServerError } from "@/lib/error-tracking/server-logger"
+import { buildPipelineStateSummary } from "@/lib/classification/pipeline-state"
 import {
   aggregateClusters,
   type ClusterHealthRow,
@@ -75,6 +76,46 @@ export async function GET(request: NextRequest) {
       : DEFAULT_LIMIT
 
   try {
+    const observationCountQuery = (() => {
+      let q = supabase
+        .from("mv_observation_current")
+        .select("*", { count: "exact", head: true })
+        .eq("is_canonical", true)
+      if (cutoffIso) q = q.gte("published_at", cutoffIso)
+      return q
+    })()
+    const classifiedCountQuery = (() => {
+      let q = supabase
+        .from("mv_observation_current")
+        .select("*", { count: "exact", head: true })
+        .eq("is_canonical", true)
+        .not("llm_classified_at", "is", null)
+      if (cutoffIso) q = q.gte("published_at", cutoffIso)
+      return q
+    })()
+    const clusteredCountQuery = (() => {
+      let q = supabase
+        .from("mv_observation_current")
+        .select("*", { count: "exact", head: true })
+        .eq("is_canonical", true)
+        .not("cluster_id", "is", null)
+      if (cutoffIso) q = q.gte("published_at", cutoffIso)
+      return q
+    })()
+
+    const [observationCountRes, classifiedCountRes, clusteredCountRes] = await Promise.all([
+      observationCountQuery,
+      classifiedCountQuery,
+      clusteredCountQuery,
+    ])
+    const sourceHealthy = !observationCountRes.error && !classifiedCountRes.error && !clusteredCountRes.error
+    const pipeline_state = buildPipelineStateSummary({
+      observationsInWindow: observationCountRes.count ?? 0,
+      classifiedCount: classifiedCountRes.count ?? 0,
+      clusteredCount: clusteredCountRes.count ?? 0,
+      sourceHealthy,
+    })
+
     let obsQuery = supabase
       .from("mv_observation_current")
       .select(
@@ -95,12 +136,12 @@ export async function GET(request: NextRequest) {
         obsError,
         { windowDays },
       )
-      return NextResponse.json({ clusters: [], windowDays, source: "observations" })
+      return NextResponse.json({ clusters: [], windowDays, source: "observations", pipeline_state })
     }
 
     const rows = (obsData ?? []) as ObservationRow[]
     if (rows.length === 0) {
-      return NextResponse.json({ clusters: [], windowDays, source: "observations" })
+      return NextResponse.json({ clusters: [], windowDays, source: "observations", pipeline_state })
     }
 
     // Fetch label + confidence for every surfaced cluster in one round
@@ -154,11 +195,22 @@ export async function GET(request: NextRequest) {
       clusters,
       windowDays,
       source: "observations",
+      pipeline_state,
     })
   } catch (error) {
     logServerError("api-clusters", "unexpected_error", error, { windowDays })
     return NextResponse.json(
-      { clusters: [], windowDays, source: "observations" },
+      {
+        clusters: [],
+        windowDays,
+        source: "observations",
+        pipeline_state: buildPipelineStateSummary({
+          observationsInWindow: 0,
+          classifiedCount: 0,
+          clusteredCount: 0,
+          sourceHealthy: false,
+        }),
+      },
       { status: 200 },
     )
   }

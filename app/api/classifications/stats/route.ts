@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { logServerError } from "@/lib/error-tracking/server-logger"
+import { buildPipelineStateSummary, type PipelineStateSummary } from "@/lib/classification/pipeline-state"
 
 // Aggregates over classifications joined with their latest review (effective
 // state). Traceability coverage is derived from the presence of
@@ -46,6 +47,11 @@ interface PrerequisiteStatus {
   lastClassifyBackfill: { at: string | null; status: string | null }
 }
 
+interface PipelineSummaryPayload {
+  prerequisites: PrerequisiteStatus
+  pipeline_state: PipelineStateSummary
+}
+
 // Fan out the four prerequisite queries in parallel, resilient to any one
 // of them failing — the panel degrades to nulls rather than 500'ing the
 // stats endpoint. Canonical observations only; the `is_canonical` index
@@ -55,7 +61,7 @@ interface PrerequisiteStatus {
 async function computePrerequisites(
   supabase: Awaited<ReturnType<typeof createClient>>,
   publishedAtCutoff: Date | null,
-): Promise<PrerequisiteStatus | null> {
+): Promise<PipelineSummaryPayload | null> {
   try {
     const cutoffIso = publishedAtCutoff?.toISOString() ?? null
 
@@ -96,7 +102,7 @@ async function computePrerequisites(
     const pickTs = (row: { completed_at?: string | null; started_at?: string | null } | null) =>
       row?.completed_at ?? row?.started_at ?? null
 
-    return {
+    const prerequisites = {
       observationsInWindow,
       classifiedCount,
       clusteredCount,
@@ -111,6 +117,16 @@ async function computePrerequisites(
         at: pickTs(lastBackfillRes.data),
         status: (lastBackfillRes.data?.status as string | null) ?? null,
       },
+    }
+    return {
+      prerequisites,
+      pipeline_state: buildPipelineStateSummary({
+        observationsInWindow,
+        classifiedCount,
+        clusteredCount,
+        openaiConfigured: prerequisites.openaiConfigured,
+        lastClassifyBackfillStatus: prerequisites.lastClassifyBackfill.status,
+      }),
     }
   } catch (error) {
     logServerError(
@@ -187,7 +203,7 @@ export async function GET(request: NextRequest) {
 
   const rows = (classificationData || []) as ClassificationRow[]
   if (rows.length === 0) {
-    const prerequisites = await prerequisitesPromise
+    const summary = await prerequisitesPromise
     return NextResponse.json({
       total: 0,
       needsReviewCount: 0,
@@ -197,7 +213,15 @@ export async function GET(request: NextRequest) {
       bySeverity: {},
       byStatus: {},
       bySentiment: { positive: 0, negative: 0, neutral: 0, unknown: 0 },
-      prerequisites,
+      prerequisites: summary?.prerequisites ?? null,
+      pipeline_state:
+        summary?.pipeline_state ??
+        buildPipelineStateSummary({
+          observationsInWindow: 0,
+          classifiedCount: 0,
+          clusteredCount: 0,
+          sourceHealthy: false,
+        }),
     })
   }
 
@@ -279,7 +303,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const prerequisites = await prerequisitesPromise
+  const summary = await prerequisitesPromise
 
   return NextResponse.json({
     total: rows.length,
@@ -290,6 +314,14 @@ export async function GET(request: NextRequest) {
     bySeverity,
     byStatus,
     bySentiment,
-    prerequisites,
+    prerequisites: summary?.prerequisites ?? null,
+    pipeline_state:
+      summary?.pipeline_state ??
+      buildPipelineStateSummary({
+        observationsInWindow: 0,
+        classifiedCount: 0,
+        clusteredCount: 0,
+        sourceHealthy: false,
+      }),
   })
 }
