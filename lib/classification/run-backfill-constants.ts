@@ -36,3 +36,20 @@ export const BACKFILL_SELECT_COLS = [
 ] as const
 
 export const BACKFILL_SELECT_CLAUSE = BACKFILL_SELECT_COLS.join(", ")
+
+// Clamp a user-provided threshold to the legal 0..10 range and fall
+// back to the default MIN_IMPACT_SCORE when undefined. Lives here (not
+// in run-backfill.ts) so the admin panel and route helpers can import
+// it without dragging in the Supabase / classification-pipeline graph
+// that would break node:test --experimental-strip-types.
+//
+// Impact scores have one-decimal precision (see docs/SCORING.md §10.1),
+// so we round to one decimal rather than trusting whatever the admin
+// typed into the form — prevents "4.84" from silently excluding rows
+// that scored exactly 4.8.
+export function clampMinImpact(value: number | undefined | null): number {
+  if (value === undefined || value === null || !Number.isFinite(value)) {
+    return MIN_IMPACT_SCORE
+  }
+  return Math.max(0, Math.min(10, Math.round(value * 10) / 10))
+}

@@ -131,18 +131,43 @@ interface ClusterBatchRow {
 }
 
 interface ClassifyBackfillStats {
-  /** Unclassified canonical rows at or above MIN_IMPACT_SCORE — what
-   *  "Run until done" will actually process. */
+  /** All-time count of unclassified canonical rows at or above the
+   *  effective threshold. What "Run until done" will actually
+   *  process today (POST is all-time by design). */
   pendingCandidates: number
-  /** Every unclassified canonical row regardless of impact score. When
-   *  this exceeds `pendingCandidates`, the dashboard banner and this
-   *  panel would otherwise contradict each other. */
+  /** All-time count regardless of impact score — the global deferral
+   *  backlog. Preserved for back-compat with earlier panel UI. */
   pendingCandidatesAllImpact?: number
   defaultLimit: number
   maxLimit: number
+  /** The effective threshold the server used to compute the counts
+   *  above — echoes the admin form input (or the default when unset). */
   minImpactScore: number
+  /** The hardcoded MIN_IMPACT_SCORE policy default. Reset target. */
+  defaultMinImpactScore?: number
   openaiConfigured: boolean
+  /** Window metadata echoed back by the server so the UI caption
+   *  matches the scope of the counts. */
+  window?: {
+    days: number | null
+    startIso: string | null
+  }
+  /** Full count breakdown across (threshold × window) quadrants so the
+   *  panel can render a comparison matrix that aligns with the banner. */
+  counts?: {
+    atThresholdWindowed: number
+    atDefaultWindowed: number
+    allImpactWindowed: number
+    atThresholdAllTime: number
+    allImpactAllTime: number
+  }
 }
+
+// Cost-per-observation estimate (gpt-5-mini rates). Documented in
+// docs/ARCHITECTURE.md §3.5 and the classify-backfill panel
+// description. Used to render a "lowering the threshold would cost ≈ $X"
+// hint so operators can authorize spend deliberately.
+const COST_PER_OBSERVATION_USD = 0.04
 
 interface ClassifyBackfillFailure {
   observationId: string
@@ -490,6 +515,40 @@ function ObservationTracePanel({ secret }: { secret: string }) {
         ) : null}
       </CardContent>
     </Card>
+  )
+}
+
+// Small presentational helper used by ClassifyBackfillPanel. Either a
+// numeric `value` (formatted with toLocaleString and showing "—" for
+// undefined) or a pre-formatted `valueText` string (for the "configured
+// / missing" OpenAI tile). `hint` renders small muted text below.
+function StatTile({
+  label,
+  value,
+  valueText,
+  hint,
+}: {
+  label: string
+  value?: number | null | undefined
+  valueText?: string
+  hint?: string
+}) {
+  const display =
+    valueText !== undefined
+      ? valueText
+      : typeof value === "number"
+        ? value.toLocaleString()
+        : "—"
+  return (
+    <div className="rounded-md border p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="text-xl font-semibold tabular-nums">{display}</div>
+      {hint ? (
+        <div className="mt-1 text-[11px] leading-snug text-muted-foreground">
+          {hint}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -1409,9 +1468,17 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
   const [statsLoading, setStatsLoading] = useState(false)
 
   const [limit, setLimit] = useState(10)
+  // Editable threshold. Starts at the server-reported default (which is
+  // the hardcoded MIN_IMPACT_SCORE); operator can lower it to preview
+  // what a more permissive policy would pick up. Kept as a string so
+  // we don't clobber the input mid-typing with a partial-number clamp.
+  const [thresholdInput, setThresholdInput] = useState("")
+  // Window for the stats query. `null` means "all time". Defaults to
+  // 30d so the counts match the dashboard banner out of the box.
+  const [windowDays, setWindowDays] = useState<number | null>(30)
   const [running, setRunning] = useState<null | "dryRun" | "batch" | "loop">(null)
   const [dryRunPreview, setDryRunPreview] =
-    useState<{ pendingCandidates: number; wouldProcess: number } | null>(null)
+    useState<{ pendingCandidates: number; wouldProcess: number; minImpactScore: number } | null>(null)
   const [lastBatch, setLastBatch] = useState<ClassifyBackfillBatchResult | null>(
     null,
   )
@@ -1426,11 +1493,30 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
   const [refreshedMvs, setRefreshedMvs] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
-  const loadStats = async () => {
+  // Parse the editable threshold. An empty string falls back to the
+  // server-reported default so the form can't ship an invalid value
+  // to the API (the server also clamps, but doing it here keeps the
+  // local counts accurate while typing).
+  const parsedThreshold = useMemo(() => {
+    if (thresholdInput === "") return stats?.defaultMinImpactScore ?? stats?.minImpactScore ?? 6
+    const n = Number.parseFloat(thresholdInput)
+    if (!Number.isFinite(n)) return stats?.defaultMinImpactScore ?? stats?.minImpactScore ?? 6
+    return Math.max(0, Math.min(10, Math.round(n * 10) / 10))
+  }, [thresholdInput, stats?.defaultMinImpactScore, stats?.minImpactScore])
+
+  const defaultThreshold = stats?.defaultMinImpactScore ?? stats?.minImpactScore ?? 6
+  const thresholdDiverges = parsedThreshold !== defaultThreshold
+
+  const loadStats = async (opts?: { threshold?: number; days?: number | null }) => {
     setStatsLoading(true)
     setStatsError(null)
     try {
-      const res = await fetch("/api/admin/classify-backfill", {
+      const thresholdForQuery = opts?.threshold ?? parsedThreshold
+      const daysForQuery = opts?.days !== undefined ? opts.days : windowDays
+      const qs = new URLSearchParams()
+      qs.set("minImpactScore", String(thresholdForQuery))
+      qs.set("days", daysForQuery === null ? "all" : String(daysForQuery))
+      const res = await fetch(`/api/admin/classify-backfill?${qs.toString()}`, {
         headers: authHeaders(secret),
       })
       if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
@@ -1454,6 +1540,19 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secret])
 
+  // When the operator changes threshold or window, refetch the stats so
+  // every count on the panel reflects the new scope. Debounce via the
+  // useEffect tick — React already batches rapid keystrokes.
+  useEffect(() => {
+    if (stats === null) return // initial load handled above
+    loadStats({ threshold: parsedThreshold, days: windowDays })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedThreshold, windowDays])
+
+  const resetThreshold = () => {
+    setThresholdInput("")
+  }
+
   const resetBeforeRun = () => {
     setDryRunPreview(null)
     setLastBatch(null)
@@ -1471,16 +1570,18 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/classify-backfill", {
         method: "POST",
         headers: authHeaders(secret),
-        body: JSON.stringify({ dryRun: true, limit }),
+        body: JSON.stringify({ dryRun: true, limit, minImpactScore: parsedThreshold }),
       })
       if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as {
         pendingCandidates: number
         wouldProcess: number
+        minImpactScore: number
       }
       setDryRunPreview({
         pendingCandidates: data.pendingCandidates,
         wouldProcess: data.wouldProcess,
+        minImpactScore: data.minImpactScore,
       })
     } catch (e) {
       setRunError(e instanceof Error ? e.message : String(e))
@@ -1500,7 +1601,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
       const res = await fetch("/api/admin/classify-backfill", {
         method: "POST",
         headers: authHeaders(secret),
-        body: JSON.stringify({ limit }),
+        body: JSON.stringify({ limit, minImpactScore: parsedThreshold }),
       })
       if (!res.ok) throw makeAdminHttpError(res.status, await explainAdminFailure(res))
       const data = (await res.json()) as ClassifyBackfillBatchResult
@@ -1547,7 +1648,7 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           method: "POST",
           signal: abort.signal,
           headers: authHeaders(secret),
-          body: JSON.stringify({ dryRun: true, limit }),
+          body: JSON.stringify({ dryRun: true, limit, minImpactScore: parsedThreshold }),
         })
         if (!pendingRes.ok) {
           throw makeAdminHttpError(
@@ -1566,7 +1667,11 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           method: "POST",
           signal: abort.signal,
           headers: authHeaders(secret),
-          body: JSON.stringify({ limit, refreshMvs: isFinalBatch }),
+          body: JSON.stringify({
+            limit,
+            refreshMvs: isFinalBatch,
+            minImpactScore: parsedThreshold,
+          }),
         })
         if (!res.ok) {
           consecutiveErrors += 1
@@ -1628,14 +1733,18 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           <div>
             <CardTitle>Classify backfill (LLM)</CardTitle>
             <CardDescription>
-              Routes high-impact unclassified canonical observations through
-              the LLM pipeline. Each run is capped to fit Vercel&apos;s 60s
-              function limit; loop until &quot;pending&quot; reaches 0 to clear
-              a backlog. Costs ~$0.04 per observation at gpt-5-mini rates. On
-              Hobby keep per-batch limit ≤ 15 so ~3-5s/call stays under the
-              timeout. Avoid running while the 03:00 UTC cron tick may be
-              active — overlapping runs can race on the dedupe check (BUGS.md
-              N-9).
+              Routes unclassified canonical observations through the LLM
+              pipeline. Impact score gates spend — the default policy
+              (configured in <span className="font-mono">lib/classification/run-backfill-constants.ts</span>)
+              only processes rows at or above the impact threshold. Use the
+              controls below to lower the threshold temporarily and preview
+              what a more permissive policy would pick up; the daily cron
+              and the dashboard banner always use the default. Costs
+              ~${COST_PER_OBSERVATION_USD.toFixed(2)} per observation at
+              gpt-5-mini rates. On Hobby keep per-batch limit ≤ 15 so
+              ~3-5s/call stays under the 60s timeout. Avoid running while
+              the 03:00 UTC cron tick may be active — overlapping runs can
+              race on the dedupe check (BUGS.md N-9).
             </CardDescription>
           </div>
           <Button
@@ -1659,41 +1768,143 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           </Alert>
         )}
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-md border p-3">
-            <div className="text-xs text-muted-foreground">
-              Pending candidates
-            </div>
-            <div className="text-xl font-semibold tabular-nums">
-              {stats ? stats.pendingCandidates.toLocaleString() : "—"}
-            </div>
-            {stats &&
-              stats.pendingCandidatesAllImpact !== undefined &&
-              stats.pendingCandidatesAllImpact > stats.pendingCandidates ? (
-              <div className="mt-1 text-[11px] text-muted-foreground leading-tight">
-                {stats.pendingCandidatesAllImpact.toLocaleString()} total below-threshold not processed
-              </div>
-            ) : null}
+        {/* Scope selector: window + threshold. Changing either refetches
+            all counts so every tile below updates in lockstep with the
+            dashboard banner. */}
+        <div className="grid grid-cols-1 gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-[auto_auto_1fr_auto]">
+          <div>
+            <label
+              htmlFor="classify-days"
+              className="mb-1 block text-xs text-muted-foreground"
+            >
+              Window
+            </label>
+            <select
+              id="classify-days"
+              value={windowDays === null ? "all" : String(windowDays)}
+              onChange={(e) => {
+                const v = e.target.value
+                setWindowDays(v === "all" ? null : Number.parseInt(v, 10))
+              }}
+              disabled={running !== null}
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value="7">Last 7 days</option>
+              <option value="14">Last 14 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="all">All time</option>
+            </select>
           </div>
-          <div className="rounded-md border p-3">
-            <div className="text-xs text-muted-foreground">Default limit</div>
-            <div className="text-xl font-semibold tabular-nums">
-              {stats ? stats.defaultLimit : "—"}
-            </div>
-          </div>
-          <div className="rounded-md border p-3">
-            <div className="text-xs text-muted-foreground">
+          <div>
+            <label
+              htmlFor="classify-threshold"
+              className="mb-1 block text-xs text-muted-foreground"
+            >
               Min impact score
-            </div>
-            <div className="text-xl font-semibold tabular-nums">
-              {stats ? stats.minImpactScore : "—"}
-            </div>
+            </label>
+            <Input
+              id="classify-threshold"
+              type="number"
+              min={0}
+              max={10}
+              step={0.1}
+              value={thresholdInput === "" ? defaultThreshold : thresholdInput}
+              onChange={(e) => setThresholdInput(e.target.value)}
+              disabled={running !== null}
+              className="h-9 w-24 tabular-nums"
+            />
           </div>
-          <div className="rounded-md border p-3">
-            <div className="text-xs text-muted-foreground">OpenAI key</div>
-            <div className="text-xl font-semibold">
-              {stats ? (openaiOk ? "configured" : "missing") : "—"}
-            </div>
+          <div className="flex items-end">
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              {thresholdDiverges ? (
+                <>
+                  Experimenting at{" "}
+                  <span className="font-mono text-foreground">{parsedThreshold}</span>.
+                  Daily cron &amp; dashboard banner continue at the{" "}
+                  <span className="font-mono text-foreground">{defaultThreshold}</span>
+                  {" "}default — this override only affects this session.
+                </>
+              ) : (
+                <>
+                  At policy default{" "}
+                  <span className="font-mono text-foreground">{defaultThreshold}</span>.
+                  Lower the threshold to preview what a more permissive policy would
+                  process (≈ ${COST_PER_OBSERVATION_USD.toFixed(2)} per extra observation).
+                </>
+              )}
+            </p>
+          </div>
+          <div className="flex items-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={resetThreshold}
+              disabled={!thresholdDiverges || running !== null}
+              title="Reset threshold to policy default"
+            >
+              Reset to {defaultThreshold}
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats matrix. Two rows of three tiles:
+             Row 1 — scoped to the selected window, matches dashboard banner.
+             Row 2 — all-time scope, matches what "Run until done" processes. */}
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            In the selected window
+            {stats?.window?.days !== undefined && stats.window.days !== null
+              ? ` (last ${stats.window.days} days)`
+              : " (all time)"}
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <StatTile
+              label={`At threshold ${parsedThreshold}`}
+              value={stats?.counts?.atThresholdWindowed}
+              hint={thresholdDiverges
+                ? `vs ${stats?.counts?.atDefaultWindowed ?? "—"} at default ${defaultThreshold}`
+                : "would be processed if run at this scope"}
+            />
+            <StatTile
+              label={`At default ${defaultThreshold}`}
+              value={stats?.counts?.atDefaultWindowed}
+              hint="matches dashboard banner's high-impact count"
+            />
+            <StatTile
+              label="Unclassified (all impact levels)"
+              value={stats?.counts?.allImpactWindowed}
+              hint="matches dashboard banner's total pending"
+            />
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            All-time operational scope — what &ldquo;Run until done&rdquo; processes
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <StatTile
+              label="Pending candidates"
+              value={stats?.pendingCandidates}
+              hint={thresholdDiverges
+                ? `at threshold ${parsedThreshold} — would process ≈ $${((stats?.pendingCandidates ?? 0) * COST_PER_OBSERVATION_USD).toFixed(2)}`
+                : `at default ${defaultThreshold} — would process ≈ $${((stats?.pendingCandidates ?? 0) * COST_PER_OBSERVATION_USD).toFixed(2)}`}
+            />
+            <StatTile
+              label="Below-threshold backlog"
+              value={
+                stats && stats.pendingCandidatesAllImpact !== undefined
+                  ? Math.max(0, stats.pendingCandidatesAllImpact - stats.pendingCandidates)
+                  : undefined
+              }
+              hint={`deferred by policy (impact < ${parsedThreshold})`}
+            />
+            <StatTile
+              label="OpenAI key"
+              valueText={stats ? (openaiOk ? "configured" : "missing") : "—"}
+              hint={openaiOk ? "classifier ready" : "set OPENAI_API_KEY to enable"}
+            />
           </div>
         </div>
 
@@ -1770,12 +1981,17 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
           <Alert>
             <AlertTitle>Dry run preview</AlertTitle>
             <AlertDescription>
+              At threshold{" "}
+              <span className="font-mono">{dryRunPreview.minImpactScore}</span>{" "}
+              there {dryRunPreview.pendingCandidates === 1 ? "is" : "are"}{" "}
               {dryRunPreview.pendingCandidates.toLocaleString()} pending
               candidate
-              {dryRunPreview.pendingCandidates === 1 ? "" : "s"}. The next
-              batch would process{" "}
+              {dryRunPreview.pendingCandidates === 1 ? "" : "s"} (all-time).
+              The next batch would process{" "}
               {dryRunPreview.wouldProcess.toLocaleString()} at the current
-              limit. No tokens spent.
+              limit — estimated cost{" "}
+              ≈ ${(dryRunPreview.wouldProcess * COST_PER_OBSERVATION_USD).toFixed(2)}.
+              No tokens spent on this preview.
             </AlertDescription>
           </Alert>
         )}
@@ -1859,10 +2075,18 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
 
         {stats && stats.pendingCandidates === 0 && running === null && (
           <Alert>
-            <AlertTitle>All caught up</AlertTitle>
+            <AlertTitle>All caught up at threshold {parsedThreshold}</AlertTitle>
             <AlertDescription>
-              0 pending. No high-impact canonical observations currently need
-              classification.
+              0 pending at this threshold, all-time. {stats.pendingCandidatesAllImpact !== undefined && stats.pendingCandidatesAllImpact > 0 ? (
+                <>
+                  {stats.pendingCandidatesAllImpact.toLocaleString()} unclassified
+                  observations remain below the threshold — lower the threshold above to
+                  preview what processing them would cost, or leave the current policy in
+                  place to defer them.
+                </>
+              ) : (
+                <>No canonical observations currently need classification.</>
+              )}
             </AlertDescription>
           </Alert>
         )}
