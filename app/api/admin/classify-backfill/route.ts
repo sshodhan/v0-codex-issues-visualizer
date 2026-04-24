@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireAdminSecret } from "@/lib/admin/auth"
 import {
+  clampMinImpact,
   countBackfillCandidates,
   countBackfillCandidatesAllImpact,
   runClassifyBackfill,
@@ -24,6 +25,14 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 // /api/stats excludes source_id=null from the "Last synced" header chip
 // so admin runs never masquerade as scrapes.
 //
+// The GET response now mirrors both the scope the dashboard banner uses
+// (last N days, default 30) and the all-time scope the POST would
+// actually process. Operators can also pass `minImpactScore` to preview
+// what a lower threshold would process before authorizing spend; the
+// daily cron and dashboard banner continue to use the hardcoded
+// MIN_IMPACT_SCORE default so ephemeral admin experiments don't change
+// system-wide policy.
+//
 // See docs/ARCHITECTURE.md §3.5 (scheduled jobs + manual triggers).
 
 export const maxDuration = 60
@@ -35,26 +44,97 @@ const DEFAULT_LIMIT = 10
 // the per-batch limit low enough to finish.
 const MAX_LIMIT = 100
 
+// Default window for the admin panel's stats. Chosen to match the
+// dashboard banner's default days filter so "N awaiting classification"
+// on the banner and "N below threshold in window" on the admin panel
+// are apples-to-apples. Admin can override via `?days=` on the GET.
+const DEFAULT_WINDOW_DAYS = 30
+
+function parseWindowDays(raw: string | null): number | null {
+  if (raw === null || raw === "") return DEFAULT_WINDOW_DAYS
+  if (raw === "all" || raw === "0") return null
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_WINDOW_DAYS
+  return Math.min(365, n)
+}
+
+function parseMinImpact(raw: string | number | undefined | null): number {
+  if (raw === undefined || raw === null || raw === "") return MIN_IMPACT_SCORE
+  const n = typeof raw === "number" ? raw : Number.parseFloat(String(raw))
+  return clampMinImpact(Number.isFinite(n) ? n : undefined)
+}
+
+function publishedSinceFromDays(days: number | null): Date | null {
+  if (days === null) return null
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+}
+
 export async function GET(request: NextRequest) {
   const authErr = requireAdminSecret(request)
   if (authErr) return authErr
 
+  const params = request.nextUrl.searchParams
+  const windowDays = parseWindowDays(params.get("days"))
+  const minImpactScore = parseMinImpact(params.get("minImpactScore"))
+  const publishedSince = publishedSinceFromDays(windowDays)
+
   const supabase = createAdminClient()
   try {
-    // Parallel: candidate-count queries are independent and share the
-    // same MV + index, so issuing both at once avoids doubling the
-    // panel's load latency when MIN_IMPACT_SCORE differs from 0.
-    const [pendingCandidates, pendingCandidatesAllImpact] = await Promise.all([
-      countBackfillCandidates(supabase),
+    // Issue five counts in parallel — same MV, same canonical index,
+    // so the cost is dominated by the round-trip and this is one trip.
+    //
+    //   atThresholdWindowed  : what "Run until done" would process if
+    //                          the admin switches the route to windowed
+    //                          semantics (future); also the closest
+    //                          apples-to-apples with the banner for
+    //                          the operator's chosen threshold.
+    //   atDefaultWindowed    : what the dashboard banner's high-impact
+    //                          count is — the reference point for the
+    //                          "change from default" callout.
+    //   allImpactWindowed    : total unclassified rows in window,
+    //                          regardless of threshold. Matches the
+    //                          banner's "N awaiting classification".
+    //   atThresholdAllTime   : what "Run until done" will actually
+    //                          process today (route's operational
+    //                          contract is still all-time). Matches
+    //                          the "Pending candidates" tile.
+    //   allImpactAllTime     : every unclassified row ever. Explains
+    //                          the global deferral backlog.
+    const [
+      atThresholdWindowed,
+      atDefaultWindowed,
+      allImpactWindowed,
+      atThresholdAllTime,
+      allImpactAllTime,
+    ] = await Promise.all([
+      countBackfillCandidates(supabase, { minImpactScore, publishedSince }),
+      countBackfillCandidates(supabase, { minImpactScore: MIN_IMPACT_SCORE, publishedSince }),
+      countBackfillCandidatesAllImpact(supabase, { publishedSince }),
+      countBackfillCandidates(supabase, { minImpactScore }),
       countBackfillCandidatesAllImpact(supabase),
     ])
+
     return NextResponse.json({
-      pendingCandidates,
-      pendingCandidatesAllImpact,
+      // Back-compat fields (existing UI consumers continue to read these).
+      pendingCandidates: atThresholdAllTime,
+      pendingCandidatesAllImpact: allImpactAllTime,
       defaultLimit: DEFAULT_LIMIT,
       maxLimit: MAX_LIMIT,
-      minImpactScore: MIN_IMPACT_SCORE,
+      minImpactScore,
+      defaultMinImpactScore: MIN_IMPACT_SCORE,
       openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
+      // New: scope + threshold breakdown for the rebuilt admin panel.
+      window: {
+        days: windowDays,
+        startIso: publishedSince?.toISOString() ?? null,
+      },
+      counts: {
+        atThresholdWindowed,
+        atDefaultWindowed,
+        allImpactWindowed,
+        atThresholdAllTime,
+        allImpactAllTime,
+      },
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -74,7 +154,16 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  let body: { limit?: number; refreshMvs?: boolean; dryRun?: boolean } = {}
+  let body: {
+    limit?: number
+    refreshMvs?: boolean
+    dryRun?: boolean
+    // Optional per-request override. Clamped to [0, 10]; omission falls
+    // back to MIN_IMPACT_SCORE so the route stays backward-compatible
+    // for the existing admin page "Run until done" loop that doesn't
+    // send this field yet.
+    minImpactScore?: number
+  } = {}
   try {
     body = await request.json()
   } catch {
@@ -87,23 +176,24 @@ export async function POST(request: NextRequest) {
     Math.min(Number.isFinite(limitRaw) ? limitRaw : DEFAULT_LIMIT, MAX_LIMIT),
   )
   const dryRun = body.dryRun === true
-  // Default true when omitted; the admin "Run until done" loop passes
-  // false for intermediate batches and true for the final one so MVs
-  // are rebuilt once per catch-up rather than per batch.
   const refreshMvs = body.refreshMvs !== false
+  const minImpactScore = parseMinImpact(body.minImpactScore)
 
   const supabase = createAdminClient()
 
   if (dryRun) {
     // Count-only preview: no model calls, no scrape_logs row. Operators
-    // use this before authorizing spend.
+    // use this before authorizing spend — especially important when
+    // they've lowered the threshold and want to see exactly how many
+    // rows the lower setting would process.
     try {
-      const pendingCandidates = await countBackfillCandidates(supabase)
+      const pendingCandidates = await countBackfillCandidates(supabase, { minImpactScore })
       return NextResponse.json({
         dryRun: true,
         pendingCandidates,
         limit,
-        minImpactScore: MIN_IMPACT_SCORE,
+        minImpactScore,
+        defaultMinImpactScore: MIN_IMPACT_SCORE,
         wouldProcess: Math.min(limit, pendingCandidates),
       })
     } catch (error) {
@@ -142,11 +232,11 @@ export async function POST(request: NextRequest) {
     component: "admin-classify-backfill",
     event: "run_started",
     level: "info",
-    data: { limit, refreshMvs },
+    data: { limit, refreshMvs, minImpactScore },
   })
 
   try {
-    const result = await runClassifyBackfill(supabase, { limit, refreshMvs })
+    const result = await runClassifyBackfill(supabase, { limit, refreshMvs, minImpactScore })
 
     await finalize({
       status: "completed",
@@ -165,6 +255,7 @@ export async function POST(request: NextRequest) {
       failed: result.failed,
       failures: result.failures,
       refreshedMvs: result.refreshedMvs,
+      minImpactScore: result.minImpactScore,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
