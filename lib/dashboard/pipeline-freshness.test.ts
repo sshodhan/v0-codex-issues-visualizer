@@ -196,3 +196,241 @@ test("precedence: statsError beats stale scrape beats pending backlog", () => {
   assert.equal(vm.state, "failure")
   assert.equal(vm.reason, "stats-endpoint-errored")
 })
+
+// Invariant battery. These run over every non-healthy scenario and
+// assert contracts the renderer relies on — the prompt's core rule is
+// "never render a healthy-looking surface when inputs aren't healthy",
+// which is a property check, not a single-path test.
+
+const NON_HEALTHY_SCENARIOS: Array<{
+  name: string
+  inputs: () => PipelineFreshnessInputs
+}> = [
+  { name: "statsError", inputs: () => base({ statsError: true }) },
+  { name: "prereq-undefined", inputs: () => base({ prereq: undefined }) },
+  { name: "prereq-null", inputs: () => base({ prereq: null }) },
+  {
+    name: "last-scrape-failed",
+    inputs: () =>
+      base({
+        prereq: healthyPrereq({
+          lastScrape: { at: "2026-04-24T11:00:00Z", status: "failed" },
+        }),
+      }),
+  },
+  {
+    name: "openai-missing-with-observations",
+    inputs: () => base({ prereq: healthyPrereq({ openaiConfigured: false }) }),
+  },
+  {
+    name: "pending-classification",
+    inputs: () =>
+      base({
+        prereq: healthyPrereq({ classifiedCount: 4, pendingClassification: 6 }),
+      }),
+  },
+  {
+    name: "pending-clustering",
+    inputs: () =>
+      base({
+        prereq: healthyPrereq({ clusteredCount: 3, pendingClustering: 7 }),
+      }),
+  },
+  {
+    name: "classify-backfill-failed",
+    inputs: () =>
+      base({
+        prereq: healthyPrereq({
+          lastClassifyBackfill: { at: "2026-04-24T11:00:00Z", status: "failed" },
+        }),
+      }),
+  },
+  {
+    name: "stale-scrape",
+    inputs: () =>
+      base({
+        prereq: healthyPrereq({
+          lastScrape: { at: "2026-04-24T08:00:00Z", status: "completed" },
+        }),
+      }),
+  },
+]
+
+test("invariant: non-healthy scenarios never return state=healthy", () => {
+  for (const { name, inputs } of NON_HEALTHY_SCENARIOS) {
+    const vm = derivePipelineFreshness(inputs())
+    assert.notEqual(
+      vm.state,
+      "healthy",
+      `${name} must not surface as healthy (got state=${vm.state}, reason=${vm.reason})`,
+    )
+  }
+})
+
+test("invariant: every view model has a non-empty headline", () => {
+  const scenarios = [
+    () => base(),
+    () =>
+      base({
+        prereq: healthyPrereq({ observationsInWindow: 0, classifiedCount: 0, clusteredCount: 0 }),
+      }),
+    ...NON_HEALTHY_SCENARIOS.map((s) => s.inputs),
+  ]
+  for (const scenario of scenarios) {
+    const vm = derivePipelineFreshness(scenario())
+    assert.ok(
+      vm.headline.length > 0,
+      `headline must be non-empty for state=${vm.state} reason=${vm.reason}`,
+    )
+  }
+})
+
+test("invariant: failure and degraded states surface a CTA unless the reason is openai-missing-without-observations", () => {
+  // openai-missing only matters when observations exist; without data
+  // the openaiConfigured branch isn't reachable. We exclude that edge
+  // case from the invariant.
+  for (const { name, inputs } of NON_HEALTHY_SCENARIOS) {
+    const vm = derivePipelineFreshness(inputs())
+    if (vm.state === "failure" || vm.state === "degraded") {
+      assert.ok(vm.cta, `${name} (state=${vm.state}) expected to expose a CTA`)
+      assert.ok(vm.cta!.href.length > 0, `${name}: CTA href must be non-empty`)
+      assert.ok(vm.cta!.label.length > 0, `${name}: CTA label must be non-empty`)
+    }
+  }
+})
+
+test("invariant: healthy state never exposes a CTA (caught up = no nag)", () => {
+  const vm = derivePipelineFreshness(base())
+  assert.equal(vm.state, "healthy")
+  assert.equal(vm.cta, null)
+})
+
+test("invariant: loading/unknown never emit a ratio string that could look healthy", () => {
+  const loading = derivePipelineFreshness(
+    base({ prereq: undefined, pendingReviewCount: undefined }),
+  )
+  const nullPrereq = derivePipelineFreshness(base({ prereq: null, pendingReviewCount: undefined }))
+  for (const vm of [loading, nullPrereq]) {
+    assert.equal(vm.metrics.classified.value, null)
+    assert.equal(vm.metrics.clustered.value, null)
+    assert.equal(vm.metrics.pendingReview.value, null)
+    // No healthy-looking "100%" strings.
+    assert.equal(vm.metrics.classified.status, "unknown")
+    assert.equal(vm.metrics.clustered.status, "unknown")
+  }
+})
+
+test("invariant: ratios with total=0 render as '0 / 0' (never as 100%)", () => {
+  const vm = derivePipelineFreshness(
+    base({
+      prereq: healthyPrereq({
+        observationsInWindow: 0,
+        classifiedCount: 0,
+        clusteredCount: 0,
+      }),
+    }),
+  )
+  assert.equal(vm.metrics.classified.value, "0 / 0")
+  assert.equal(vm.metrics.clustered.value, "0 / 0")
+  assert.equal(vm.metrics.classified.status, "unknown")
+})
+
+test("invariant: all five legal states are reachable via the public input surface", () => {
+  const reached = new Set<string>()
+  reached.add(derivePipelineFreshness(base()).state) // healthy
+  reached.add(
+    derivePipelineFreshness(
+      base({
+        prereq: healthyPrereq({ observationsInWindow: 0, classifiedCount: 0, clusteredCount: 0 }),
+      }),
+    ).state,
+  ) // empty
+  reached.add(
+    derivePipelineFreshness(
+      base({ prereq: healthyPrereq({ classifiedCount: 4, pendingClassification: 6 }) }),
+    ).state,
+  ) // degraded
+  reached.add(
+    derivePipelineFreshness(
+      base({
+        prereq: healthyPrereq({
+          lastScrape: { at: "2026-04-24T10:00:00Z", status: "failed" },
+        }),
+      }),
+    ).state,
+  ) // failure
+  reached.add(derivePipelineFreshness(base({ prereq: undefined })).state) // unknown
+
+  assert.deepEqual(
+    Array.from(reached).sort(),
+    ["degraded", "empty", "failure", "healthy", "unknown"].sort(),
+  )
+})
+
+test("invariant: reason code stays within the documented enum", () => {
+  const allowed = new Set([
+    "loading",
+    "stats-endpoint-errored",
+    "prereq-null",
+    "last-scrape-failed",
+    "openai-key-missing",
+    "classify-backfill-failed",
+    "pending-classification",
+    "pending-clustering",
+    "pending-classification-and-clustering",
+    "no-observations-in-window",
+    "all-caught-up",
+  ])
+  const scenarios = [
+    () => base(),
+    () =>
+      base({
+        prereq: healthyPrereq({ observationsInWindow: 0, classifiedCount: 0, clusteredCount: 0 }),
+      }),
+    ...NON_HEALTHY_SCENARIOS.map((s) => s.inputs),
+  ]
+  for (const scenario of scenarios) {
+    const vm = derivePipelineFreshness(scenario())
+    assert.ok(
+      allowed.has(vm.reason),
+      `reason '${vm.reason}' for state=${vm.state} is not in the documented enum`,
+    )
+  }
+})
+
+test("custom freshness SLA: a tighter SLA downgrades a pipeline that passes the default", () => {
+  const prereq = healthyPrereq({
+    // 30 min ago — fresh for the default 120-min SLA, stale for a 10-min SLA.
+    lastScrape: { at: "2026-04-24T11:30:00Z", status: "completed" },
+  })
+  const defaultVm = derivePipelineFreshness(base({ prereq }))
+  const tightVm = derivePipelineFreshness(base({ prereq, freshnessSlaMinutes: 10 }))
+  assert.equal(defaultVm.state, "healthy")
+  assert.equal(tightVm.state, "degraded")
+  assert.match(tightVm.headline, /stale/i)
+})
+
+test("custom freshness SLA: disabling via very large SLA never triggers stale", () => {
+  const prereq = healthyPrereq({
+    // 1 week ago — definitely stale for the default, but not for a 1-year SLA.
+    lastScrape: { at: "2026-04-17T12:00:00Z", status: "completed" },
+  })
+  const vm = derivePipelineFreshness(
+    base({ prereq, freshnessSlaMinutes: 60 * 24 * 365 }),
+  )
+  assert.equal(vm.state, "healthy")
+})
+
+test("formatTimestamp is used for the last-scrape display value", () => {
+  let received: string | null = null
+  const vm = derivePipelineFreshness(
+    base({
+      formatTimestamp: (iso: string) => {
+        received = iso
+        return "CUSTOM_FORMAT"
+      },
+    }),
+  )
+  assert.equal(vm.metrics.lastScrape.value, "CUSTOM_FORMAT")
+  assert.equal(received, "2026-04-24T11:59:00Z")
+})

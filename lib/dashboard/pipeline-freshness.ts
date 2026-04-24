@@ -219,12 +219,21 @@ export function derivePipelineFreshness(
     }
 
     const primary = pickPrimaryCta(prereq)
-    const cta =
+    let cta: { href: string; label: string } | null =
       primary.kind === "classify-backfill" || primary.kind === "clustering"
         ? { href: primary.href, label: primary.label }
         : primary.kind === "openai-missing"
           ? { href: "/admin", label: "Configure OpenAI key" }
           : null
+    // Fallback: `pickPrimaryCta` returns `{ kind: "none" }` when nothing is
+    // pending, but a failed classify-backfill run still puts us in the
+    // degraded state above — and the user still needs a way to retry. Link
+    // to the classify-backfill admin tab so there is always an actionable
+    // next step for a non-healthy state. See invariant test:
+    // "failure and degraded states surface a CTA".
+    if (!cta && lastClassifyBackfillFailed) {
+      cta = { href: "/admin?tab=classify-backfill", label: "Retry classify-backfill" }
+    }
 
     return {
       state: "degraded",
