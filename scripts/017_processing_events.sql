@@ -1,5 +1,6 @@
--- 016_processing_events.sql
+-- 017_processing_events.sql
 -- Immutable stage-transition log for per-observation processing traceability.
+-- (Renumbered from 016 — 016_cluster_health_read_model.sql already held that slot.)
 
 create table if not exists processing_events (
   id uuid primary key default gen_random_uuid(),

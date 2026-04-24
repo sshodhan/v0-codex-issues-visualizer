@@ -103,7 +103,7 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "observation_embeddings",
     // Bug fingerprints (013).
     "bug_fingerprints",
-    // Processing trace events (016).
+    // Processing trace events (017).
     "processing_events",
   ],
   views: [
@@ -201,7 +201,7 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // ---- scrape logs (002 + hand-added status filter) ----
     "idx_scrape_logs_source",
     "idx_scrape_logs_status",
-    // ---- processing events (016) ----
+    // ---- processing events (017) ----
     "idx_processing_events_observation_created",
     "idx_processing_events_stage_created",
   ],
