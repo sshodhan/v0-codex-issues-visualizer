@@ -73,7 +73,7 @@ function DashboardContentInner() {
     return asOfRaw
   }, [asOfRaw])
 
-  const [activeTab, setActiveTab] = useState("dashboard")
+  const [activeTab, setActiveTab] = useState("v3")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [globalDays, setGlobalDays] = useState(30)
   const [globalCategory, setGlobalCategory] = useState("all")
@@ -246,7 +246,7 @@ function DashboardContentInner() {
   }
 
   const handleHeroExploreIssues = (categorySlug: string) => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => {
@@ -259,7 +259,7 @@ function DashboardContentInner() {
   }
 
   const scrollToIssuesTable = () => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => {
         document.getElementById("issues-table-anchor")?.scrollIntoView({
@@ -271,12 +271,12 @@ function DashboardContentInner() {
   }
 
   const handleStoryDrillError = (compoundKey: string) => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     handleFilterChange({ compound_key: compoundKey })
   }
 
   const handleStoryOpenClusterInTable = (clusterId: string) => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     handleFilterChange({ cluster_id: clusterId })
   }
 
@@ -344,7 +344,7 @@ function DashboardContentInner() {
   }
 
   const handleOpenDashboardFromStoryAtlas = () => {
-    setActiveTab("dashboard")
+    setActiveTab("v3")
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }))
     }
@@ -587,10 +587,14 @@ function DashboardContentInner() {
           />
         ) : (
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-            <TabsList className="grid w-full max-w-2xl grid-cols-3 mx-auto h-auto p-1 gap-0">
+            <TabsList className="grid w-full max-w-2xl grid-cols-4 mx-auto h-auto p-1 gap-0">
               <TabsTrigger value="dashboard" className="gap-1.5 text-xs sm:text-sm py-2.5">
                 <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
                 <span className="truncate">Dashboard</span>
+              </TabsTrigger>
+              <TabsTrigger value="v3" className="gap-1.5 text-xs sm:text-sm py-2.5">
+                <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                <span className="truncate">V3</span>
               </TabsTrigger>
               <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
                 <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
@@ -610,6 +614,196 @@ function DashboardContentInner() {
 
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
+              {isV2 && (
+                <DataProvenanceStrip
+                  lastSyncLabel={lastScrapeTime}
+                  issueWindowLabel={globalTimeLabel}
+                  asOfActive={asOf != null}
+                />
+              )}
+
+              {/*
+                V1: fingerprint surges (bug signal) above the hero — original hierarchy.
+                V2: hero-first narrative, then surges (see prior NYT-style work).
+              */}
+              {isV2 ? (
+                <>
+                  <HeroInsight
+                    topInsight={heroInsight}
+                    onExploreIssues={handleHeroExploreIssues}
+                    onNavigateToCategory={handleNavigateToCategory}
+                    issueTableTimeLabel={globalTimeLabel}
+                    variant="v2"
+                  />
+                  <FingerprintSurgeCard
+                    data={fingerprintSurges}
+                    windowHours={24}
+                    windowLabelForCopy={fingerprintWindowLabel}
+                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+                    variant="v2"
+                  />
+                </>
+              ) : (
+                <>
+                  <FingerprintSurgeCard
+                    data={fingerprintSurges}
+                    windowHours={24}
+                    windowLabelForCopy={fingerprintWindowLabel}
+                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+                    variant="v1"
+                  />
+                  <HeroInsight
+                    topInsight={heroInsight}
+                    onExploreIssues={handleHeroExploreIssues}
+                    onNavigateToCategory={handleNavigateToCategory}
+                    issueTableTimeLabel={globalTimeLabel}
+                    variant="v1"
+                  />
+                </>
+              )}
+
+              {/* Secondary KPI Cards - Insight-first design */}
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {kpiSummary.topRiskCategory && (
+                  <InsightKpiCard
+                    category={kpiSummary.topRiskCategory.name}
+                    headline={`${kpiSummary.topRiskCategory.name} has the highest urgency score combining volume, sentiment, and impact.`}
+                    metrics={{
+                      total: kpiSummary.topRiskCategory.total,
+                      negativeShare: kpiSummary.topRiskCategory.negativeShare,
+                      avgImpact: kpiSummary.topRiskCategory.avgImpact,
+                    }}
+                    topIssue={kpiSummary.topRiskCategory.topIssue || undefined}
+                    variant="risk"
+                  />
+                )}
+                
+                {kpiSummary.mostImpactfulTheme && kpiSummary.mostImpactfulTheme.name !== kpiSummary.topRiskCategory?.name && (
+                  <InsightKpiCard
+                    category={kpiSummary.mostImpactfulTheme.name}
+                    headline={`Highest average impact score among categories with sustained volume.`}
+                    metrics={{
+                      total: kpiSummary.mostImpactfulTheme.total,
+                      negativeShare: kpiSummary.mostImpactfulTheme.negativeShare,
+                      avgImpact: kpiSummary.mostImpactfulTheme.avgImpact,
+                    }}
+                    topIssue={kpiSummary.mostImpactfulTheme.topIssue || undefined}
+                    variant="impact"
+                  />
+                )}
+
+                {/* Orientation metric - kept minimal */}
+                <StatCard
+                  title="Total Signals"
+                  value={kpiSummary.totalSignals}
+                  subtitle="Baseline volume across all sources"
+                  contextText={kpiSummary.otherRate > 10 
+                    ? `${kpiSummary.otherRate.toFixed(0)}% uncategorized - consider taxonomy review`
+                    : "Use trends and categories for prioritization, not raw counts."
+                  }
+                  icon={<BarChart3 className="h-5 w-5" />}
+                  variant={kpiSummary.otherRate > 15 ? "warning" : "default"}
+                />
+              </div>
+
+              {/* Global Filters */}
+              <GlobalFilterBar
+                timeDays={globalDays}
+                onTimeChange={setGlobalDays}
+                categoryOptions={categoryOptions}
+                categoryValue={globalCategory}
+                onCategoryChange={setGlobalCategory}
+              />
+
+              {/* Charts Row - Visual context */}
+              <div className="grid gap-6 lg:grid-cols-3">
+                <SentimentChart data={stats.sentimentBreakdown} />
+                <SourceChart data={stats.sourceBreakdown} />
+                <CategoryHeatmap data={stats.categorySentimentBreakdown} />
+              </div>
+
+              {/* Priority Matrix - Actionable view */}
+              <PriorityMatrix
+                data={stats.priorityMatrix}
+                onFilterChange={handleFilterChange}
+                variant={isV2 ? "v2" : "v1"}
+              />
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <RealtimeInsights
+                  insights={stats.realtimeInsights}
+                  skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
+                />
+                <CompetitiveMentions
+                  mentions={stats.competitiveMentions || []}
+                  meta={stats.competitiveMentionsMeta}
+                />
+              </div>
+
+              {/* Trend Chart - Historical context */}
+              {stats.trendData.length > 0 && (
+                <TrendChart data={stats.trendData} />
+              )}
+
+              <section className="space-y-3">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <h3 className="text-xl font-semibold">Top Families (primary workflow)</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Family = semantic/title fallback. Variant = regex fingerprint. Triage = LLM + review judgment.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={scrollToIssuesTable}>
+                    Issues table (secondary drill-down)
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {(clusterRollup?.clusters || []).slice(0, 6).map((cluster) => {
+                    const familyLabel =
+                      cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.6
+                        ? cluster.label
+                        : cluster.representative_title || "Unlabelled family"
+                    return (
+                      <Link
+                        key={cluster.id}
+                        href={`/families/${cluster.id}?days=${globalDays}`}
+                        className="block"
+                      >
+                        <Card className="h-full transition-colors hover:border-primary/60 hover:bg-muted/30">
+                          <CardContent className="p-4 space-y-2">
+                            <p className="font-medium line-clamp-2">{familyLabel}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {cluster.count} observations · {cluster.classified_count} triaged ·{" "}
+                              {cluster.source_count ?? 0} sources
+                            </p>
+                            <ClusterTrustRibbon cluster={cluster} />
+                          </CardContent>
+                        </Card>
+                      </Link>
+                    )
+                  })}
+                </div>
+              </section>
+
+              {/* Issues Table - Deep dive zone */}
+              <div id="issues-table-anchor" className="scroll-mt-20">
+                <IssuesTable
+                  issues={issues}
+                  isLoading={issuesLoading}
+                  globalTimeLabel={globalTimeLabel}
+                  globalCategoryLabel={globalCategoryLabel}
+                  observationCount={issues.length}
+                  canonicalCount={stats?.totalIssues || issues.length}
+                  onFilterChange={handleFilterChange}
+                  activeCompoundKey={compoundKeyFromUrl}
+                  activeClusterId={clusterIdFromUrl ?? undefined}
+                  activeClusterLabel={activeClusterLabel ?? undefined}
+                />
+              </div>
+            </TabsContent>
+
+            {/* V3 Tab */}
+            <TabsContent value="v3" className="space-y-8 mt-6">
               {isV2 && (
                 <DataProvenanceStrip
                   lastSyncLabel={lastScrapeTime}
