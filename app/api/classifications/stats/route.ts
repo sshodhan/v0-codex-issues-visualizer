@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { logServerError } from "@/lib/error-tracking/server-logger"
 import { buildPipelineStateSummary, type PipelineStateSummary } from "@/lib/classification/pipeline-state"
+import { MIN_IMPACT_SCORE } from "@/lib/classification/run-backfill-constants"
 
 // Aggregates over classifications joined with their latest review (effective
 // state). Traceability coverage is derived from the presence of
@@ -42,6 +43,14 @@ interface PrerequisiteStatus {
   clusteredCount: number
   pendingClassification: number
   pendingClustering: number
+  /**
+   * Subset of `pendingClassification` with impact_score >= MIN_IMPACT_SCORE.
+   * The classify-backfill panel's candidate query uses the same filter, so
+   * this is the count that would actually be processed by "Run until done".
+   * When it differs from `pendingClassification`, the banner surfaces both
+   * numbers and `pickPrimaryCta` suppresses the Run CTA.
+   */
+  highImpactPendingClassification: number
   openaiConfigured: boolean
   lastScrape: { at: string | null; status: string | null }
   lastClassifyBackfill: { at: string | null; status: string | null }
@@ -74,30 +83,42 @@ async function computePrerequisites(
       return q
     }
 
-    const [obsRes, classifiedRes, clusteredRes, lastScrapeRes, lastBackfillRes] =
-      await Promise.all([
-        obsBase(),
-        obsBase().not("llm_classified_at", "is", null),
-        obsBase().not("cluster_id", "is", null),
-        supabase
-          .from("scrape_logs")
-          .select("started_at, completed_at, status")
-          .not("source_id", "is", null)
-          .order("started_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        supabase
-          .from("scrape_logs")
-          .select("started_at, completed_at, status")
-          .is("source_id", null)
-          .order("started_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-      ])
+    const [
+      obsRes,
+      classifiedRes,
+      clusteredRes,
+      highImpactPendingRes,
+      lastScrapeRes,
+      lastBackfillRes,
+    ] = await Promise.all([
+      obsBase(),
+      obsBase().not("llm_classified_at", "is", null),
+      obsBase().not("cluster_id", "is", null),
+      // Mirrors run-backfill.ts's candidate query: unclassified canonical
+      // observations at or above MIN_IMPACT_SCORE. When this is 0 but
+      // total pending > 0, the banner needs to say "all below threshold"
+      // and suppress the Run CTA.
+      obsBase().is("llm_classified_at", null).gte("impact_score", MIN_IMPACT_SCORE),
+      supabase
+        .from("scrape_logs")
+        .select("started_at, completed_at, status")
+        .not("source_id", "is", null)
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("scrape_logs")
+        .select("started_at, completed_at, status")
+        .is("source_id", null)
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ])
 
     const observationsInWindow = obsRes.count ?? 0
     const classifiedCount = classifiedRes.count ?? 0
     const clusteredCount = clusteredRes.count ?? 0
+    const highImpactPendingClassification = highImpactPendingRes.count ?? 0
 
     const pickTs = (row: { completed_at?: string | null; started_at?: string | null } | null) =>
       row?.completed_at ?? row?.started_at ?? null
@@ -108,6 +129,7 @@ async function computePrerequisites(
       clusteredCount,
       pendingClassification: Math.max(0, observationsInWindow - classifiedCount),
       pendingClustering: Math.max(0, observationsInWindow - clusteredCount),
+      highImpactPendingClassification,
       openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
       lastScrape: {
         at: pickTs(lastScrapeRes.data),
@@ -124,6 +146,7 @@ async function computePrerequisites(
         observationsInWindow,
         classifiedCount,
         clusteredCount,
+        highImpactPendingClassification,
         openaiConfigured: prerequisites.openaiConfigured,
         lastClassifyBackfillStatus: prerequisites.lastClassifyBackfill.status,
       }),

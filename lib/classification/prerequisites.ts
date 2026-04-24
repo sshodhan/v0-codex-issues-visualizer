@@ -14,6 +14,14 @@ export interface PrerequisiteStatus {
   clusteredCount: number
   pendingClassification: number
   pendingClustering: number
+  /**
+   * Unclassified observations whose impact_score meets the classify-backfill
+   * threshold (MIN_IMPACT_SCORE). `pendingClassification` counts every
+   * unclassified row; this field counts only those the backfill would
+   * actually process. When the two differ, the banner is misleading unless
+   * it exposes both numbers — see pickPrimaryCta below.
+   */
+  highImpactPendingClassification: number
   openaiConfigured: boolean
   lastScrape: { at: string | null; status: string | null }
   lastClassifyBackfill: { at: string | null; status: string | null }
@@ -47,7 +55,12 @@ export type PrereqCta =
 export function pickPrimaryCta(prereq: PrerequisiteStatus): PrereqCta {
   if (prereq.observationsInWindow === 0) return { kind: "none" }
   if (!prereq.openaiConfigured) return { kind: "openai-missing" }
-  if (prereq.pendingClassification > 0) {
+  // Only offer "Run classify-backfill" when clicking it would actually do
+  // work. If every pending row is below MIN_IMPACT_SCORE, the panel's
+  // query returns zero candidates and the button is a no-op — which is
+  // exactly the "110 awaiting classification" + "All caught up" confusion
+  // that prompted this gate.
+  if (prereq.pendingClassification > 0 && prereq.highImpactPendingClassification > 0) {
     return {
       kind: "classify-backfill",
       href: "/admin?tab=classify-backfill",

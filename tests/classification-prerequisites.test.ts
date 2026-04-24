@@ -11,17 +11,29 @@ import type { PrerequisiteStatus } from "../lib/classification/prerequisites.ts"
 //
 // See components/dashboard/classification-triage.tsx → pickPrimaryCta.
 
-const mkPrereq = (overrides: Partial<PrerequisiteStatus> = {}): PrerequisiteStatus => ({
-  observationsInWindow: 100,
-  classifiedCount: 100,
-  clusteredCount: 100,
-  pendingClassification: 0,
-  pendingClustering: 0,
-  openaiConfigured: true,
-  lastScrape: { at: "2026-04-23T00:00:00Z", status: "completed" },
-  lastClassifyBackfill: { at: "2026-04-23T00:00:00Z", status: "completed" },
-  ...overrides,
-})
+const mkPrereq = (overrides: Partial<PrerequisiteStatus> = {}): PrerequisiteStatus => {
+  const merged: PrerequisiteStatus = {
+    observationsInWindow: 100,
+    classifiedCount: 100,
+    clusteredCount: 100,
+    pendingClassification: 0,
+    pendingClustering: 0,
+    highImpactPendingClassification: 0,
+    openaiConfigured: true,
+    lastScrape: { at: "2026-04-23T00:00:00Z", status: "completed" },
+    lastClassifyBackfill: { at: "2026-04-23T00:00:00Z", status: "completed" },
+    ...overrides,
+  }
+  // Preserve pre-threshold-gating test expectations: when a test bumps
+  // `pendingClassification` without setting `highImpactPendingClassification`,
+  // assume every pending row is above threshold so the old CTA behavior
+  // kicks in. New tests that exercise the "below threshold" branch set
+  // `highImpactPendingClassification` explicitly.
+  if (overrides.highImpactPendingClassification === undefined) {
+    merged.highImpactPendingClassification = merged.pendingClassification
+  }
+  return merged
+}
 
 test("pickPrimaryCta returns `none` when no observations in the window", () => {
   // Nothing downstream to fix — classify-backfill with an empty input
@@ -158,4 +170,41 @@ test("lastScrape and lastClassifyBackfill are independent timestamps", () => {
   })
   // Decision tree does not consult timestamps — confirm:
   assert.equal(pickPrimaryCta(prereq).kind, "none")
+})
+
+// --- Impact-threshold gating ----------------------------------------------
+// The admin classify-backfill panel only processes observations with
+// impact_score >= MIN_IMPACT_SCORE. When every pending row is below that
+// threshold, "Run classify-backfill" is a no-op and linking the reviewer
+// to it is the exact confusion that prompted adding
+// `highImpactPendingClassification` to the prereq contract.
+
+test("pickPrimaryCta suppresses classify-backfill when all pending rows are below impact threshold", () => {
+  // 110 unclassified observations but 0 meet impact >= MIN_IMPACT_SCORE.
+  // Clicking "Run classify-backfill" would do nothing; the helper must
+  // return `none` so pipeline-freshness.ts can substitute a different
+  // CTA (e.g. "View classify-backfill policy").
+  const cta = pickPrimaryCta(
+    mkPrereq({
+      observationsInWindow: 113,
+      classifiedCount: 3,
+      pendingClassification: 110,
+      highImpactPendingClassification: 0,
+    }),
+  )
+  assert.equal(cta.kind, "none")
+})
+
+test("pickPrimaryCta returns classify-backfill when at least one row is above threshold", () => {
+  // 110 total pending, 6 of them above threshold. Backfill has work to
+  // do — surface the CTA so the reviewer can clear what they can.
+  const cta = pickPrimaryCta(
+    mkPrereq({
+      observationsInWindow: 113,
+      classifiedCount: 3,
+      pendingClassification: 110,
+      highImpactPendingClassification: 6,
+    }),
+  )
+  assert.equal(cta.kind, "classify-backfill")
 })

@@ -393,6 +393,34 @@ compute quotas are exhausted quickly.
 
 ---
 
+### P0-12: `/api/clusters/rollup` and `/api/families/[clusterId]` 500 in production — RESOLVED (v15 / migration 018)
+
+**Scope:** production deployment on `main` since commit `0daaaba` ("Shift dashboard navigation to family-first workflow", 2026-04-23). Vercel logs showed `GET /api/clusters/rollup` returning `500` continuously; V3 rails silently rendered as empty because the SWR fallback is `clusters?: []`.
+
+**Root cause:** Commit `0daaaba` changed the Supabase select from `"cluster_id, llm_classified_at"` to `"cluster_id, llm_classified_at, source_name"` — but `source_name` is not a real column on `mv_observation_current` (scripts `013_bug_fingerprints.sql:161-275` define it with `o.source_id` only, no join to `sources`). PostgREST can embed a parent table via `sources!source_id(name)` syntax, but a bare `source_name` top-level property does not resolve on a materialized view, so the query errored and propagated a 500. The same bug is present in `app/api/families/[clusterId]/route.ts:30`, so V3's "Open family" click-through was also broken — only the empty-rail fallback masked it for most users.
+
+**Fix:** `scripts/018_add_source_name_to_mv_observation_current.sql` drops `mv_cluster_health_current` + `mv_trend_daily` + `mv_observation_current` in cascade-dependency order, recreates `mv_observation_current` with `left join sources s on s.id = o.source_id` and `s.name as source_name` added to the select list, recreates the four indexes from script 013, then recreates the two dependents. No application code changes — the existing `.select("..., source_name")` calls start working once the MV is rebuilt.
+
+**Observability added:** every 500 path in `app/api/clusters/rollup/route.ts` now calls `logServerError("clusters-rollup", <event>, err, { ... })` so a future regression leaves a trace in production logs instead of a silent 500.
+
+**Covered by:** migration script + existing production Vercel logs (showing the 500s stop post-deploy).
+
+### P0-13: Dashboard banner and Admin classify-backfill disagree about "pending classification" — RESOLVED (v15)
+
+**Scope:** reviewers reported clicking "Run classify-backfill" from the dashboard banner ("110 awaiting classification") and landing on the admin panel which said "0 pending candidates / All caught up". "Run until done" was a silent no-op.
+
+**Root cause:** two counts with different semantics:
+- **Banner** (`lib/dashboard/pipeline-freshness.ts:212`) used `prereq.pendingClassification = observationsInWindow − classifiedCount` (no threshold).
+- **Admin** (`lib/classification/run-backfill.ts:62`) filters candidates with `.gte("impact_score", MIN_IMPACT_SCORE)` (= 6, see `lib/classification/run-backfill-constants.ts:12`).
+
+When every unclassified row was below impact 6, the two surfaces contradicted each other and the CTA did nothing.
+
+**Fix:** extended `PrerequisiteStatus` with `highImpactPendingClassification` (new count query in `/api/classifications/stats` that mirrors the backfill filter). `pickPrimaryCta` suppresses the "Run classify-backfill" CTA when `highImpactPendingClassification === 0` and the banner copy reads `"N awaiting classification (all below impact-6 threshold)"` instead. Pipeline-freshness falls back to a `"View classify-backfill policy"` link so reviewers still have a next step. Admin panel shows a "N total below-threshold not processed" sub-label under "Pending candidates" when the split applies, so the admin view acknowledges rather than contradicts the banner.
+
+**Covered by:** new tests in `tests/classification-prerequisites.test.ts` (CTA suppression branches) and `lib/dashboard/pipeline-freshness.test.ts` (banner copy branches).
+
+---
+
 ## P1 — Significant quality or correctness loss
 
 ### P1-1: Error state, empty state, and "no env vars" all render identically

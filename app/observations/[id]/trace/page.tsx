@@ -5,6 +5,7 @@ import { useParams } from "next/navigation"
 import { useEffect, useState, type ReactNode } from "react"
 import { ArrowLeft, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { logClientError } from "@/lib/error-tracking/client-logger"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 interface ObservationTraceResponse {
@@ -96,7 +97,12 @@ export default function ObservationTracePage() {
             return
           }
           const text = await traceRes.text().catch(() => "")
-          setError(text ? `HTTP ${traceRes.status}: ${text.slice(0, 200)}` : `HTTP ${traceRes.status}`)
+          const msg = text ? `HTTP ${traceRes.status}: ${text.slice(0, 200)}` : `HTTP ${traceRes.status}`
+          setError(msg)
+          logClientError(new Error(msg), "reviewer-trace-fetch-non-ok", {
+            observationId: id,
+            status: traceRes.status,
+          })
           return
         }
         const traceBody = (await traceRes.json()) as ObservationTraceResponse
@@ -111,6 +117,7 @@ export default function ObservationTracePage() {
       .catch((e) => {
         if (cancelled) return
         setError(e instanceof Error ? e.message : "Failed to load trace")
+        logClientError(e, "reviewer-trace-fetch-failed", { observationId: id })
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
