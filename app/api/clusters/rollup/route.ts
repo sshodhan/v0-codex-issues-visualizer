@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { buildPipelineStateSummary } from "@/lib/classification/pipeline-state"
+import { logServerError } from "@/lib/error-tracking/server-logger"
 
 /**
  * GET /api/clusters/rollup?days=30&category=bug
@@ -108,6 +109,7 @@ export async function GET(request: NextRequest) {
 
   const { data: rows, error } = await q
   if (error) {
+    logServerError("clusters-rollup", "main_rows_query_failed", error, { days, categorySlug })
     return NextResponse.json({ error: error.message, pipeline_state }, { status: 500 })
   }
 
@@ -141,6 +143,7 @@ export async function GET(request: NextRequest) {
     )
 
   if (cErr) {
+    logServerError("clusters-rollup", "clusters_labels_query_failed", cErr, { topClusterCount: sorted.length })
     return NextResponse.json({ error: cErr.message, pipeline_state }, { status: 500 })
   }
 
@@ -212,9 +215,11 @@ export async function GET(request: NextRequest) {
   ])
 
   if (healthResult.error) {
+    logServerError("clusters-rollup", "health_query_failed", healthResult.error, { topClusterCount: topIds.length })
     return NextResponse.json({ error: healthResult.error.message, pipeline_state }, { status: 500 })
   }
   if (fpResult.error) {
+    logServerError("clusters-rollup", "fingerprint_query_failed", fpResult.error, { topClusterCount: topIds.length })
     return NextResponse.json({ error: fpResult.error.message, pipeline_state }, { status: 500 })
   }
   const healthMap = new Map((healthResult.data || []).map((h: any) => [h.cluster_id, h]))

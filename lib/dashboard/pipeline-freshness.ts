@@ -14,6 +14,7 @@
 //   - components/dashboard/pipeline-freshness-strip.tsx (renderer)
 
 import { pickPrimaryCta, type PrerequisiteStatus } from "../classification/prerequisites.ts"
+import { MIN_IMPACT_SCORE } from "../classification/run-backfill-constants.ts"
 
 export type PipelineFreshnessState =
   | "healthy"
@@ -209,7 +210,24 @@ export function derivePipelineFreshness(
 
     const parts: string[] = []
     if (prereq.pendingClassification > 0) {
-      parts.push(`${prereq.pendingClassification} awaiting classification`)
+      // When `highImpactPendingClassification` is provided and differs
+      // from the raw pending count, split the message so the reviewer
+      // understands that "Run classify-backfill" can only work on the
+      // high-impact subset. When the two are equal (or only one number
+      // is available for an older consumer) fall back to the original
+      // single-number phrasing so nothing regresses.
+      const high = prereq.highImpactPendingClassification
+      if (high > 0 && high < prereq.pendingClassification) {
+        parts.push(
+          `${prereq.pendingClassification} awaiting classification (${high} high-impact)`,
+        )
+      } else if (high === 0 && prereq.pendingClassification > 0) {
+        parts.push(
+          `${prereq.pendingClassification} awaiting classification (all below impact-${MIN_IMPACT_SCORE} threshold)`,
+        )
+      } else {
+        parts.push(`${prereq.pendingClassification} awaiting classification`)
+      }
     }
     if (prereq.pendingClustering > 0) {
       parts.push(`${prereq.pendingClustering} awaiting clustering`)
@@ -225,6 +243,24 @@ export function derivePipelineFreshness(
         : primary.kind === "openai-missing"
           ? { href: "/admin", label: "Configure OpenAI key" }
           : null
+    // When every pending row is below the impact threshold there's still
+    // value in pointing the reviewer at the admin panel — they can see
+    // the policy, lower the threshold, or confirm the deferral is
+    // intentional. `pickPrimaryCta` now returns `{ kind: "none" }` in
+    // that case (it used to return a "Run classify-backfill" CTA that
+    // did nothing); substitute a "View classify-backfill policy" link so
+    // the strip still has an actionable next step.
+    if (
+      !cta &&
+      prereq.pendingClassification > 0 &&
+      prereq.highImpactPendingClassification === 0 &&
+      prereq.openaiConfigured
+    ) {
+      cta = {
+        href: "/admin?tab=classify-backfill",
+        label: "View classify-backfill policy",
+      }
+    }
     // Fallback: `pickPrimaryCta` returns `{ kind: "none" }` when nothing is
     // pending, but a failed classify-backfill run still puts us in the
     // degraded state above — and the user still needs a way to retry. Link

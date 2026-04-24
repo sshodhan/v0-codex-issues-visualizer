@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { requireAdminSecret } from "@/lib/admin/auth"
 import {
   countBackfillCandidates,
+  countBackfillCandidatesAllImpact,
   runClassifyBackfill,
   MIN_IMPACT_SCORE,
 } from "@/lib/classification/run-backfill"
@@ -40,9 +41,16 @@ export async function GET(request: NextRequest) {
 
   const supabase = createAdminClient()
   try {
-    const pendingCandidates = await countBackfillCandidates(supabase)
+    // Parallel: candidate-count queries are independent and share the
+    // same MV + index, so issuing both at once avoids doubling the
+    // panel's load latency when MIN_IMPACT_SCORE differs from 0.
+    const [pendingCandidates, pendingCandidatesAllImpact] = await Promise.all([
+      countBackfillCandidates(supabase),
+      countBackfillCandidatesAllImpact(supabase),
+    ])
     return NextResponse.json({
       pendingCandidates,
+      pendingCandidatesAllImpact,
       defaultLimit: DEFAULT_LIMIT,
       maxLimit: MAX_LIMIT,
       minImpactScore: MIN_IMPACT_SCORE,
@@ -50,6 +58,7 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    logServerError("classify-backfill", "get_stats_failed", error)
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

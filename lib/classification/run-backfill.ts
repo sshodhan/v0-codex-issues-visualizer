@@ -161,3 +161,25 @@ export async function countBackfillCandidates(
   }
   return count ?? 0
 }
+
+// Count all unclassified canonical observations regardless of impact score.
+// Paired with `countBackfillCandidates`: when the two differ, the admin
+// panel shows both numbers so operators understand why "Run until done"
+// stops at 0 even though the dashboard banner says there are more rows
+// awaiting classification (the below-threshold subset is intentionally
+// deferred per MIN_IMPACT_SCORE policy).
+export async function countBackfillCandidatesAllImpact(
+  supabase: AdminClient,
+): Promise<number> {
+  const { count, error } = await supabase
+    .from("mv_observation_current")
+    .select("observation_id", { count: "exact", head: true })
+    .is("llm_classified_at", null)
+    .eq("is_canonical", true)
+
+  if (error) {
+    logServerError("classify-backfill", "count_all_impact_failed", error)
+    throw error
+  }
+  return count ?? 0
+}

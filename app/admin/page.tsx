@@ -131,7 +131,13 @@ interface ClusterBatchRow {
 }
 
 interface ClassifyBackfillStats {
+  /** Unclassified canonical rows at or above MIN_IMPACT_SCORE — what
+   *  "Run until done" will actually process. */
   pendingCandidates: number
+  /** Every unclassified canonical row regardless of impact score. When
+   *  this exceeds `pendingCandidates`, the dashboard banner and this
+   *  panel would otherwise contradict each other. */
+  pendingCandidatesAllImpact?: number
   defaultLimit: number
   maxLimit: number
   minImpactScore: number
@@ -1661,6 +1667,13 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
             <div className="text-xl font-semibold tabular-nums">
               {stats ? stats.pendingCandidates.toLocaleString() : "—"}
             </div>
+            {stats &&
+              stats.pendingCandidatesAllImpact !== undefined &&
+              stats.pendingCandidatesAllImpact > stats.pendingCandidates ? (
+              <div className="mt-1 text-[11px] text-muted-foreground leading-tight">
+                {stats.pendingCandidatesAllImpact.toLocaleString()} total below-threshold not processed
+              </div>
+            ) : null}
           </div>
           <div className="rounded-md border p-3">
             <div className="text-xs text-muted-foreground">Default limit</div>

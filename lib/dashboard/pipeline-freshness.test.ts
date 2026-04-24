@@ -11,18 +11,27 @@ const NOW = new Date("2026-04-24T12:00:00Z")
 const fixedNow = () => NOW
 
 function healthyPrereq(overrides: Partial<PrerequisiteStatus> = {}): PrerequisiteStatus {
-  return {
+  const merged: PrerequisiteStatus = {
     observationsInWindow: 10,
     classifiedCount: 10,
     clusteredCount: 10,
     pendingClassification: 0,
     pendingClustering: 0,
+    highImpactPendingClassification: 0,
     openaiConfigured: true,
     // 1 min before NOW — well inside any SLA.
     lastScrape: { at: "2026-04-24T11:59:00Z", status: "completed" },
     lastClassifyBackfill: { at: "2026-04-24T11:58:00Z", status: "completed" },
     ...overrides,
   }
+  // Mirror the default from tests/classification-prerequisites.test.ts:
+  // when a test bumps `pendingClassification` without specifying the
+  // high-impact subset, assume every pending row is above threshold so
+  // pre-threshold-gating tests keep producing the original CTA.
+  if (overrides.highImpactPendingClassification === undefined) {
+    merged.highImpactPendingClassification = merged.pendingClassification
+  }
+  return merged
 }
 
 function base(overrides: Partial<PipelineFreshnessInputs> = {}): PipelineFreshnessInputs {
@@ -433,4 +442,71 @@ test("formatTimestamp is used for the last-scrape display value", () => {
   )
   assert.equal(vm.metrics.lastScrape.value, "CUSTOM_FORMAT")
   assert.equal(received, "2026-04-24T11:59:00Z")
+})
+
+// --- Impact-threshold split ------------------------------------------------
+// When `highImpactPendingClassification` differs from `pendingClassification`,
+// the banner needs to surface both numbers AND the CTA behavior must match
+// what the admin classify-backfill panel will actually do.
+
+test("banner: when every pending row is below impact threshold, suppress the Run CTA and explain", () => {
+  // Production repro: 110 awaiting classification, 0 high-impact. The
+  // banner must name the threshold so a reviewer understands the 0/110
+  // mismatch before clicking into the admin panel. The CTA falls back
+  // to "View classify-backfill policy" (not "Run…") so the click-
+  // through doesn't dead-end on the panel's "All caught up" message.
+  const vm = derivePipelineFreshness(
+    base({
+      prereq: healthyPrereq({
+        observationsInWindow: 113,
+        classifiedCount: 3,
+        pendingClassification: 110,
+        highImpactPendingClassification: 0,
+      }),
+    }),
+  )
+  assert.equal(vm.state, "degraded")
+  assert.equal(vm.reason, "pending-classification")
+  assert.match(vm.subtext ?? "", /below impact-\d+ threshold/)
+  assert.ok(vm.cta, "must still surface *some* CTA so the reviewer has a next step")
+  assert.match(vm.cta!.label, /policy/i)
+  assert.doesNotMatch(vm.cta!.label, /^Run /)
+})
+
+test("banner: when pending is split between high-impact and below-threshold, show both counts", () => {
+  // 110 pending total, 6 high-impact. The Run CTA is valid (backfill has
+  // 6 rows of work) and the reviewer needs to know the other 104 are
+  // not reachable via backfill without a policy change.
+  const vm = derivePipelineFreshness(
+    base({
+      prereq: healthyPrereq({
+        observationsInWindow: 113,
+        classifiedCount: 3,
+        pendingClassification: 110,
+        highImpactPendingClassification: 6,
+      }),
+    }),
+  )
+  assert.equal(vm.state, "degraded")
+  assert.match(vm.subtext ?? "", /110 awaiting classification \(6 high-impact\)/)
+  assert.ok(vm.cta)
+  assert.match(vm.cta!.href, /classify-backfill/)
+  assert.equal(vm.cta!.label, "Run classify-backfill")
+})
+
+test("banner: when high-impact and total pending match, copy stays single-number (no regression)", () => {
+  // All 5 pending rows are high-impact → no reason to clutter the
+  // banner with "(5 high-impact)". This preserves the pre-split copy.
+  const vm = derivePipelineFreshness(
+    base({
+      prereq: healthyPrereq({
+        classifiedCount: 5,
+        pendingClassification: 5,
+        // highImpactPendingClassification defaulted to 5 via healthyPrereq
+      }),
+    }),
+  )
+  assert.match(vm.subtext ?? "", /5 awaiting classification/)
+  assert.doesNotMatch(vm.subtext ?? "", /high-impact/)
+  assert.doesNotMatch(vm.subtext ?? "", /below impact/)
 })

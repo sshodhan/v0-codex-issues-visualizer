@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Sparkles, Cpu, Terminal, FileCode2, RefreshCcw } from "lucide-react"
 import { getConfidenceBandDisplay } from "@/lib/classification/confidence-display"
+import { logClientError } from "@/lib/error-tracking/client-logger"
 
 // Layered "how did we reach this signal" panel. Shows three stacked
 // layers for a single observation so users can see how each pass
@@ -93,8 +94,13 @@ export function SignalLayers(props: SignalLayersProps) {
         if (body.llm) setLlm(body.llm)
         if (body.compound_key) setCompoundKey(body.compound_key)
       })
-      .catch(() => {
-        // Non-fatal: the UI still works without an existing classification.
+      .catch((err) => {
+        // Non-fatal: the UI still works without an existing classification,
+        // but log so a rate-limit spike or regression shows up in telemetry
+        // instead of being silently discarded.
+        logClientError(err, "signal-layers-classification-fetch-failed", {
+          observationId,
+        })
       })
       .finally(() => {
         if (!cancelled) setFetching(false)
@@ -134,6 +140,7 @@ export function SignalLayers(props: SignalLayersProps) {
       if (body.compound_key) setCompoundKey(body.compound_key)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error")
+      logClientError(err, "signal-layers-classifier-run-failed", { observationId })
     } finally {
       setLoading(false)
     }
