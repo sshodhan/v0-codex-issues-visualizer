@@ -94,7 +94,7 @@ export function V3View({ clusters, days }: { clusters: ClusterRollupRow[]; days:
                           </Button>
                           {cluster.representative_observation_id ? (
                             <Button asChild size="sm" variant="ghost">
-                              <Link href={`/admin?tab=trace&observation=${cluster.representative_observation_id}`}>
+                              <Link href={`/observations/${cluster.representative_observation_id}/trace`}>
                                 View trace
                               </Link>
                             </Button>

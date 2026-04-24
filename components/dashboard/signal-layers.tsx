@@ -267,7 +267,7 @@ export function SignalLayers(props: SignalLayersProps) {
       ) : null}
       <div>
         <Link
-          href={`/admin?tab=trace&observation=${observationId}`}
+          href={`/observations/${observationId}/trace`}
           className="text-[11px] text-primary hover:underline"
         >
           Open full observation trace
