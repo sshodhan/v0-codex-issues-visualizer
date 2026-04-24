@@ -2,9 +2,9 @@ import { z } from "zod"
 import type { createAdminClient } from "@/lib/supabase/admin"
 import { toClassificationPayload, type ClassificationApiRecord } from "@/lib/classification/mapping"
 import { buildClassificationUserTurn } from "@/lib/classification/report-summary"
-import { evidenceQuotesAreSubstrings, validateEnumFields } from "@/lib/classification/schema"
+import { evidenceQuotesAreSubstrings, sanitizeEvidenceQuotes, validateEnumFields } from "@/lib/classification/schema"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
-import { requestClassifierResponse } from "@/lib/classification/openai-responses"
+import { extractResponsesOutputText, requestClassifierResponse } from "@/lib/classification/openai-responses"
 import { recordClassification } from "@/lib/storage/derivations"
 import { recordProcessingEvent } from "@/lib/storage/processing-events"
 import {
@@ -79,11 +79,10 @@ export class ClassificationValidationError extends Error {
 }
 
 function parseResponseJson(responseJson: unknown): ClassificationApiRecord {
-  const asRecord = responseJson as Record<string, unknown>
-  const outputText = asRecord.output_text
+  const outputText = extractResponsesOutputText(responseJson)
 
   if (typeof outputText !== "string") {
-    throw new Error("Model returned no output_text")
+    throw new Error("Model returned no parseable text output")
   }
 
   return JSON.parse(outputText) as ClassificationApiRecord
@@ -121,9 +120,14 @@ function applyHardReviewRules(classification: ClassificationApiRecord, reportTex
     needsHumanReview = true
     mergedReasons.add("sensitive_report_content")
   }
+  if (!evidenceQuotesAreSubstrings(classification, reportText)) {
+    needsHumanReview = true
+    mergedReasons.add("evidence_quotes_sanitized")
+  }
 
   return {
     ...classification,
+    evidence_quotes: sanitizeEvidenceQuotes(classification, reportText),
     needs_human_review: needsHumanReview,
     review_reasons: [...mergedReasons].slice(0, 4),
   }
@@ -191,12 +195,6 @@ export async function classifyReport(
   if (enumValidation) {
     throw new ClassificationValidationError(
       `Invalid enum for ${enumValidation.field}; valid: ${enumValidation.valid.join(", ")}`,
-    )
-  }
-
-  if (!evidenceQuotesAreSubstrings(classification, userTurn)) {
-    throw new ClassificationValidationError(
-      "Invalid evidence_quotes: every evidence quote must be an exact substring",
     )
   }
 
