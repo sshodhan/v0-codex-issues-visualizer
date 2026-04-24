@@ -67,6 +67,7 @@ export default function FamilyDetailPage() {
     data.family.label && (data.family.label_confidence ?? 0) >= 0.6
       ? data.family.label
       : data.family.fallback_title || "Unlabelled family"
+  const representativeObservationId = data.family.representative_observations[0]?.observation_id ?? null
 
   return (
     <main className="container mx-auto px-4 py-8 space-y-6">
@@ -79,9 +80,21 @@ export default function FamilyDetailPage() {
           </p>
           <ClusterTrustRibbon cluster={data.family} />
         </div>
-        <Button asChild variant="outline">
-          <Link href={`/?cluster=${clusterId}`}>Open this family in dashboard table</Link>
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button asChild>
+            <Link href={`/?tab=classifications&cluster=${encodeURIComponent(clusterId)}`}>Review in triage</Link>
+          </Button>
+          {representativeObservationId ? (
+            <Button asChild variant="outline">
+              <Link href={`/admin?tab=trace&observation=${encodeURIComponent(representativeObservationId)}`}>
+                View trace for representative observation
+              </Link>
+            </Button>
+          ) : null}
+          <Button asChild variant="secondary">
+            <Link href={`/?cluster=${encodeURIComponent(clusterId)}`}>Open this family in dashboard table</Link>
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
