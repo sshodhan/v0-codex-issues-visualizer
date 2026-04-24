@@ -80,6 +80,7 @@ export default function ObservationTracePage() {
 
   useEffect(() => {
     if (!id) return
+    let cancelled = false
     setLoading(true)
     setError(null)
 
@@ -88,21 +89,36 @@ export default function ObservationTracePage() {
       fetch(`/api/observations/${id}/classify`),
     ])
       .then(async ([traceRes, classifyRes]) => {
+        if (cancelled) return
         if (!traceRes.ok) {
+          if (traceRes.status === 404) {
+            setError("Observation not found.")
+            return
+          }
           const text = await traceRes.text().catch(() => "")
           setError(text ? `HTTP ${traceRes.status}: ${text.slice(0, 200)}` : `HTTP ${traceRes.status}`)
           return
         }
-        setTrace((await traceRes.json()) as ObservationTraceResponse)
+        const traceBody = (await traceRes.json()) as ObservationTraceResponse
+        if (cancelled) return
+        setTrace(traceBody)
         if (classifyRes.ok) {
           const body = (await classifyRes.json()) as { trace?: { events?: ProcessingEventItem[] } }
+          if (cancelled) return
           setEvents(body.trace?.events ?? [])
         }
       })
       .catch((e) => {
+        if (cancelled) return
         setError(e instanceof Error ? e.message : "Failed to load trace")
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [id])
 
   return (
