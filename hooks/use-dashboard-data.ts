@@ -221,6 +221,14 @@ export interface ClusterRollupRow {
   label: string | null
   label_confidence: number | null
   representative_title?: string | null
+  representative_observation_id?: string | null
+  why_surfaced?: string | null
+  rail_scoring?: {
+    actionability_input: number
+    surge_input: number
+    review_pressure_input: number
+    rail_tags: Array<"actionability" | "surge" | "review_pressure">
+  }
   cluster_path: "semantic" | "fallback"
   fingerprint_hit_rate: number
   dominant_error_code_share: number

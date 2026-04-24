@@ -87,17 +87,38 @@ export async function GET(request: NextRequest) {
   const topIds = sorted.map((s) => s.id)
   const { data: exemplarRows } = await supabase
     .from("mv_observation_current")
-    .select("cluster_id, title, impact_score")
+    .select("cluster_id, observation_id, title, impact_score")
     .eq("is_canonical", true)
     .in("cluster_id", topIds)
     .order("impact_score", { ascending: false })
     .limit(300)
-  const exemplarMap = new Map<string, string>()
+  const exemplarMap = new Map<string, { title: string; observationId: string | null }>()
   for (const row of exemplarRows || []) {
     const clusterId = (row as { cluster_id: string | null }).cluster_id
     const title = (row as { title: string | null }).title
+    const observationId = (row as { observation_id?: string | null }).observation_id ?? null
     if (!clusterId || !title || exemplarMap.has(clusterId)) continue
-    exemplarMap.set(clusterId, title)
+    exemplarMap.set(clusterId, { title, observationId })
+  }
+
+  const computeWhySurfaced = (count: number, sourceCount: number, reviewedCount: number) => {
+    const reviewPressure = Math.max(0, count - reviewedCount)
+    if (reviewPressure >= 8) return "high review pressure"
+    if (count >= 10) return "high volume in current window"
+    if (sourceCount >= 3) return "cross-source signal concentration"
+    return "representative semantic cluster"
+  }
+
+  const bucketRailTags = (inputs: {
+    actionabilityInput: number
+    surgeInput: number
+    reviewPressureInput: number
+  }) => {
+    const tags: Array<"actionability" | "surge" | "review_pressure"> = []
+    if (inputs.actionabilityInput >= 0.5) tags.push("actionability")
+    if (inputs.surgeInput >= 6) tags.push("surge")
+    if (inputs.reviewPressureInput >= 5) tags.push("review_pressure")
+    return tags
   }
 
   const { data: healthRows, error: hErr } = await supabase
@@ -115,15 +136,32 @@ export async function GET(request: NextRequest) {
   const clusters = sorted.map((s) => {
     const meta = labelMap.get(s.id)
     const health = healthMap.get(s.id)
+    const reviewedCount = Number(health?.reviewed_count ?? 0)
+    const actionabilityInput = Number(
+      ((Number(health?.fingerprint_hit_rate ?? 0) * 0.5) +
+        (Number(health?.dominant_error_code_share ?? 0) * 0.3) +
+        (Number(health?.dominant_stack_frame_share ?? 0) * 0.2)).toFixed(4),
+    )
+    const surgeInput = s.count
+    const reviewPressureInput = Math.max(0, s.count - reviewedCount)
+    const exemplar = exemplarMap.get(s.id)
     return {
       id: s.id,
       count: s.count,
       classified_count: s.classified,
-      reviewed_count: health?.reviewed_count ?? 0,
+      reviewed_count: reviewedCount,
       source_count: s.source_count,
       label: meta?.label ?? null,
       label_confidence: meta?.label_confidence ?? null,
-      representative_title: exemplarMap.get(s.id) ?? null,
+      representative_title: exemplar?.title ?? null,
+      representative_observation_id: exemplar?.observationId ?? null,
+      why_surfaced: computeWhySurfaced(s.count, s.source_count, reviewedCount),
+      rail_scoring: {
+        actionability_input: actionabilityInput,
+        surge_input: surgeInput,
+        review_pressure_input: reviewPressureInput,
+        rail_tags: bucketRailTags({ actionabilityInput, surgeInput, reviewPressureInput }),
+      },
       cluster_path: (health?.cluster_path ?? "fallback") as "semantic" | "fallback",
       fingerprint_hit_rate: Number(health?.fingerprint_hit_rate ?? 0),
       dominant_error_code_share: Number(health?.dominant_error_code_share ?? 0),
