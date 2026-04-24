@@ -3,6 +3,7 @@ import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { extractBugFingerprint, computeCompoundKey } from "@/lib/scrapers/bug-fingerprint"
+import { buildObservationTrace } from "@/lib/processing-events/trace"
 import {
   classifyReport,
   ClassificationValidationError,
@@ -70,7 +71,12 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+  const { data: processingEvents } = await supabase
+    .from("processing_events")
+    .select("id, stage, status, algorithm_version_model, detail_json, created_at")
+    .eq("observation_id", parsed.data.id)
 
+  const trace = buildObservationTrace((processingEvents ?? []) as any)
   return NextResponse.json({
     regex,
     llm: existingClassification
@@ -93,6 +99,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
         }
       : null,
     compound_key: (await computeCompoundKey(supabase as any, parsed.data.id)) ?? null,
+    trace,
   })
 }
 

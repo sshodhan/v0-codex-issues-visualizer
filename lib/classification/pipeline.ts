@@ -6,6 +6,7 @@ import { buildClassificationUserTurn } from "@/lib/classification/report-summary
 import { CLASSIFICATION_SCHEMA, evidenceQuotesAreSubstrings, validateEnumFields } from "@/lib/classification/schema"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 import { recordClassification } from "@/lib/storage/derivations"
+import { recordProcessingEvent } from "@/lib/storage/processing-events"
 import {
   synthesizeObservationReportText,
   type ClassificationCandidate,
@@ -164,11 +165,29 @@ export async function classifyReport(
   const observationId = input.observation_id ?? input.source_issue_id ?? undefined
 
   let classification = await runClassifier(userTurn, smallModel)
+  if (supabase && observationId) {
+    await recordProcessingEvent(supabase, {
+      observationId,
+      stage: "classification",
+      status: "attempted",
+      algorithmVersionModel: smallModel,
+      detail: { pass: "small" },
+    })
+  }
   let modelUsed = smallModel
   let retriedWithLargeModel = false
   let smallModelClassificationId: string | null = null
 
   if (classification.confidence < 0.7) {
+    if (supabase && observationId) {
+      await recordProcessingEvent(supabase, {
+        observationId,
+        stage: "classification",
+        status: "escalated",
+        algorithmVersionModel: `${smallModel}->${largeModel}`,
+        detail: { reason: "confidence_below_threshold", confidence: classification.confidence },
+      })
+    }
     if (supabase) {
       const hardenedSmall = applyHardReviewRules(classification, input.report_text)
       const smallPayload = toClassificationPayload(hardenedSmall, input.report_text, {
@@ -180,6 +199,15 @@ export async function classifyReport(
     }
 
     classification = await runClassifier(userTurn, largeModel)
+    if (supabase && observationId) {
+      await recordProcessingEvent(supabase, {
+        observationId,
+        stage: "classification",
+        status: "attempted",
+        algorithmVersionModel: largeModel,
+        detail: { pass: "large" },
+      })
+    }
     modelUsed = largeModel
     retriedWithLargeModel = true
   }
@@ -208,6 +236,19 @@ export async function classifyReport(
   let classificationId: string | null = null
   if (supabase) {
     classificationId = await recordClassification(supabase, payload)
+    if (observationId) {
+      await recordProcessingEvent(supabase, {
+        observationId,
+        stage: "classification",
+        status: "completed",
+        algorithmVersionModel: modelUsed,
+        detail: {
+          classification_id: classificationId,
+          retried_with_large_model: retriedWithLargeModel,
+          needs_human_review: hardened.needs_human_review,
+        },
+      })
+    }
   }
 
   return {
@@ -269,6 +310,13 @@ export async function processObservationClassificationQueue(
       classified++
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
+      await recordProcessingEvent(supabase, {
+        observationId: candidate.observationId,
+        stage: "classification",
+        status: "failed",
+        algorithmVersionModel: process.env.CLASSIFIER_MODEL_SMALL ?? "gpt-5-mini",
+        detail: { reason },
+      })
       failures.push({
         observationId: candidate.observationId,
         title: candidate.title,

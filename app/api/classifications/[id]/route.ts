@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { z } from "zod"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { recordClassificationReview } from "@/lib/storage/derivations"
+import { recordProcessingEvent } from "@/lib/storage/processing-events"
 
 // Reviewer PATCH appends to classification_reviews (append-only).
 // The LLM baseline row in `classifications` is immutable; every reviewer
@@ -28,9 +29,28 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
 
     const supabase = createAdminClient()
+    const { data: classificationRow } = await supabase
+      .from("classifications")
+      .select("observation_id")
+      .eq("id", id)
+      .maybeSingle()
     const reviewId = await recordClassificationReview(supabase, id, parsed.data)
     if (!reviewId) {
       return NextResponse.json({ error: "Failed to record review" }, { status: 500 })
+    }
+    if (classificationRow?.observation_id) {
+      await recordProcessingEvent(supabase, {
+        observationId: classificationRow.observation_id,
+        stage: "review",
+        status: "completed",
+        algorithmVersionModel: "human-review",
+        detail: {
+          classification_id: id,
+          review_id: reviewId,
+          reviewed_by: parsed.data.reviewed_by,
+          status: parsed.data.status ?? null,
+        },
+      })
     }
 
     return NextResponse.json({ data: { id: reviewId, classification_id: id, ...parsed.data } })

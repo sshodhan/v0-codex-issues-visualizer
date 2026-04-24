@@ -157,6 +157,15 @@ interface ObservationTraceResponse {
   generated_at: string
 }
 
+interface ProcessingEventItem {
+  id: string
+  stage: string
+  status: string
+  algorithm_version_model: string | null
+  detail_json: Record<string, unknown> | null
+  created_at: string
+}
+
 const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
@@ -261,6 +270,7 @@ function ObservationTracePanel({ secret }: { secret: string }) {
   const searchParams = useSearchParams()
   const [observationId, setObservationId] = useState("")
   const [trace, setTrace] = useState<ObservationTraceResponse | null>(null)
+  const [events, setEvents] = useState<ProcessingEventItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -270,25 +280,32 @@ function ObservationTracePanel({ secret }: { secret: string }) {
   }, [searchParams])
 
   async function loadTrace() {
-    if (!observationId.trim()) {
+    const id = observationId.trim()
+    if (!id) {
       setError("Provide an observation ID.")
       return
     }
     setLoading(true)
     setError(null)
+    setTrace(null)
+    setEvents([])
     try {
-      const res = await fetch(`/api/observations/${observationId.trim()}/trace`, {
-        headers: authHeaders(secret),
-      })
-      if (!res.ok) {
-        setError(await explainAdminFailure(res))
-        setTrace(null)
+      const [traceRes, classifyRes] = await Promise.all([
+        fetch(`/api/observations/${id}/trace`, { headers: authHeaders(secret) }),
+        fetch(`/api/observations/${id}/classify`, { headers: authHeaders(secret) }),
+      ])
+      if (!traceRes.ok) {
+        setError(await explainAdminFailure(traceRes))
         return
       }
-      setTrace((await res.json()) as ObservationTraceResponse)
+      setTrace((await traceRes.json()) as ObservationTraceResponse)
+      if (classifyRes.ok) {
+        const body = (await classifyRes.json()) as { trace?: { events?: ProcessingEventItem[] } }
+        setEvents(body.trace?.events ?? [])
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load trace")
-      setTrace(null)
+      logClientError(e, "admin-trace-fetch-failed")
     } finally {
       setLoading(false)
     }
@@ -299,7 +316,7 @@ function ObservationTracePanel({ secret }: { secret: string }) {
       <CardHeader>
         <CardTitle>Unified observation trace</CardTitle>
         <CardDescription>
-          Capture → fingerprint → embedding → cluster membership → classification chain → review lineage.
+          Capture → fingerprint → embedding → cluster membership → classification chain → review lineage, with an append-only processing event stream.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -401,6 +418,35 @@ function ObservationTracePanel({ secret }: { secret: string }) {
                 ["generated_at", trace.generated_at],
               ]}
             />
+            <div className="rounded-md border p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-sm font-medium">Processing event stream</p>
+                <Badge variant="outline">append-only</Badge>
+              </div>
+              {events.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No processing events recorded.</p>
+              ) : (
+                <div className="space-y-2">
+                  {events.map((event) => (
+                    <div key={event.id} className="rounded border p-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">{event.stage}</Badge>
+                        <Badge>{event.status}</Badge>
+                        {event.algorithm_version_model ? (
+                          <span className="font-mono text-muted-foreground">{event.algorithm_version_model}</span>
+                        ) : null}
+                        <span className="text-muted-foreground">{new Date(event.created_at).toISOString()}</span>
+                      </div>
+                      {event.detail_json && Object.keys(event.detail_json).length > 0 ? (
+                        <pre className="mt-1 overflow-x-auto rounded bg-muted p-1 text-[10px]">
+                          {JSON.stringify(event.detail_json, null, 2)}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         ) : null}
       </CardContent>
