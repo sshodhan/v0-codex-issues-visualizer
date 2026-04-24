@@ -4,7 +4,6 @@ import { CLASSIFICATION_SCHEMA } from "./schema.ts"
 export function buildClassifierResponsesBody(userTurn: string, model: string) {
   return {
     model,
-    temperature: 0.2,
     input: [
       { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
       { role: "user", content: userTurn },
