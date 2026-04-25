@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -13,7 +13,7 @@ import {
   ReferenceLine,
   ReferenceArea,
 } from "recharts"
-import { AlertTriangle, Eye, HelpCircle, TrendingUp } from "lucide-react"
+import { AlertTriangle, Eye, HelpCircle, TrendingUp, ArrowUpDown } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface PriorityMatrixProps {
@@ -107,11 +107,15 @@ const getDominantSentiment = (
   return dominant.share >= 0.3 ? dominant : null
 }
 
+type SortMode = "actionability" | "negative-sentiment"
+
 export function PriorityMatrix({
   data,
   onFilterChange,
   variant = "v2",
 }: PriorityMatrixProps) {
+  const [sortMode, setSortMode] = useState<SortMode>("actionability")
+
   const { chartData, avgPriority, zoneCategories } = useMemo(() => {
     const groupedByCategory = data.reduce<
       Record<
@@ -261,13 +265,17 @@ export function PriorityMatrix({
           topSubcategories,
         }
       })
-      // Rank by actionability first (docs/SCORING.md §10.1). When two lanes
-      // tie on actionability (common for lanes without fingerprint signal),
-      // priorityScore breaks the tie so the visual regression on pre-PR
-      // rows stays minimal.
-      .sort(
-        (a, b) => b.actionabilityScore - a.actionabilityScore || b.priorityScore - a.priorityScore,
-      )
+      // Sort based on selected mode: actionability (default) or negative sentiment
+      .sort((a, b) => {
+        if (sortMode === "negative-sentiment") {
+          // Sort by negative sentiment percentage (highest first)
+          // Tiebreaker: actionability score
+          return b.negativeShare - a.negativeShare || b.actionabilityScore - a.actionabilityScore
+        }
+        // Default: Rank by actionability first (docs/SCORING.md §10.1)
+        // Tiebreaker: priorityScore
+        return b.actionabilityScore - a.actionabilityScore || b.priorityScore - a.priorityScore
+      })
       .map((lane, index) => ({ ...lane, y: index }))
 
     const avg = processed.length > 0
@@ -281,7 +289,7 @@ export function PriorityMatrix({
     }
 
     return { chartData: processed, avgPriority: avg, zoneCategories: zones }
-  }, [data])
+  }, [data, sortMode])
 
   const maxY = Math.max(chartData.length - 0.5, 0.5)
 
@@ -315,22 +323,55 @@ export function PriorityMatrix({
               )}
             </div>
             <p className="text-sm text-muted-foreground mt-1">
-              Ranked by actionability — impact, code-addressability, repro quality, and cross-source confirmation. Click an error-code chip to drill into its observations.
+              {sortMode === "actionability" 
+                ? "Ranked by actionability — impact, code-addressability, repro quality, and cross-source confirmation."
+                : "Ranked by negative sentiment percentage — categories with the most user frustration appear first."
+              }
+              {" "}Click an error-code chip to drill into its observations.
             </p>
           </div>
-          <div className="flex gap-3 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#ef4444]" />
-              Negative
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#6b7280]" />
-              Neutral
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#22c55e]" />
-              Positive
-            </span>
+          <div className="flex items-center gap-4">
+            {/* Sort toggle */}
+            <div className="flex items-center gap-1.5 border border-border rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setSortMode("actionability")}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  sortMode === "actionability"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`}
+              >
+                Actionability
+              </button>
+              <button
+                type="button"
+                onClick={() => setSortMode("negative-sentiment")}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  sortMode === "negative-sentiment"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`}
+              >
+                % Negative
+              </button>
+            </div>
+
+            {/* Sentiment legend */}
+            <div className="flex gap-3 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-[#ef4444]" />
+                Negative
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-[#6b7280]" />
+                Neutral
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-[#22c55e]" />
+                Positive
+              </span>
+            </div>
           </div>
         </div>
       </CardHeader>
