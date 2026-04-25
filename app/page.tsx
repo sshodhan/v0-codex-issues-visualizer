@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { AsOfBanner } from "@/components/dashboard/as-of-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { RefreshCw, Loader2, BarChart3, BrainCircuit, BookOpen, TrendingUp, Settings } from "lucide-react"
+import { RefreshCw, Loader2, BarChart3, BrainCircuit, BookOpen, TrendingUp, Settings, Layers } from "lucide-react"
 import { StatCard, InsightKpiCard } from "@/components/dashboard/stat-card"
 import { HeroInsight, computeHeroInsight } from "@/components/dashboard/hero-insight"
 import { 
@@ -30,6 +30,7 @@ import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-stri
 import { PipelineFreshnessStrip } from "@/components/dashboard/pipeline-freshness-strip"
 import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
 import { V3View } from "@/components/dashboard/v3-view"
+import { MergedViewComparison } from "@/components/dashboard/merged-view-comparison"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
@@ -588,7 +589,7 @@ function DashboardContentInner() {
           />
         ) : (
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-            <TabsList className="grid w-full max-w-2xl grid-cols-4 mx-auto h-auto p-1 gap-0">
+            <TabsList className="grid w-full max-w-3xl grid-cols-5 mx-auto h-auto p-1 gap-0">
               <TabsTrigger value="dashboard" className="gap-1.5 text-xs sm:text-sm py-2.5">
                 <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
                 <span className="truncate">Dashboard</span>
@@ -610,6 +611,10 @@ function DashboardContentInner() {
                     {pendingReviewCount}
                   </span>
                 )}
+              </TabsTrigger>
+              <TabsTrigger value="compare" className="gap-1.5 text-xs sm:text-sm py-2.5">
+                <Layers className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+                <span className="truncate">Compare</span>
               </TabsTrigger>
             </TabsList>
 
@@ -1072,6 +1077,15 @@ function DashboardContentInner() {
                     ? "all"
                     : llmCategoryFromUrl
                 }
+              />
+            </TabsContent>
+
+            {/* Compare Tab - Layout Options A/B */}
+            <TabsContent value="compare" className="space-y-6 mt-6">
+              <MergedViewComparison
+                stats={stats}
+                issues={issues}
+                isLoading={issuesLoading}
               />
             </TabsContent>
           </Tabs>
