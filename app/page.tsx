@@ -20,7 +20,7 @@ import { SourceChart } from "@/components/dashboard/source-chart"
 import { TrendChart } from "@/components/dashboard/trend-chart"
 import { PriorityMatrix } from "@/components/dashboard/priority-matrix"
 import { FingerprintSurgeCard } from "@/components/dashboard/fingerprint-surge-card"
-import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
+
 import { IssuesTable } from "@/components/dashboard/issues-table"
 import { CategoryIssuesGrid } from "@/components/dashboard/category-issues-grid"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
@@ -758,10 +758,9 @@ function DashboardContentInner() {
               />
 
               {/* Charts Row - Visual context */}
-              <div className="grid gap-6 lg:grid-cols-3">
+              <div className="grid gap-6 lg:grid-cols-2">
                 <SentimentChart data={stats.sentimentBreakdown} />
                 <SourceChart data={stats.sourceBreakdown} />
-                <CategoryHeatmap data={stats.categorySentimentBreakdown} />
               </div>
 
               {/* Priority Matrix - Actionable view */}
