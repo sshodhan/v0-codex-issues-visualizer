@@ -22,7 +22,7 @@ import { PriorityMatrix } from "@/components/dashboard/priority-matrix"
 import { FingerprintSurgeCard } from "@/components/dashboard/fingerprint-surge-card"
 import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
 import { IssuesTable } from "@/components/dashboard/issues-table"
-import { RealtimeInsights } from "@/components/dashboard/realtime-insights"
+import { CategoryIssuesGrid } from "@/components/dashboard/category-issues-grid"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { CompetitiveMentions } from "@/components/dashboard/competitive-mentions"
@@ -30,6 +30,7 @@ import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-stri
 import { PipelineFreshnessStrip } from "@/components/dashboard/pipeline-freshness-strip"
 import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
 import { V3View } from "@/components/dashboard/v3-view"
+
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
@@ -731,7 +732,7 @@ function DashboardContentInner() {
               />
 
               <div className="grid gap-6 lg:grid-cols-2">
-                <RealtimeInsights
+                <CategoryIssuesGrid
                   insights={stats.realtimeInsights}
                   skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
                 />
@@ -923,7 +924,7 @@ function DashboardContentInner() {
               />
 
               <div className="grid gap-6 lg:grid-cols-2">
-                <RealtimeInsights
+                <CategoryIssuesGrid
                   insights={stats.realtimeInsights}
                   skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
                 />
@@ -1074,6 +1075,8 @@ function DashboardContentInner() {
                 }
               />
             </TabsContent>
+
+
           </Tabs>
         )}
       </main>
