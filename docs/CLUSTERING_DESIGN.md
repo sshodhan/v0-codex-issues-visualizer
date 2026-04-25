@@ -85,6 +85,15 @@ This prevents the triage panel from staying empty unless ingestion itself is emp
   - `rationale` (<= 1 sentence)
   - `confidence` (0..1)
 - On failure, use fallback title-based label with low confidence and explicit fallback rationale.
+- **UI naming.** The cluster's `label` is surfaced to users as the
+  **"Family name"** (clusters are surfaced as **"Families"** in user
+  copy — "Top Families" section, drill-down chips, etc.). When `label`
+  is missing or below the `0.6` confidence threshold, the UI shows
+  **"Unnamed family"**. The technical noun "Semantic cluster
+  (Layer A)" stays in methodology surfaces (e.g. the
+  `LayerExplainerRow` in classification-triage). See
+  `docs/ARCHITECTURE.md` §6.0. Distinct from per-issue `llm_subcategory`
+  (one string per cluster vs. one string per classified observation).
 
 ### 4.5 Fallback guarantees
 If any of the following occur:
@@ -143,14 +152,19 @@ Embedding and semantic labeling use algorithm-version tags (`observation_embeddi
 ### UI — vocabulary lock
 The word "cluster" is reserved for the Layer-A semantic/title-hash clustering documented here. Everything else in the triage UI uses different language so the three layers stay legible at a glance:
 
-| Surface | Name in code and UI | What it actually is |
-| --- | --- | --- |
-| Global slider | **Category focus** | 1-of-N heuristic category filter (no grouping) |
-| Triage chip strip | **Top triage groups** | Client-side group-by on `(effective_category, subcategory)` |
-| Triage chip strip (second row) | **Top semantic clusters** | This document — Layer-A clusters rendered from the new API fields |
-| Priority Matrix | **Lanes** | Client-side group-by on heuristic `category.name` |
+| Surface | Name in code | UI label | What it actually is |
+| --- | --- | --- | --- |
+| Global slider | `categoryValue` / `onCategoryChange` | **Topic focus** | 1-of-N heuristic regex bucket filter (no grouping) — see `docs/ARCHITECTURE.md` §6.0 |
+| Triage chip strip | `groupFilter` | **Top triage groups** | Client-side group-by on `(effective_category, subcategory)` — uses LLM strict-schema fields |
+| Triage chip strip (second row) | `clusterFilter` (URL: `?cluster=`) | **Top semantic clusters** (technical) / **"Families"** (user copy) | This document — Layer-A clusters rendered from the new API fields. Shown in the dashboard's "Top Families" section. |
+| Priority Matrix | `lanes` | **Lanes** | Client-side group-by on heuristic `category.name` (a Topic) |
 
 Historical `clusterFilter` / "TOP CLASSIFICATION CLUSTERS" / "Clustered classification lanes" copy and identifiers were renamed to the table above to eliminate collision; the Vercel Analytics event key `cluster_filter` is retained for back-compat and populated from the renamed `groupFilter` state.
+
+Two follow-up renames landed in a later pass (see `docs/ARCHITECTURE.md` §6.0):
+
+- **"Category focus" slider → "Topic focus"** in the global filter bar. The heuristic regex bucket is surfaced as "Topic" everywhere in user copy, leaving "category" reserved for the LLM strict-schema enum (`classifications.category`).
+- **"Cluster label" placeholder strings → "Unnamed family"** wherever a cluster's display name is empty or below the `0.6` confidence floor. Code identifier `cluster_label` is unchanged.
 
 ### UI — triage behavior
 - Triage UI distinguishes:

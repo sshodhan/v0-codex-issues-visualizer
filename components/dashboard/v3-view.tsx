@@ -76,7 +76,7 @@ const RAILS: Array<{
 
 function getFamilyLabel(cluster: ClusterRollupRow) {
   if (cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.6) return cluster.label
-  return cluster.representative_title || "Unlabelled family"
+  return cluster.representative_title || "Unnamed family"
 }
 
 function getTopClusters(clusters: ClusterRollupRow[], railTag: "actionability" | "surge" | "review_pressure", score: (cluster: ClusterRollupRow) => number) {

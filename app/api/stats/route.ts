@@ -346,6 +346,7 @@ export async function GET(request: NextRequest) {
     impact_score: (r.impact_score as number | null) ?? null,
     category: (r.category_id ? categoryById.get(r.category_id) : null) ?? null,
     source: (r.source_id ? sourceById.get(r.source_id) : null) ?? null,
+    llm_category: (r.llm_category as string | null) ?? null,
   }))
 
   const realtimeInsights = computeRealtimeInsights(normalizedRecent)

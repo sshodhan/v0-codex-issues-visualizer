@@ -18,6 +18,10 @@ import {
   UrgencyModelDialog,
   MethodologyTriggerButton,
 } from "@/components/dashboard/methodology-dialogs"
+import {
+  llmCategoryLabel,
+  llmCategoryPalette,
+} from "@/lib/classification/llm-category-display"
 
 interface HeroInsightProps {
   topInsight: {
@@ -31,6 +35,10 @@ interface HeroInsightProps {
       momentum: number
       sourcesReporting: number
     }
+    /** LLM-category breakdown of the issues counted in `metrics.total`, sorted desc. */
+    llmCategoryBreakdown: Array<{ slug: string; count: number }>
+    /** Count of `metrics.total` rows with no LLM classification yet. */
+    llmUnclassifiedCount: number
     topIssues: Array<{
       id: string
       title: string
@@ -43,6 +51,8 @@ interface HeroInsightProps {
   onExploreIssues: (categorySlug: string) => void
   /** Secondary: switch to AI Classifications for triage with category filter */
   onNavigateToCategory?: (slug: string) => void
+  /** Click on a pill in the LLM-classification cloud — opens triage scoped to (category × llm_category). */
+  onLlmCategoryDrill?: (categorySlug: string, llmCategorySlug: string) => void
   /** Shown on primary CTA (V2) so users know the table may use a different time range than the 72h lead story. */
   issueTableTimeLabel?: string
   /** V1: original single CTA to classifications. V2: NYT-style + dual CTAs + methodology. */
@@ -54,6 +64,7 @@ export function HeroInsight({
   topInsight,
   onExploreIssues,
   onNavigateToCategory,
+  onLlmCategoryDrill,
   issueTableTimeLabel = "",
   variant = "v2",
   className,
@@ -71,15 +82,41 @@ export function HeroInsight({
             No urgent insights detected
           </h2>
           <p className="text-muted-foreground">
-            All categories are within normal thresholds. Check back after your next data sync.
+            All topics are within normal thresholds. Check back after your next data sync.
           </p>
         </CardContent>
       </Card>
     )
   }
 
-  const { category, categorySlug, headline, subheadline, metrics, topIssues } = topInsight
+  const {
+    category,
+    categorySlug,
+    headline,
+    subheadline,
+    metrics,
+    topIssues,
+    llmCategoryBreakdown,
+    llmUnclassifiedCount,
+  } = topInsight
   const isRising = metrics.momentum > 0
+  const llmClassifiedCount = llmCategoryBreakdown.reduce((sum, row) => sum + row.count, 0)
+  const llmTotalCount = llmClassifiedCount + llmUnclassifiedCount
+  const llmClassifiedSharePct =
+    llmTotalCount > 0 ? Math.round((llmClassifiedCount / llmTotalCount) * 100) : 0
+  const maxLlmCount = llmCategoryBreakdown[0]?.count ?? 0
+
+  const cloud = (
+    <LlmClassificationCloud
+      categoryName={category}
+      categorySlug={categorySlug}
+      breakdown={llmCategoryBreakdown}
+      unclassifiedCount={llmUnclassifiedCount}
+      classifiedSharePct={llmClassifiedSharePct}
+      maxCount={maxLlmCount}
+      onDrill={onLlmCategoryDrill}
+    />
+  )
 
   if (!isV2) {
     return (
@@ -133,6 +170,7 @@ export function HeroInsight({
                   <span className="text-sm text-muted-foreground">sources reporting</span>
                 </div>
               </div>
+              {cloud}
               <Button
                 onClick={() => onNavigateToCategory?.(categorySlug)}
                 className="gap-2"
@@ -257,6 +295,8 @@ export function HeroInsight({
                 </div>
               </div>
 
+              {cloud}
+
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                 <div className="w-full sm:w-auto">
                   <Button
@@ -375,6 +415,8 @@ export function computeHeroInsight(
     negativeRatio: number
     sourceDiversity: number
     urgencyScore: number
+    llmCategoryBreakdown?: Array<{ slug: string; count: number }>
+    llmUnclassifiedCount?: number
     topIssues: Array<{
       id: string
       title: string
@@ -415,6 +457,110 @@ export function computeHeroInsight(
       momentum: insight.momentum,
       sourcesReporting: insight.sourceDiversity,
     },
+    llmCategoryBreakdown: insight.llmCategoryBreakdown ?? [],
+    llmUnclassifiedCount: insight.llmUnclassifiedCount ?? 0,
     topIssues: insight.topIssues,
   }
+}
+
+interface LlmClassificationCloudProps {
+  categoryName: string
+  categorySlug: string
+  breakdown: Array<{ slug: string; count: number }>
+  unclassifiedCount: number
+  classifiedSharePct: number
+  maxCount: number
+  onDrill?: (categorySlug: string, llmCategorySlug: string) => void
+}
+
+// Pill sizing for the cloud — three tiers based on share of the largest pill,
+// so the largest LLM category visually anchors the group regardless of total volume.
+function pillSizeClass(count: number, maxCount: number): string {
+  if (maxCount <= 0) return "text-xs px-2 py-0.5"
+  const share = count / maxCount
+  if (share >= 0.66) return "text-sm px-2.5 py-1 font-semibold"
+  if (share >= 0.33) return "text-xs px-2.5 py-1 font-medium"
+  return "text-xs px-2 py-0.5"
+}
+
+function LlmClassificationCloud({
+  categoryName,
+  categorySlug,
+  breakdown,
+  unclassifiedCount,
+  classifiedSharePct,
+  maxCount,
+  onDrill,
+}: LlmClassificationCloudProps) {
+  if (breakdown.length === 0 && unclassifiedCount === 0) return null
+
+  const isInteractive = typeof onDrill === "function"
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-2">
+        {/*
+          Heading reads "LLM category" so the noun matches the
+          CATEGORY_ENUM field name in lib/classification/taxonomy.ts.
+          {categoryName} interpolates the heuristic Topic name (e.g.
+          "Bug") — disjoint namespace. See docs/ARCHITECTURE.md §6.0.
+        */}
+        <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          Inside {categoryName} · LLM category
+        </h3>
+        {breakdown.length > 0 && (
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {classifiedSharePct}% classified
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {breakdown.map(({ slug, count }) => {
+          const palette = llmCategoryPalette(slug)
+          const label = llmCategoryLabel(slug)
+          const sizeCls = pillSizeClass(count, maxCount)
+          const sharedCls = cn(
+            "inline-flex items-center gap-1.5 rounded-full border border-transparent transition-colors",
+            sizeCls,
+            palette.bg,
+            palette.text,
+          )
+          if (isInteractive) {
+            return (
+              <button
+                key={slug}
+                type="button"
+                onClick={() => onDrill?.(categorySlug, slug)}
+                className={cn(
+                  sharedCls,
+                  "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1",
+                  palette.ring,
+                )}
+                title={`Show ${label} classifications inside ${categoryName}`}
+                aria-label={`Show ${label} classifications inside ${categoryName} (${count})`}
+              >
+                <span>{label}</span>
+                <span className="tabular-nums opacity-80">{count}</span>
+              </button>
+            )
+          }
+          return (
+            <span key={slug} className={sharedCls}>
+              <span>{label}</span>
+              <span className="tabular-nums opacity-80">{count}</span>
+            </span>
+          )
+        })}
+        {unclassifiedCount > 0 && (
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-border bg-muted/40 text-muted-foreground text-xs px-2 py-0.5"
+            title="Issues in this window without an LLM classification yet"
+          >
+            <span>Unclassified</span>
+            <span className="tabular-nums">{unclassifiedCount}</span>
+          </span>
+        )}
+      </div>
+    </div>
+  )
 }

@@ -1,5 +1,18 @@
 # Codex Issue Classification (OpenAI Responses API)
 
+> **Naming note.** Three "category"-like fields in this system live in
+> intentionally disjoint namespaces:
+>
+> | Field                        | UI label              | Source                                                  |
+> |------------------------------|-----------------------|---------------------------------------------------------|
+> | Heuristic regex bucket       | **"Topic"**           | `lib/scrapers/shared.ts:categorizeIssue` → `categories` table |
+> | Strict-schema enum (12)      | **"LLM category"**    | `classifications.category` (this doc)                   |
+> | Free-text per-issue tag      | **"LLM subcategory"** | `classifications.subcategory` (this doc)                |
+>
+> See `docs/ARCHITECTURE.md` §6.0 for the full glossary. The names
+> `category` / `subcategory` in this doc and in the schema refer **only
+> to the LLM strict-schema fields** — never to the heuristic Topic.
+
 This repo now includes a standalone API route for structured issue classification:
 
 - Route: `POST /api/classify`
@@ -53,7 +66,7 @@ The triage panel shows the full LLM-structured output for the selected record so
 
 | Schema field | Source | Where it renders | Notes |
 | --- | --- | --- | --- |
-| `category`, `subcategory` | LLM enum + free-text | Row, breadcrumb (Layer B), reviewer override dropdown | `effective_*` reflects the latest review override |
+| `category`, `subcategory` | LLM enum (12 values; "LLM category" in UI) + free-text ≤60 chars ("LLM subcategory" in UI) | Row, breadcrumb (Layer B), reviewer override dropdown, IssuesTable "All LLM Subcategories" filter, Hero classification-cloud pills | `effective_*` reflects the latest review override; do not confuse with the heuristic "Topic" (`categories` table) |
 | `severity` | LLM enum | Row badge, reviewer override dropdown | `effective_severity` after override |
 | `status` | LLM enum | Row, reviewer override dropdown | `effective_status` after override |
 | `confidence` | LLM 0..1 | Row column, reviewer panel header `C · NN%` badge | Triggers low-confidence hint when `< 0.7` (escalation threshold) |
@@ -68,7 +81,7 @@ The triage panel shows the full LLM-structured output for the selected record so
 | `review_reasons` | LLM array (≤ 4) | `PerRecordPrereqHints` "Flagged for human review" hint | Joined inline so the reviewer sees *why* without expanding |
 | `model_used`, `retried_with_large_model` | Pipeline metadata | `ClassificationContextPanel` provenance footer | "escalated" badge when the row was retried with the large model |
 | `algorithm_version` | Pipeline metadata | Provenance footer + Review History collapsible | Used to date baseline classifications in audit trail |
-| `cluster_id`, `cluster_label`, `cluster_label_confidence`, `cluster_size` | Joined from `mv_observation_current` + `clusters` | Layer-A breadcrumb segment, "Semantic cluster" sub-card, chip-strip filter | Null when clustering hasn't run / embedding failed / below threshold (see CLUSTERING_DESIGN.md §4.5) |
+| `cluster_id`, `cluster_label`, `cluster_label_confidence`, `cluster_size` | Joined from `mv_observation_current` + `clusters` | Layer-A breadcrumb segment, "Semantic cluster" sub-card, chip-strip filter | Surfaced to users as **"Family"** with `cluster_label` as the **"Family name"** — fallback "Unnamed family" when null/low-confidence. Null when clustering hasn't run / embedding failed / below threshold (see CLUSTERING_DESIGN.md §4.5). The technical noun "Semantic cluster (Layer A)" stays in methodology surfaces. |
 | `source_issue_url`, `source_issue_title`, `source_issue_sentiment` | Joined from `mv_observation_current` | Row "Source feedback" link + sentiment badge | Traceability — never null after ingest if the observation has a URL |
 
 The triage tab also surfaces the three-layer mental model explicitly via:

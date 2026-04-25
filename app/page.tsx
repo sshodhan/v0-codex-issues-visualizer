@@ -346,6 +346,26 @@ function DashboardContentInner() {
     }
   }
 
+  const handleHeroLlmCategoryDrill = (
+    categorySlug: string,
+    llmCategorySlug: string,
+  ) => {
+    setGlobalCategory(categorySlug)
+    setActiveTab("classifications")
+    applyTriageContextParams({
+      llm: llmCategorySlug,
+      group: null,
+    })
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        const el =
+          document.getElementById("triage-llm-link-scope") ||
+          document.getElementById("triage-top-groups")
+        el?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    }
+  }
+
   const handleOpenDashboardFromStoryAtlas = () => {
     setActiveTab("v3")
     if (typeof window !== "undefined") {
@@ -371,11 +391,15 @@ function DashboardContentInner() {
   const activeClusterLabel = useMemo(() => {
     if (!clusterIdFromUrl) return null
     const row = (clusterRollup?.clusters || []).find((c) => c.id === clusterIdFromUrl)
-    if (!row) return "Semantic cluster"
+    // Display copy: clusters are surfaced to users as "Families"; the
+    // LLM-generated `label` is the family's display name. When that
+    // name is missing or below the confidence cut, we fall back to
+    // "Unnamed family". See docs/ARCHITECTURE.md §6.0.
+    if (!row) return "Unnamed family"
     if (row.label && row.label_confidence != null && row.label_confidence >= 0.6) {
       return row.label
     }
-    return "Unlabelled cluster"
+    return "Unnamed family"
   }, [clusterIdFromUrl, clusterRollup])
 
   const categoryOptions = useMemo(() => {
@@ -385,7 +409,10 @@ function DashboardContentInner() {
       count: category.count,
     }))
 
-    return [{ value: "all", label: "All categories", count: stats?.totalIssues || 0 }, ...dynamic]
+    // UI label "All topics" — the heuristic regex bucket (Bug, Feature
+    // Request, Performance, …) is surfaced as "Topic" to disambiguate
+    // from the LLM `category` enum. See docs/ARCHITECTURE.md §6.0.
+    return [{ value: "all", label: "All topics", count: stats?.totalIssues || 0 }, ...dynamic]
   }, [stats])
 
   /** Heuristic issue count in scope (matches GlobalFilterBar) — for LLM tab explainer. */
@@ -399,7 +426,7 @@ function DashboardContentInner() {
   }, [stats, globalCategory])
 
   const globalTimeLabel = globalDays === 0 ? "All time" : `Last ${globalDays} days`
-  const globalCategoryLabel = categoryOptions.find((option) => option.value === globalCategory)?.label || "All categories"
+  const globalCategoryLabel = categoryOptions.find((option) => option.value === globalCategory)?.label || "All topics"
 
   // Compute KPI summary with insight-first approach
   const kpiSummary = useMemo(() => {
@@ -699,6 +726,7 @@ function DashboardContentInner() {
                     topInsight={heroInsight}
                     onExploreIssues={handleHeroExploreIssues}
                     onNavigateToCategory={handleNavigateToCategory}
+                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
                     issueTableTimeLabel={globalTimeLabel}
                     variant="v2"
                   />
@@ -742,6 +770,7 @@ function DashboardContentInner() {
                     topInsight={heroInsight}
                     onExploreIssues={handleHeroExploreIssues}
                     onNavigateToCategory={handleNavigateToCategory}
+                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
                     issueTableTimeLabel={globalTimeLabel}
                     variant="v1"
                   />
@@ -802,7 +831,7 @@ function DashboardContentInner() {
                     const familyLabel =
                       cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.6
                         ? cluster.label
-                        : cluster.representative_title || "Unlabelled family"
+                        : cluster.representative_title || "Unnamed family"
                     return (
                       <Link
                         key={cluster.id}

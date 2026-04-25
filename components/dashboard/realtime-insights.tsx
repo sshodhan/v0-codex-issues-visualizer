@@ -44,7 +44,7 @@ export function RealtimeInsights({ insights, skipFirstCategorySlug }: RealtimeIn
         </CardTitle>
         <CardDescription>
           {skipFirstCategorySlug
-            ? "More categories from the last 72 hours (the lead story above is #1 by urgency). Ranked by volume, momentum, impact, and source diversity."
+            ? "More topics from the last 72 hours (the lead story above is #1 by urgency). Ranked by volume, momentum, impact, and source diversity."
             : "Ranked from the last 72 hours by urgency (volume + momentum + impact + source diversity)."}
         </CardDescription>
       </CardHeader>

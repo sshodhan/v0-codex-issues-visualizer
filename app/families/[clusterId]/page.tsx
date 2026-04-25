@@ -66,7 +66,7 @@ export default function FamilyDetailPage() {
   const familyName =
     data.family.label && (data.family.label_confidence ?? 0) >= 0.6
       ? data.family.label
-      : data.family.fallback_title || "Unlabelled family"
+      : data.family.fallback_title || "Unnamed family"
   const representativeObservationId = data.family.representative_observations[0]?.observation_id ?? null
 
   return (

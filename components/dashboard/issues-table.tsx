@@ -208,13 +208,20 @@ export function IssuesTable({
                 </SelectContent>
               </Select>
               
+              {/*
+                Reads `issue.llm_subcategory` (the LLM classifier's free-text
+                per-issue field, lib/classification/schema.ts:34) — distinct
+                from `llm_category` (the 12-value enum surfaced as
+                "LLM category" in the Hero cloud). See docs/ARCHITECTURE.md
+                §6.0.
+              */}
               {allLlmSubcategories.length > 0 && (
                 <Select value={llmSubcategoryFilter} onValueChange={setLlmSubcategoryFilter}>
                   <SelectTrigger className="w-[180px] bg-secondary border-border text-foreground">
-                    <SelectValue placeholder="LLM Category" />
+                    <SelectValue placeholder="LLM Subcategory" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All LLM Categories</SelectItem>
+                    <SelectItem value="all">All LLM Subcategories</SelectItem>
                     {allLlmSubcategories.map((subcategory) => (
                       <SelectItem key={subcategory} value={subcategory}>
                         {subcategory}
@@ -253,18 +260,16 @@ export function IssuesTable({
 
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground items-center">
             <Badge variant="secondary">Window: {globalTimeLabel}</Badge>
-            <div className="flex items-center gap-1">
-              <Badge variant="secondary">Cluster: {globalCategoryLabel}</Badge>
-              <button
-                type="button"
-                onClick={() => onFilterChange({ cluster_id: null })}
-                className="inline-flex items-center rounded-md hover:bg-destructive/20 transition-colors p-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label={`Clear ${globalCategoryLabel} cluster filter`}
-                title={`Clear ${globalCategoryLabel} filter`}
-              >
-                <X className="h-3 w-3 text-muted-foreground hover:text-destructive" />
-              </button>
-            </div>
+            {/*
+              `globalCategoryLabel` is the heuristic topic label (Bug,
+              Feature Request, …). The label noun is "Topic" per
+              docs/ARCHITECTURE.md §6.0. This is informational only —
+              the topic filter is set/cleared via the GlobalFilterBar
+              slider above. The cluster drill-down has its own
+              dedicated chip below (rendered when `activeClusterId`
+              is set).
+            */}
+            <Badge variant="secondary">Topic: {globalCategoryLabel}</Badge>
             {activeCompoundKey && (
               <button
                 type="button"
@@ -289,7 +294,8 @@ export function IssuesTable({
               >
                 <Badge variant="outline" className="border-primary/60 text-foreground max-w-[min(280px,100%)]">
                   <span className="truncate">
-                    {activeClusterLabel ?? "Semantic cluster"} <span className="text-muted-foreground">({activeClusterId.slice(0, 8)}…)</span>
+                    {/* Family name fallback — clusters are surfaced as Families. See docs/ARCHITECTURE.md §6.0. */}
+                    {activeClusterLabel ?? "Unnamed family"} <span className="text-muted-foreground">({activeClusterId.slice(0, 8)}…)</span>
                   </span>
                   <span className="ml-1" aria-hidden>×</span>
                 </Badge>

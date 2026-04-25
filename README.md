@@ -7,7 +7,7 @@ If the codebase feels overwhelming, start here.
 The app has **four big layers**:
 
 1. **Ingest** feedback from public sources (`lib/scrapers/*`, `/api/scrape*`).
-2. **Derive** signals (sentiment, category, impact, classification) (`lib/analytics/*`, `lib/classification/*`).
+2. **Derive** signals (sentiment, topic, impact, LLM classification) (`lib/analytics/*`, `lib/classification/*`). "Topic" is the heuristic regex bucket; "LLM classification" is the strict-schema record produced by the OpenAI classifier — see `docs/ARCHITECTURE.md` §6.0 for the glossary.
 3. **Store/query** everything via Supabase-backed API routes (`app/api/*`, `lib/storage/*`).
 4. **Present** dashboard + triage UI (`app/page.tsx`, `components/dashboard/*`).
 

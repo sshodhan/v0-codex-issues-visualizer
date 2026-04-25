@@ -1,3 +1,12 @@
+// LLM `category` enum — fixed 12-value strict-schema field produced by
+// the OpenAI classifier (lib/classification/schema.ts). Surfaced in the
+// UI as "LLM category" (e.g. the Hero card classification cloud).
+// Deliberately disjoint from the heuristic `categories` SQL table
+// (Bug, Feature Request, Performance, UX/UI, …) which is surfaced as
+// "Topic". Renaming this field would cascade through the JSON schema,
+// the prompt, the DB column, the materialized view, and every API
+// consumer — kept as-is on purpose. See docs/ARCHITECTURE.md §6.0 —
+// Glossary.
 export const CATEGORY_ENUM = [
   "code-generation-quality",
   "hallucination",

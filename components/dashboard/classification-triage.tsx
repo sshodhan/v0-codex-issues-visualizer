@@ -536,7 +536,7 @@ export function ClassificationTriage({
               {semanticClusters.map((cluster) => {
                 const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
                   ? cluster.label!
-                  : "Unlabelled cluster"
+                  : "Unnamed family"
                 // Chip text makes in-scope vs total disambiguation
                 // explicit: primary badge is observations visible in the
                 // current window, outline badge (when different) is the
@@ -732,7 +732,7 @@ export function ClassificationTriage({
                   <p className="mt-1 font-medium">
                     {hasTrustedLabel(selected.cluster_label, selected.cluster_label_confidence)
                       ? selected.cluster_label
-                      : "Unlabelled cluster"}
+                      : "Unnamed family"}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {selected.cluster_size ?? 0} related observation
@@ -1035,7 +1035,7 @@ function ClusterMemberPreview({
   if (!show || !cluster) return null
   const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
     ? cluster.label!
-    : "Unlabelled cluster"
+    : "Unnamed family"
   const extraMembers = Math.max(0, cluster.in_window - cluster.samples.length)
   return (
     <div className="rounded-md border bg-muted/20 p-3 space-y-2">
@@ -1251,7 +1251,7 @@ function LayerBreadcrumb({
   const clusterLabel = record.cluster_id
     ? hasTrustedLabel(record.cluster_label, record.cluster_label_confidence)
       ? record.cluster_label
-      : "Unlabelled cluster"
+      : "Unnamed family"
     : null
   const groupLabel = `${record.effective_category} › ${record.subcategory || "General"}`
 

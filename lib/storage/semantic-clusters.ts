@@ -108,6 +108,13 @@ function semanticClusterKey(observationIds: string[]): string {
   return `semantic:${digest}`
 }
 
+// LLM cluster-name generator. Result is stored on `clusters.label` /
+// `label_confidence` and surfaced in the UI as the Family's display
+// name (the row title in "Top Families"). When labelling fails or
+// confidence is below the threshold, the UI shows "Unnamed family".
+// Distinct from per-issue `llm_subcategory` (free-text on the
+// classification record) — that's per-observation, this is per-cluster.
+// See docs/ARCHITECTURE.md §6.0 — Glossary.
 async function labelSemanticCluster(titles: string[]): Promise<{
   label: string
   rationale: string

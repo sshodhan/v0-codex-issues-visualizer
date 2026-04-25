@@ -80,6 +80,10 @@ export interface DashboardStats {
     negativeRatio: number
     sourceDiversity: number
     urgencyScore: number
+    /** LLM-category breakdown of `nowCount` (v15+ /api/stats; older payloads omit). */
+    llmCategoryBreakdown?: Array<{ slug: string; count: number }>
+    /** Count of `nowCount` rows with no LLM classification yet (v15+ /api/stats). */
+    llmUnclassifiedCount?: number
     topIssues: Array<{
       id: string
       title: string
