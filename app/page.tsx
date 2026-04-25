@@ -777,6 +777,7 @@ function DashboardContentInner() {
               <CategoryIssuesGrid
                 insights={stats.realtimeInsights}
                 skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
+                onViewFullList={handleHeroExploreIssues}
               />
 
               {/* Trend Chart - Historical context */}
