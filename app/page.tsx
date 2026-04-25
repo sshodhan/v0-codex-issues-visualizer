@@ -20,7 +20,7 @@ import { SourceChart } from "@/components/dashboard/source-chart"
 import { TrendChart } from "@/components/dashboard/trend-chart"
 import { PriorityMatrix } from "@/components/dashboard/priority-matrix"
 import { FingerprintSurgeCard } from "@/components/dashboard/fingerprint-surge-card"
-import { CategoryHeatmap } from "@/components/dashboard/category-heatmap"
+
 import { IssuesTable } from "@/components/dashboard/issues-table"
 import { CategoryIssuesGrid } from "@/components/dashboard/category-issues-grid"
 import { ClassificationTriage } from "@/components/dashboard/classification-triage"
@@ -758,10 +758,9 @@ function DashboardContentInner() {
               />
 
               {/* Charts Row - Visual context */}
-              <div className="grid gap-6 lg:grid-cols-3">
+              <div className="grid gap-6 lg:grid-cols-2">
                 <SentimentChart data={stats.sentimentBreakdown} />
                 <SourceChart data={stats.sourceBreakdown} />
-                <CategoryHeatmap data={stats.categorySentimentBreakdown} />
               </div>
 
               {/* Priority Matrix - Actionable view */}
@@ -775,16 +774,11 @@ function DashboardContentInner() {
                 variant={isV2 ? "v2" : "v1"}
               />
 
-              <div className="grid gap-6 lg:grid-cols-2">
-                <CategoryIssuesGrid
-                  insights={stats.realtimeInsights}
-                  skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
-                />
-                <CompetitiveMentions
-                  mentions={stats.competitiveMentions || []}
-                  meta={stats.competitiveMentionsMeta}
-                />
-              </div>
+              <CategoryIssuesGrid
+                insights={stats.realtimeInsights}
+                skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
+                onViewFullList={handleHeroExploreIssues}
+              />
 
               {/* Trend Chart - Historical context */}
               {stats.trendData.length > 0 && (
@@ -832,7 +826,7 @@ function DashboardContentInner() {
               </section>
 
               {/* Issues Table - Deep dive zone */}
-              <div id="issues-table-anchor" className="scroll-mt-20">
+              <div id="dashboard-issues-table-anchor" className="scroll-mt-20">
                 <IssuesTable
                   issues={issues}
                   isLoading={issuesLoading}
@@ -881,6 +875,22 @@ function DashboardContentInner() {
                 days={globalDays} 
                 pipelineState={clusterRollup?.pipeline_state} 
               />
+
+              {/* Issues Table - Full filtered list */}
+              <div id="issues-table-anchor" className="scroll-mt-20">
+                <IssuesTable
+                  issues={issues}
+                  isLoading={issuesLoading}
+                  globalTimeLabel={globalTimeLabel}
+                  globalCategoryLabel={globalCategoryLabel}
+                  observationCount={issues.length}
+                  canonicalCount={stats?.totalIssues || issues.length}
+                  onFilterChange={handleFilterChange}
+                  activeCompoundKey={compoundKeyFromUrl}
+                  activeClusterId={clusterIdFromUrl ?? undefined}
+                  activeClusterLabel={activeClusterLabel ?? undefined}
+                />
+              </div>
             </TabsContent>
 
             <TabsContent value="story" className="mt-6 min-h-screen">
@@ -917,6 +927,12 @@ function DashboardContentInner() {
                   llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : null
                 }
               />
+              <div className="mt-6">
+                <CompetitiveMentions
+                  mentions={stats.competitiveMentions || []}
+                  meta={stats.competitiveMentionsMeta}
+                />
+              </div>
             </TabsContent>
 
             {/* AI Classifications Tab */}

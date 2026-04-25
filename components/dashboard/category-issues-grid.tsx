@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ExternalLink, ArrowUpRight, ArrowDownRight, Zap } from "lucide-react"
+import { ExternalLink, ArrowUpRight, ArrowDownRight, Zap, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface RealtimeInsight {
@@ -27,6 +27,7 @@ interface CategoryIssuesGridProps {
   insights: RealtimeInsight[]
   skipFirstCategorySlug?: string | null
   maxIssuesPerCategory?: number
+  onViewFullList?: (categorySlug: string) => void
 }
 
 function SentimentBar({ negativeRatio }: { negativeRatio: number }) {
@@ -56,10 +57,12 @@ function CategoryCard({
   insight,
   rank,
   maxIssues,
+  onViewFullList,
 }: {
   insight: RealtimeInsight
   rank: number
   maxIssues: number
+  onViewFullList?: (categorySlug: string) => void
 }) {
   const isRising = insight.momentum >= 0
   const displayIssues = insight.topIssues.slice(0, maxIssues)
@@ -158,6 +161,15 @@ function CategoryCard({
             ))}
           </div>
         )}
+        {onViewFullList && (
+          <button
+            onClick={() => onViewFullList(insight.category.slug)}
+            className="mt-4 flex w-full items-center justify-center gap-1 text-sm font-medium text-primary hover:text-primary/80 transition-colors"
+          >
+            View full list
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
     </div>
   )
@@ -167,6 +179,7 @@ export function CategoryIssuesGrid({
   insights,
   skipFirstCategorySlug,
   maxIssuesPerCategory = 3,
+  onViewFullList,
 }: CategoryIssuesGridProps) {
   // Filter out the hero category if specified
   const displayed = skipFirstCategorySlug
@@ -226,6 +239,7 @@ export function CategoryIssuesGrid({
                 insight={insight}
                 rank={globalRank}
                 maxIssues={maxIssuesPerCategory}
+                onViewFullList={onViewFullList}
               />
             )
           })}
