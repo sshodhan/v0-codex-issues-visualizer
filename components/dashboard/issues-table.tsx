@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, Fragment } from "react"
+import { useState, useEffect, Fragment } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -66,7 +66,7 @@ export function IssuesTable({
   const [order, setOrder] = useState("desc")
   const [sentimentFilter, setSentimentFilter] = useState("all")
   
-  // Extract unique sources from issues and initialize all as selected
+  // Extract unique sources from issues
   const allSources = Array.from(
     new Map(
       issues
@@ -75,9 +75,27 @@ export function IssuesTable({
     ).values()
   ).sort((a, b) => a.name.localeCompare(b.name))
   
-  const [selectedSources, setSelectedSources] = useState<Set<string>>(
-    new Set(allSources.map((s) => s.slug))
-  )
+  // Start with empty set, then sync when sources load
+  const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
+  
+  // Sync selectedSources when allSources changes (e.g., after data loads)
+  // This ensures all sources are selected by default once data is available
+  useEffect(() => {
+    const allSourceSlugs = allSources.map((s) => s.slug)
+    // Only auto-select all if we have sources and none are currently selected
+    // (avoids overwriting user's manual selections when data refreshes)
+    if (allSourceSlugs.length > 0 && selectedSources.size === 0) {
+      setSelectedSources(new Set(allSourceSlugs))
+    }
+    // Also add any new sources that weren't in the previous set
+    // (handles case where new source data appears after initial load)
+    if (allSourceSlugs.length > 0 && selectedSources.size > 0) {
+      const newSources = allSourceSlugs.filter((slug) => !selectedSources.has(slug))
+      if (newSources.length > 0) {
+        setSelectedSources((prev) => new Set([...prev, ...newSources]))
+      }
+    }
+  }, [allSources.map((s) => s.slug).join(",")])
 
   const handleSort = (column: string) => {
     const newOrder = sortBy === column && order === "desc" ? "asc" : "desc"
