@@ -661,12 +661,12 @@ function DashboardContentInner() {
               </TabsTrigger>
               <TabsTrigger value="v3" className="gap-1.5 text-xs sm:text-sm py-2.5">
                 <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="truncate">V3</span>
+                <span className="truncate">Triage</span>
               </TabsTrigger>
-              <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
-                <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="truncate">Story</span>
-              </TabsTrigger>
+  <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
+  <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+  <span className="truncate">Birds Eye View</span>
+  </TabsTrigger>
               <TabsTrigger value="classifications" className="gap-1.5 text-xs sm:text-sm py-2.5 relative">
                 <BrainCircuit className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
                 <span className="truncate sm:hidden">AI</span>
@@ -749,7 +749,7 @@ function DashboardContentInner() {
               )}
 
               {/* Secondary KPI Cards - Insight-first design */}
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2">
                 {kpiSummary.topRiskCategory && (
                   <InsightKpiCard
                     category={kpiSummary.topRiskCategory.name}
@@ -777,19 +777,6 @@ function DashboardContentInner() {
                     variant="impact"
                   />
                 )}
-
-                {/* Orientation metric - kept minimal */}
-                <StatCard
-                  title="Total Signals"
-                  value={kpiSummary.totalSignals}
-                  subtitle="Baseline volume across all sources"
-                  contextText={kpiSummary.otherRate > 10 
-                    ? `${kpiSummary.otherRate.toFixed(0)}% uncategorized - consider taxonomy review`
-                    : "Use trends and categories for prioritization, not raw counts."
-                  }
-                  icon={<BarChart3 className="h-5 w-5" />}
-                  variant={kpiSummary.otherRate > 15 ? "warning" : "default"}
-                />
               </div>
 
               {/* Global Filters */}
