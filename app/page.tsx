@@ -826,7 +826,7 @@ function DashboardContentInner() {
               </section>
 
               {/* Issues Table - Deep dive zone */}
-              <div id="issues-table-anchor" className="scroll-mt-20">
+              <div id="dashboard-issues-table-anchor" className="scroll-mt-20">
                 <IssuesTable
                   issues={issues}
                   isLoading={issuesLoading}
@@ -875,6 +875,22 @@ function DashboardContentInner() {
                 days={globalDays} 
                 pipelineState={clusterRollup?.pipeline_state} 
               />
+
+              {/* Issues Table - Full filtered list */}
+              <div id="issues-table-anchor" className="scroll-mt-20">
+                <IssuesTable
+                  issues={issues}
+                  isLoading={issuesLoading}
+                  globalTimeLabel={globalTimeLabel}
+                  globalCategoryLabel={globalCategoryLabel}
+                  observationCount={issues.length}
+                  canonicalCount={stats?.totalIssues || issues.length}
+                  onFilterChange={handleFilterChange}
+                  activeCompoundKey={compoundKeyFromUrl}
+                  activeClusterId={clusterIdFromUrl ?? undefined}
+                  activeClusterLabel={activeClusterLabel ?? undefined}
+                />
+              </div>
             </TabsContent>
 
             <TabsContent value="story" className="mt-6 min-h-screen">
