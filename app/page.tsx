@@ -748,21 +748,6 @@ function DashboardContentInner() {
                 </>
               )}
 
-              {/* Secondary KPI Card - Most Impactful Theme */}
-              {kpiSummary.mostImpactfulTheme && (
-                <InsightKpiCard
-                  category={kpiSummary.mostImpactfulTheme.name}
-                  headline={`Highest average impact score among categories with sustained volume.`}
-                  metrics={{
-                    total: kpiSummary.mostImpactfulTheme.total,
-                    negativeShare: kpiSummary.mostImpactfulTheme.negativeShare,
-                    avgImpact: kpiSummary.mostImpactfulTheme.avgImpact,
-                  }}
-                  topIssue={kpiSummary.mostImpactfulTheme.topIssue || undefined}
-                  variant="impact"
-                />
-              )}
-
               {/* Global Filters */}
               <GlobalFilterBar
                 timeDays={globalDays}
