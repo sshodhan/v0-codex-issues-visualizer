@@ -18,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ExternalLink, ChevronDown, ChevronUp, Filter } from "lucide-react"
+import { ExternalLink, ChevronDown, ChevronUp, Filter, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDistanceToNow } from "date-fns"
 import type { Issue } from "@/hooks/use-dashboard-data"
@@ -65,6 +65,7 @@ export function IssuesTable({
   const [sortBy, setSortBy] = useState("impact_score")
   const [order, setOrder] = useState("desc")
   const [sentimentFilter, setSentimentFilter] = useState("all")
+  const [llmSubcategoryFilter, setLlmSubcategoryFilter] = useState("all")
   
   // Extract unique sources from issues
   const allSources = Array.from(
@@ -74,6 +75,15 @@ export function IssuesTable({
         .map((issue) => [issue.source!.slug, issue.source!])
     ).values()
   ).sort((a, b) => a.name.localeCompare(b.name))
+  
+  // Extract unique LLM subcategories from issues
+  const allLlmSubcategories = Array.from(
+    new Set(
+      issues
+        .filter((issue) => issue.llm_subcategory)
+        .map((issue) => issue.llm_subcategory!)
+    )
+  ).sort()
   
   // Start with empty set, then sync when sources load
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
@@ -130,7 +140,8 @@ export function IssuesTable({
   const filteredIssues = issues.filter((issue) => {
     const sourceMatch = !issue.source || selectedSources.has(issue.source.slug)
     const sentimentMatch = sentimentFilter === "all" || issue.sentiment === sentimentFilter
-    return sourceMatch && sentimentMatch
+    const llmMatch = llmSubcategoryFilter === "all" || issue.llm_subcategory === llmSubcategoryFilter
+    return sourceMatch && sentimentMatch && llmMatch
   })
 
   const getSentimentBadge = (sentiment: string) => {
@@ -196,6 +207,22 @@ export function IssuesTable({
                   <SelectItem value="neutral">Neutral</SelectItem>
                 </SelectContent>
               </Select>
+              
+              {allLlmSubcategories.length > 0 && (
+                <Select value={llmSubcategoryFilter} onValueChange={setLlmSubcategoryFilter}>
+                  <SelectTrigger className="w-[180px] bg-secondary border-border text-foreground">
+                    <SelectValue placeholder="LLM Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All LLM Categories</SelectItem>
+                    {allLlmSubcategories.map((subcategory) => (
+                      <SelectItem key={subcategory} value={subcategory}>
+                        {subcategory}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
 
@@ -224,9 +251,20 @@ export function IssuesTable({
             </div>
           )}
 
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground items-center">
             <Badge variant="secondary">Window: {globalTimeLabel}</Badge>
-            <Badge variant="secondary">Cluster: {globalCategoryLabel}</Badge>
+            <div className="flex items-center gap-1">
+              <Badge variant="secondary">Cluster: {globalCategoryLabel}</Badge>
+              <button
+                type="button"
+                onClick={() => onFilterChange({ cluster_id: null })}
+                className="inline-flex items-center rounded-md hover:bg-destructive/20 transition-colors p-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Clear ${globalCategoryLabel} cluster filter`}
+                title={`Clear ${globalCategoryLabel} filter`}
+              >
+                <X className="h-3 w-3 text-muted-foreground hover:text-destructive" />
+              </button>
+            </div>
             {activeCompoundKey && (
               <button
                 type="button"
