@@ -346,6 +346,26 @@ function DashboardContentInner() {
     }
   }
 
+  const handleHeroLlmCategoryDrill = (
+    categorySlug: string,
+    llmCategorySlug: string,
+  ) => {
+    setGlobalCategory(categorySlug)
+    setActiveTab("classifications")
+    applyTriageContextParams({
+      llm: llmCategorySlug,
+      group: null,
+    })
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        const el =
+          document.getElementById("triage-llm-link-scope") ||
+          document.getElementById("triage-top-groups")
+        el?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    }
+  }
+
   const handleOpenDashboardFromStoryAtlas = () => {
     setActiveTab("v3")
     if (typeof window !== "undefined") {
@@ -699,6 +719,7 @@ function DashboardContentInner() {
                     topInsight={heroInsight}
                     onExploreIssues={handleHeroExploreIssues}
                     onNavigateToCategory={handleNavigateToCategory}
+                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
                     issueTableTimeLabel={globalTimeLabel}
                     variant="v2"
                   />
@@ -742,6 +763,7 @@ function DashboardContentInner() {
                     topInsight={heroInsight}
                     onExploreIssues={handleHeroExploreIssues}
                     onNavigateToCategory={handleNavigateToCategory}
+                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
                     issueTableTimeLabel={globalTimeLabel}
                     variant="v1"
                   />

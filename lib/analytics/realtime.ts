@@ -9,6 +9,13 @@ export interface RealtimeIssueInput {
   impact_score: number | null
   category: { name: string; slug: string; color: string } | null
   source: { name: string; slug: string } | null
+  /** Latest LLM `classifications.category` for this observation (mv_observation_current.llm_category). */
+  llm_category?: string | null
+}
+
+export interface LlmCategoryCount {
+  slug: string
+  count: number
 }
 
 export interface RealtimeInsight {
@@ -20,6 +27,10 @@ export interface RealtimeInsight {
   negativeRatio: number
   sourceDiversity: number
   urgencyScore: number
+  /** LLM-category breakdown of the issues counted in `nowCount`, sorted desc. */
+  llmCategoryBreakdown: LlmCategoryCount[]
+  /** Count of `nowCount` rows with no LLM classification yet (null `llm_category`). */
+  llmUnclassifiedCount: number
   topIssues: Array<{
     id: string
     title: string
@@ -54,6 +65,8 @@ export function computeRealtimeInsights(
     impactTotal: number
     decayedVolume: number
     sources: Set<string>
+    llmCounts: Map<string, number>
+    llmUnclassified: number
     samples: Array<{
       id: string
       title: string
@@ -79,6 +92,8 @@ export function computeRealtimeInsights(
       impactTotal: 0,
       decayedVolume: 0,
       sources: new Set<string>(),
+      llmCounts: new Map<string, number>(),
+      llmUnclassified: 0,
       samples: [],
     }
 
@@ -93,6 +108,13 @@ export function computeRealtimeInsights(
       bucket.decayedVolume += recency
 
       if (issue.source?.name) bucket.sources.add(issue.source.name)
+
+      const llmSlug = (issue.llm_category || "").trim()
+      if (llmSlug) {
+        bucket.llmCounts.set(llmSlug, (bucket.llmCounts.get(llmSlug) ?? 0) + 1)
+      } else {
+        bucket.llmUnclassified++
+      }
 
       bucket.samples.push({
         id: issue.id,
@@ -125,6 +147,10 @@ export function computeRealtimeInsights(
         ).toFixed(2)
       )
 
+      const llmCategoryBreakdown = Array.from(b.llmCounts.entries())
+        .map(([slug, count]) => ({ slug, count }))
+        .sort((x, y) => y.count - x.count || x.slug.localeCompare(y.slug))
+
       return {
         category: b.category,
         nowCount: b.nowCount,
@@ -134,6 +160,8 @@ export function computeRealtimeInsights(
         negativeRatio: Number((negativeRatio * 100).toFixed(1)),
         sourceDiversity,
         urgencyScore,
+        llmCategoryBreakdown,
+        llmUnclassifiedCount: b.llmUnclassified,
         topIssues: b.samples
           .sort((x, y) => y.impact_score - x.impact_score)
           .slice(0, 3),
