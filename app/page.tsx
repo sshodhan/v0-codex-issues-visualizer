@@ -774,16 +774,10 @@ function DashboardContentInner() {
                 variant={isV2 ? "v2" : "v1"}
               />
 
-              <div className="grid gap-6 lg:grid-cols-2">
-                <CategoryIssuesGrid
-                  insights={stats.realtimeInsights}
-                  skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
-                />
-                <CompetitiveMentions
-                  mentions={stats.competitiveMentions || []}
-                  meta={stats.competitiveMentionsMeta}
-                />
-              </div>
+              <CategoryIssuesGrid
+                insights={stats.realtimeInsights}
+                skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
+              />
 
               {/* Trend Chart - Historical context */}
               {stats.trendData.length > 0 && (
@@ -916,6 +910,12 @@ function DashboardContentInner() {
                   llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : null
                 }
               />
+              <div className="mt-6">
+                <CompetitiveMentions
+                  mentions={stats.competitiveMentions || []}
+                  meta={stats.competitiveMentionsMeta}
+                />
+              </div>
             </TabsContent>
 
             {/* AI Classifications Tab */}
