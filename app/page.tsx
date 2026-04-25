@@ -661,7 +661,7 @@ function DashboardContentInner() {
               </TabsTrigger>
               <TabsTrigger value="v3" className="gap-1.5 text-xs sm:text-sm py-2.5">
                 <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="truncate">V3</span>
+                <span className="truncate">Triage</span>
               </TabsTrigger>
               <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
                 <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
