@@ -20,7 +20,9 @@ const DashboardUxContext = createContext<{
 } | null>(null)
 
 function parseParam(raw: string | null): DashboardUxVersion | null {
-  if (raw === "v1" || raw === "v2" || raw === "v3") return raw
+  // V2 is deprecated - treat it as V3
+  if (raw === "v2") return "v3"
+  if (raw === "v1" || raw === "v3") return raw
   return null
 }
 
@@ -28,7 +30,7 @@ export function DashboardUxProvider({ children }: { children: React.ReactNode })
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [version, setVersionState] = useState<DashboardUxVersion>("v2")
+  const [version, setVersionState] = useState<DashboardUxVersion>("v3")
 
   // URL wins, then localStorage; default v2. Sync `?ux=` from storage when missing so links are shareable.
   useEffect(() => {
