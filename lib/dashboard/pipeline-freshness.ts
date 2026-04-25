@@ -210,20 +210,26 @@ export function derivePipelineFreshness(
 
     const parts: string[] = []
     if (prereq.pendingClassification > 0) {
-      // When `highImpactPendingClassification` is provided and differs
-      // from the raw pending count, split the message so the reviewer
-      // understands that "Run classify-backfill" can only work on the
-      // high-impact subset. When the two are equal (or only one number
-      // is available for an older consumer) fall back to the original
-      // single-number phrasing so nothing regresses.
+      // Split messaging to distinguish between:
+      // 1. New unclassified items (highImpactPendingClassification)
+      // 2. Previously classified items with lower scores (pendingClassification - highImpactPendingClassification)
       const high = prereq.highImpactPendingClassification
-      if (high > 0 && high < prereq.pendingClassification) {
+      const low = prereq.pendingClassification - high
+      
+      if (high > 0 && low > 0) {
+        // Both new high-impact unclassified AND previously classified low-impact items
         parts.push(
-          `${prereq.pendingClassification} awaiting classification (${high} high-impact)`,
+          `${high} new issues awaiting classification (high-impact) · ${low} previously classified with lower scores`,
         )
-      } else if (high === 0 && prereq.pendingClassification > 0) {
+      } else if (high > 0 && low === 0) {
+        // Only new high-impact unclassified items
         parts.push(
-          `${prereq.pendingClassification} awaiting classification (all below impact-${MIN_IMPACT_SCORE} threshold)`,
+          `${high} new issues awaiting classification (high-impact)`,
+        )
+      } else if (high === 0 && low > 0) {
+        // Only previously classified items with lower scores (all below threshold)
+        parts.push(
+          `${low} previously classified issues below review threshold (impact-${MIN_IMPACT_SCORE})`,
         )
       } else {
         parts.push(`${prereq.pendingClassification} awaiting classification`)

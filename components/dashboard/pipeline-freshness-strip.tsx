@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
 import {
@@ -7,10 +8,14 @@ import {
   ArrowRight,
   CheckCircle2,
   CircleDashed,
+  ChevronDown,
   HelpCircle,
+  Info,
   XCircle,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import {
   derivePipelineFreshness,
@@ -50,6 +55,8 @@ export function PipelineFreshnessStrip({
   asOfActive = false,
   className,
 }: PipelineFreshnessStripProps) {
+  const [isOpen, setIsOpen] = useState(false)
+  
   const vm = derivePipelineFreshness({
     prereq,
     pendingReviewCount,
@@ -61,80 +68,107 @@ export function PipelineFreshnessStrip({
 
   const toneStyles = getToneStyles(vm.state)
   const ariaLabel = `Pipeline status: ${vm.state}. ${vm.headline}`
+  const lastSyncLabel = vm.metrics.lastScrape.value || "Unknown"
 
   return (
-    <div
+    <Collapsible
+      open={isOpen}
+      onOpenChange={setIsOpen}
       role="status"
       aria-live="polite"
       aria-label={ariaLabel}
       data-testid="pipeline-freshness-strip"
       data-state={vm.state}
       data-reason={vm.reason}
-      className={`flex flex-col gap-2 rounded-md border px-3 py-2 text-sm ${toneStyles.container} ${className ?? ""}`}
+      className={`rounded-md border ${toneStyles.container} ${className ?? ""}`}
     >
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
+      <CollapsibleTrigger className={`w-full flex flex-wrap items-start gap-x-3 gap-y-1 px-3 py-2 text-sm hover:bg-accent/50 transition-colors`}>
         <span className={`mt-0.5 flex-shrink-0 ${toneStyles.icon}`}>
           <ToneIcon state={vm.state} />
         </span>
-        <div className="min-w-0 flex-1">
-          <p className="font-medium text-foreground">{vm.headline}</p>
+        <div className="min-w-0 flex-1 text-left">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-medium text-foreground">{vm.headline}</p>
+            <span className="text-xs text-muted-foreground">Last sync: {lastSyncLabel}</span>
+          </div>
           {vm.subtext && (
-            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-              {vm.subtext}
-            </p>
+            <div className="flex items-start gap-2 mt-0.5">
+              <p className="text-xs text-muted-foreground leading-relaxed flex-1">
+                {vm.subtext}
+              </p>
+              {vm.subtext.includes("classification") && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/60 hover:text-muted-foreground cursor-help mt-0.5" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-xs">
+                      <p className="font-medium mb-1">Classification:</p>
+                      <p>AI-powered analysis that assigns impact severity levels and categories to new issues. "High-impact" issues are prioritized for review. Previously classified issues with lower scores below the review threshold are also tracked separately.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </div>
           )}
         </div>
         <Badge
           variant="outline"
-          className={`text-[10px] font-mono uppercase ${toneStyles.badge}`}
+          className={`text-[10px] font-mono uppercase flex-shrink-0 ${toneStyles.badge}`}
         >
           {vm.state}
         </Badge>
-      </div>
+        <ChevronDown 
+          className={`h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          aria-hidden
+        />
+      </CollapsibleTrigger>
 
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-4">
-        <MetricCell metric={vm.metrics.lastScrape} />
-        <MetricCell metric={vm.metrics.clustered} />
-        <MetricCell metric={vm.metrics.classified} />
-        <MetricCell metric={vm.metrics.pendingReview} />
-      </div>
-
-      {(vm.flags.lastClassifyBackfillFailed || asOfActive || vm.cta) && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          {vm.flags.lastClassifyBackfillFailed && (
-            <span className="inline-flex items-center gap-1 text-destructive">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              Last classify-backfill run: failed
-            </span>
-          )}
-          {asOfActive && (
-            <span className="text-muted-foreground">
-              Historical replay active.{" "}
-              <Link
-                href="/"
-                className="font-medium text-primary underline-offset-4 hover:underline"
-              >
-                Return to live
-              </Link>
-            </span>
-          )}
-          {vm.cta && (
-            <a
-              href={vm.cta.href}
-              className={`ml-auto inline-flex items-center gap-1 font-medium hover:underline ${toneStyles.ctaLink}`}
-            >
-              {vm.cta.label}
-              <ArrowRight className="h-3 w-3" />
-            </a>
-          )}
-          <span className="text-muted-foreground">Window: {windowLabel}</span>
+      <CollapsibleContent className="px-3 pb-2 pt-0 space-y-2">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-4">
+          <MetricCell metric={vm.metrics.lastScrape} />
+          <MetricCell metric={vm.metrics.clustered} />
+          <MetricCell metric={vm.metrics.classified} />
+          <MetricCell metric={vm.metrics.pendingReview} />
         </div>
-      )}
 
-      {!(vm.flags.lastClassifyBackfillFailed || asOfActive || vm.cta) && (
-        <p className="text-xs text-muted-foreground">Window: {windowLabel}</p>
-      )}
-    </div>
+        {(vm.flags.lastClassifyBackfillFailed || asOfActive || vm.cta) && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            {vm.flags.lastClassifyBackfillFailed && (
+              <span className="inline-flex items-center gap-1 text-destructive">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Last classify-backfill run: failed
+              </span>
+            )}
+            {asOfActive && (
+              <span className="text-muted-foreground">
+                Historical replay active.{" "}
+                <Link
+                  href="/"
+                  className="font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  Return to live
+                </Link>
+              </span>
+            )}
+            {vm.cta && (
+              <a
+                href={vm.cta.href}
+                className={`ml-auto inline-flex items-center gap-1 font-medium hover:underline ${toneStyles.ctaLink}`}
+              >
+                {vm.cta.label}
+                <ArrowRight className="h-3 w-3" />
+              </a>
+            )}
+            <span className="text-muted-foreground">Window: {windowLabel}</span>
+          </div>
+        )}
+
+        {!(vm.flags.lastClassifyBackfillFailed || asOfActive || vm.cta) && (
+          <p className="text-xs text-muted-foreground">Window: {windowLabel}</p>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 

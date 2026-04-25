@@ -46,14 +46,8 @@ export function DataProvenanceStrip({
 
   return (
     <div
-      className={`flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1 rounded-md border border-border/80 bg-muted/30 px-3 py-2 text-sm text-muted-foreground ${className ?? ""}`}
+      className={`flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1 text-sm text-muted-foreground ${className ?? ""}`}
     >
-      <span>
-        <span className="font-medium text-foreground">Last full sync:</span> {lastSyncLabel}
-      </span>
-      <span>
-        <span className="font-medium text-foreground">Issue table window:</span> {issueWindowLabel}
-      </span>
       {reviewerPipelineText && (
         <span>
           <span className="font-medium text-foreground">Pipeline:</span> {reviewerPipelineText}
