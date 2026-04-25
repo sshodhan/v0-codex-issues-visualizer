@@ -749,7 +749,7 @@ function DashboardContentInner() {
               )}
 
               {/* Secondary KPI Cards - Insight-first design */}
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2">
                 {kpiSummary.topRiskCategory && (
                   <InsightKpiCard
                     category={kpiSummary.topRiskCategory.name}
@@ -777,19 +777,6 @@ function DashboardContentInner() {
                     variant="impact"
                   />
                 )}
-
-                {/* Orientation metric - kept minimal */}
-                <StatCard
-                  title="Total Signals"
-                  value={kpiSummary.totalSignals}
-                  subtitle="Baseline volume across all sources"
-                  contextText={kpiSummary.otherRate > 10 
-                    ? `${kpiSummary.otherRate.toFixed(0)}% uncategorized - consider taxonomy review`
-                    : "Use trends and categories for prioritization, not raw counts."
-                  }
-                  icon={<BarChart3 className="h-5 w-5" />}
-                  variant={kpiSummary.otherRate > 15 ? "warning" : "default"}
-                />
               </div>
 
               {/* Global Filters */}
