@@ -748,37 +748,6 @@ function DashboardContentInner() {
                 </>
               )}
 
-              {/* Secondary KPI Cards - Insight-first design */}
-              <div className="grid gap-4 sm:grid-cols-2">
-                {kpiSummary.topRiskCategory && (
-                  <InsightKpiCard
-                    category={kpiSummary.topRiskCategory.name}
-                    headline={`${kpiSummary.topRiskCategory.name} has the highest urgency score combining volume, sentiment, and impact.`}
-                    metrics={{
-                      total: kpiSummary.topRiskCategory.total,
-                      negativeShare: kpiSummary.topRiskCategory.negativeShare,
-                      avgImpact: kpiSummary.topRiskCategory.avgImpact,
-                    }}
-                    topIssue={kpiSummary.topRiskCategory.topIssue || undefined}
-                    variant="risk"
-                  />
-                )}
-                
-                {kpiSummary.mostImpactfulTheme && kpiSummary.mostImpactfulTheme.name !== kpiSummary.topRiskCategory?.name && (
-                  <InsightKpiCard
-                    category={kpiSummary.mostImpactfulTheme.name}
-                    headline={`Highest average impact score among categories with sustained volume.`}
-                    metrics={{
-                      total: kpiSummary.mostImpactfulTheme.total,
-                      negativeShare: kpiSummary.mostImpactfulTheme.negativeShare,
-                      avgImpact: kpiSummary.mostImpactfulTheme.avgImpact,
-                    }}
-                    topIssue={kpiSummary.mostImpactfulTheme.topIssue || undefined}
-                    variant="impact"
-                  />
-                )}
-              </div>
-
               {/* Global Filters */}
               <GlobalFilterBar
                 timeDays={globalDays}
