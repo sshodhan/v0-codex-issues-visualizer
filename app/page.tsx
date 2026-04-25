@@ -487,6 +487,70 @@ function DashboardContentInner() {
     return computeHeroInsight(stats?.realtimeInsights || [])
   }, [stats?.realtimeInsights])
 
+  const nowNextCrosswalk = useMemo(() => {
+    if (!stats || !heroInsight) return null
+
+    const breakingNowRank = Math.max(
+      1,
+      (stats.realtimeInsights || []).findIndex(
+        (row) => row.category.slug === heroInsight.categorySlug,
+      ) + 1,
+    )
+
+    const categoryRows = new Map<
+      string,
+      { categoryName: string; totalActionability: number; totalImpact: number; totalFrequency: number; count: number }
+    >()
+    for (const row of stats.priorityMatrix || []) {
+      const categoryName = row.category?.name || "Uncategorized"
+      const key = categoryName.toLowerCase().replace(/\s+/g, "-")
+      const bucket = categoryRows.get(key) ?? {
+        categoryName,
+        totalActionability: 0,
+        totalImpact: 0,
+        totalFrequency: 0,
+        count: 0,
+      }
+      bucket.totalActionability += Number(row.actionability ?? 0)
+      bucket.totalImpact += Number(row.impact_score ?? 0)
+      bucket.totalFrequency += Number(row.frequency_count ?? 0)
+      bucket.count += 1
+      categoryRows.set(key, bucket)
+    }
+
+    const fixFirstOrder = Array.from(categoryRows.entries())
+      .map(([slug, bucket]) => {
+        const avgActionability = bucket.count > 0 ? bucket.totalActionability / bucket.count : 0
+        const avgImpact = bucket.count > 0 ? bucket.totalImpact / bucket.count : 0
+        const normalizedImpact = avgImpact / 10
+        const normalizedFrequency = Math.min(bucket.totalFrequency / 10, 1)
+        const priorityScore = Math.round((normalizedImpact * 0.65 + normalizedFrequency * 0.35) * 100)
+        return {
+          slug,
+          categoryName: bucket.categoryName,
+          actionabilityScore: Math.round(avgActionability * 100),
+          priorityScore,
+        }
+      })
+      .sort(
+        (a, b) =>
+          b.actionabilityScore - a.actionabilityScore || b.priorityScore - a.priorityScore,
+      )
+
+    const fixFirstRank = Math.max(
+      1,
+      fixFirstOrder.findIndex((row) => row.slug === heroInsight.categorySlug) + 1,
+    )
+    const fixFirstRow = fixFirstOrder.find((row) => row.slug === heroInsight.categorySlug) ?? null
+
+    return {
+      category: heroInsight.category,
+      breakingNowRank,
+      fixFirstRank,
+      actionabilityScore: fixFirstRow?.actionabilityScore ?? null,
+    }
+  }, [heroInsight, stats])
+
   const lastScrapeTime = stats?.lastScrape?.completed_at
     ? formatDistanceToNow(new Date(stats.lastScrape.completed_at), {
         addSuffix: true,
@@ -644,6 +708,25 @@ function DashboardContentInner() {
                     onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
                     variant="v2"
                   />
+                  {nowNextCrosswalk && (
+                    <Card className="border-primary/20 bg-primary/5">
+                      <CardContent className="py-3 px-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-primary mb-1">
+                          Crosswalk · now vs next
+                        </p>
+                        <p className="text-sm text-foreground">
+                          <span className="font-medium">{nowNextCrosswalk.category}</span> is{" "}
+                          <span className="font-medium">#{nowNextCrosswalk.breakingNowRank}</span> in
+                          Breaking Now (72h) and{" "}
+                          <span className="font-medium">#{nowNextCrosswalk.fixFirstRank}</span> in
+                          Fix-First Queue
+                          {nowNextCrosswalk.actionabilityScore != null
+                            ? ` (${nowNextCrosswalk.actionabilityScore}/100 actionability).`
+                            : "."}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  )}
                 </>
               ) : (
                 <>
@@ -725,6 +808,10 @@ function DashboardContentInner() {
               </div>
 
               {/* Priority Matrix - Actionable view */}
+              <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                Breaking Now = urgency trend (last 72h). Fix-First Queue = implementation actionability.
+                These can differ and are intended to be read together.
+              </div>
               <PriorityMatrix
                 data={stats.priorityMatrix}
                 onFilterChange={handleFilterChange}
@@ -836,6 +923,25 @@ function DashboardContentInner() {
                     onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
                     variant="v2"
                   />
+                  {nowNextCrosswalk && (
+                    <Card className="border-primary/20 bg-primary/5">
+                      <CardContent className="py-3 px-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-primary mb-1">
+                          Crosswalk · now vs next
+                        </p>
+                        <p className="text-sm text-foreground">
+                          <span className="font-medium">{nowNextCrosswalk.category}</span> is{" "}
+                          <span className="font-medium">#{nowNextCrosswalk.breakingNowRank}</span> in
+                          Breaking Now (72h) and{" "}
+                          <span className="font-medium">#{nowNextCrosswalk.fixFirstRank}</span> in
+                          Fix-First Queue
+                          {nowNextCrosswalk.actionabilityScore != null
+                            ? ` (${nowNextCrosswalk.actionabilityScore}/100 actionability).`
+                            : "."}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  )}
                 </>
               ) : (
                 <>
@@ -917,6 +1023,10 @@ function DashboardContentInner() {
               </div>
 
               {/* Priority Matrix - Actionable view */}
+              <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                Breaking Now = urgency trend (last 72h). Fix-First Queue = implementation actionability.
+                These can differ and are intended to be read together.
+              </div>
               <PriorityMatrix
                 data={stats.priorityMatrix}
                 onFilterChange={handleFilterChange}

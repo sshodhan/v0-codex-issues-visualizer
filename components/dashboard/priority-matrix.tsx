@@ -291,7 +291,7 @@ export function PriorityMatrix({
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <div className="flex items-center gap-2">
-              <CardTitle className="text-lg font-semibold text-foreground">Priority Matrix</CardTitle>
+              <CardTitle className="text-lg font-semibold text-foreground">Fix-First Queue (Actionability)</CardTitle>
               {variant === "v2" && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -315,7 +315,8 @@ export function PriorityMatrix({
               )}
             </div>
             <p className="text-sm text-muted-foreground mt-1">
-              Ranked by actionability — impact, code-addressability, repro quality, and cross-source confirmation. Click an error-code chip to drill into its observations.
+              Ranked by actionability — impact, code-addressability, repro quality, and cross-source confirmation.
+              Zone badges stay on legacy queue thresholds so long-running team norms remain stable.
             </p>
           </div>
           <div className="flex gap-3 text-xs text-muted-foreground">
