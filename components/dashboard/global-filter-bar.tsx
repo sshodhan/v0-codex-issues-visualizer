@@ -1,8 +1,10 @@
 "use client"
 
-import { CalendarDays, Filter } from "lucide-react"
+import { CalendarDays, Filter, X } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 
 const TIME_OPTIONS = [0, 7, 14, 30, 90, 180]
 
@@ -59,16 +61,39 @@ export function GlobalFilterBar({
           />
         </div>
 
-        <div className="space-y-2 rounded-lg border border-border/60 bg-secondary/30 p-3">
+        <div className="space-y-3 rounded-lg border border-border/60 bg-secondary/30 p-3">
           <div className="flex items-center justify-between gap-2">
             <p className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
               <Filter className="h-4 w-4 text-primary" />
               Category focus
             </p>
             <span className="text-xs text-muted-foreground">
-              {categoryOptions[categoryIndex]?.label ?? "All categories"}
+              {categoryValue === "" ? "All categories" : "Filtering"}
             </span>
           </div>
+          
+          {/* Selected Category Display */}
+          <div className="flex items-center gap-2">
+            {categoryValue !== "" ? (
+              <>
+                <Badge variant="secondary" className="capitalize">
+                  {categoryOptions[categoryIndex]?.label ?? "Unknown"}
+                </Badge>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onCategoryChange("")}
+                  className="h-6 w-6 p-0 hover:bg-destructive/20"
+                  title="Reset to all categories"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground italic">No category filter applied</span>
+            )}
+          </div>
+
           <Slider
             value={[categoryIndex]}
             min={0}
@@ -80,7 +105,9 @@ export function GlobalFilterBar({
             }}
           />
           <p className="text-xs text-muted-foreground">
-            {categoryOptions[categoryIndex]?.count ?? 0} issues in selected category
+            {categoryValue === "" 
+              ? "Total issues across all categories" 
+              : `${categoryOptions[categoryIndex]?.count ?? 0} issues in ${categoryOptions[categoryIndex]?.label ?? "selected"} category`}
           </p>
         </div>
       </CardContent>
