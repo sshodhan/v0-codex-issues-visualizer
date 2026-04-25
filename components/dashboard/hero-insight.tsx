@@ -208,7 +208,7 @@ export function HeroInsight({
                   className="bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20 font-semibold"
                 >
                   <AlertTriangle className="h-3 w-3 mr-1" />
-                  Needs attention
+                  Breaking now
                 </Badge>
                 <Badge
                   variant="outline"
