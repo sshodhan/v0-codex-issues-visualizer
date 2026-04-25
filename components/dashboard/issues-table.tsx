@@ -263,21 +263,13 @@ export function IssuesTable({
             {/*
               `globalCategoryLabel` is the heuristic topic label (Bug,
               Feature Request, …). The label noun is "Topic" per
-              docs/ARCHITECTURE.md §6.0. The X clears the (separate)
-              cluster_id drill-down — pre-existing wiring kept as-is.
+              docs/ARCHITECTURE.md §6.0. This is informational only —
+              the topic filter is set/cleared via the GlobalFilterBar
+              slider above. The cluster drill-down has its own
+              dedicated chip below (rendered when `activeClusterId`
+              is set).
             */}
-            <div className="flex items-center gap-1">
-              <Badge variant="secondary">Topic: {globalCategoryLabel}</Badge>
-              <button
-                type="button"
-                onClick={() => onFilterChange({ cluster_id: null })}
-                className="inline-flex items-center rounded-md hover:bg-destructive/20 transition-colors p-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label="Clear semantic cluster drill-down"
-                title="Clear cluster drill-down"
-              >
-                <X className="h-3 w-3 text-muted-foreground hover:text-destructive" />
-              </button>
-            </div>
+            <Badge variant="secondary">Topic: {globalCategoryLabel}</Badge>
             {activeCompoundKey && (
               <button
                 type="button"
