@@ -10,10 +10,12 @@ import {
   CircleDashed,
   ChevronDown,
   HelpCircle,
+  Info,
   XCircle,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import {
   derivePipelineFreshness,
@@ -90,9 +92,24 @@ export function PipelineFreshnessStrip({
             <span className="text-xs text-muted-foreground">Last sync: {lastSyncLabel}</span>
           </div>
           {vm.subtext && (
-            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-              {vm.subtext}
-            </p>
+            <div className="flex items-start gap-2 mt-0.5">
+              <p className="text-xs text-muted-foreground leading-relaxed flex-1">
+                {vm.subtext}
+              </p>
+              {vm.subtext.includes("classification") && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground/60 hover:text-muted-foreground cursor-help mt-0.5" />
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-xs text-xs">
+                      <p className="font-medium mb-1">Classification:</p>
+                      <p>AI-powered analysis that assigns impact severity levels and categories to new issues. "High-impact" issues are prioritized for review. Previously classified issues with lower scores below the review threshold are also tracked separately.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </div>
           )}
         </div>
         <Badge
