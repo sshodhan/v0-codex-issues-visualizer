@@ -65,6 +65,19 @@ export function IssuesTable({
   const [sortBy, setSortBy] = useState("impact_score")
   const [order, setOrder] = useState("desc")
   const [sentimentFilter, setSentimentFilter] = useState("all")
+  
+  // Extract unique sources from issues and initialize all as selected
+  const allSources = Array.from(
+    new Map(
+      issues
+        .filter((issue) => issue.source)
+        .map((issue) => [issue.source!.slug, issue.source!])
+    ).values()
+  ).sort((a, b) => a.name.localeCompare(b.name))
+  
+  const [selectedSources, setSelectedSources] = useState<Set<string>>(
+    new Set(allSources.map((s) => s.slug))
+  )
 
   const handleSort = (column: string) => {
     const newOrder = sortBy === column && order === "desc" ? "asc" : "desc"
@@ -85,6 +98,22 @@ export function IssuesTable({
       order,
     })
   }
+
+  const handleSourceToggle = (sourceSlug: string) => {
+    const newSelected = new Set(selectedSources)
+    if (newSelected.has(sourceSlug)) {
+      newSelected.delete(sourceSlug)
+    } else {
+      newSelected.add(sourceSlug)
+    }
+    setSelectedSources(newSelected)
+  }
+
+  const filteredIssues = issues.filter((issue) => {
+    const sourceMatch = !issue.source || selectedSources.has(issue.source.slug)
+    const sentimentMatch = sentimentFilter === "all" || issue.sentiment === sentimentFilter
+    return sourceMatch && sentimentMatch
+  })
 
   const getSentimentBadge = (sentiment: string) => {
     const variants = {
@@ -152,6 +181,31 @@ export function IssuesTable({
             </div>
           </div>
 
+          {/* Source Filter Buttons */}
+          {allSources.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="text-xs font-semibold text-muted-foreground">Sources:</div>
+              <div className="flex flex-wrap gap-2">
+                {allSources.map((source) => (
+                  <button
+                    key={source.slug}
+                    onClick={() => handleSourceToggle(source.slug)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-md text-xs font-medium transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      selectedSources.has(source.slug)
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "bg-secondary text-muted-foreground hover:bg-secondary/70 border border-border"
+                    )}
+                    aria-pressed={selectedSources.has(source.slug)}
+                    title={`Toggle ${source.name} source`}
+                  >
+                    {source.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             <Badge variant="secondary">Window: {globalTimeLabel}</Badge>
             <Badge variant="secondary">Cluster: {globalCategoryLabel}</Badge>
@@ -198,6 +252,11 @@ export function IssuesTable({
             <p>No issues found</p>
             <p className="text-sm">Try refreshing data or adjusting filters</p>
           </div>
+        ) : filteredIssues.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+            <p>No issues match the selected filters</p>
+            <p className="text-sm">Try adjusting source or sentiment filters</p>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <Table>
@@ -234,7 +293,7 @@ export function IssuesTable({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {issues.map((issue) => (
+                {filteredIssues.map((issue) => (
                   <Fragment key={issue.id}>
                     <TableRow
                       className="border-border hover:bg-secondary/50 cursor-pointer"
