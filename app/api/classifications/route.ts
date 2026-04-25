@@ -71,7 +71,10 @@ export async function GET(request: NextRequest) {
 
   const rows = data || []
   if (rows.length === 0) {
-    return NextResponse.json({ data: [] })
+    return NextResponse.json(
+      { data: [] },
+      { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+    )
   }
 
   // Gather related reviews and observation traceability data in parallel.
@@ -190,8 +193,11 @@ export async function GET(request: NextRequest) {
     }
   })
 
-  return NextResponse.json({
-    data: withReviews,
-    asOf: asOf ? asOf.toISOString() : null,
-  })
+  return NextResponse.json(
+    {
+      data: withReviews,
+      asOf: asOf ? asOf.toISOString() : null,
+    },
+    { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+  )
 }

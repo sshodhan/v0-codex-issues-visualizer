@@ -55,9 +55,12 @@ export async function GET(request: NextRequest) {
       : Math.max(1, Math.ceil(windowHours / 24))
 
   const payload = selectTopFingerprintSurges(rows)
-  return NextResponse.json({
-    ...payload,
-    window_hours: windowHours,
-    window_days: windowDays,
-  })
+  return NextResponse.json(
+    {
+      ...payload,
+      window_hours: windowHours,
+      window_days: windowDays,
+    },
+    { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+  )
 }

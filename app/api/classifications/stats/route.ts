@@ -227,25 +227,28 @@ export async function GET(request: NextRequest) {
   const rows = (classificationData || []) as ClassificationRow[]
   if (rows.length === 0) {
     const summary = await prerequisitesPromise
-    return NextResponse.json({
-      total: 0,
-      needsReviewCount: 0,
-      traceableCount: 0,
-      traceabilityCoverage: 0,
-      byCategory: {},
-      bySeverity: {},
-      byStatus: {},
-      bySentiment: { positive: 0, negative: 0, neutral: 0, unknown: 0 },
-      prerequisites: summary?.prerequisites ?? null,
-      pipeline_state:
-        summary?.pipeline_state ??
-        buildPipelineStateSummary({
-          observationsInWindow: 0,
-          classifiedCount: 0,
-          clusteredCount: 0,
-          sourceHealthy: false,
-        }),
-    })
+    return NextResponse.json(
+      {
+        total: 0,
+        needsReviewCount: 0,
+        traceableCount: 0,
+        traceabilityCoverage: 0,
+        byCategory: {},
+        bySeverity: {},
+        byStatus: {},
+        bySentiment: { positive: 0, negative: 0, neutral: 0, unknown: 0 },
+        prerequisites: summary?.prerequisites ?? null,
+        pipeline_state:
+          summary?.pipeline_state ??
+          buildPipelineStateSummary({
+            observationsInWindow: 0,
+            classifiedCount: 0,
+            clusteredCount: 0,
+            sourceHealthy: false,
+          }),
+      },
+      { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+    )
   }
 
   let reviewQuery = supabase
@@ -328,23 +331,26 @@ export async function GET(request: NextRequest) {
 
   const summary = await prerequisitesPromise
 
-  return NextResponse.json({
-    total: rows.length,
-    needsReviewCount,
-    traceableCount,
-    traceabilityCoverage: rows.length ? Number(((traceableCount / rows.length) * 100).toFixed(1)) : 0,
-    byCategory,
-    bySeverity,
-    byStatus,
-    bySentiment,
-    prerequisites: summary?.prerequisites ?? null,
-    pipeline_state:
-      summary?.pipeline_state ??
-      buildPipelineStateSummary({
-        observationsInWindow: 0,
-        classifiedCount: 0,
-        clusteredCount: 0,
-        sourceHealthy: false,
-      }),
-  })
+  return NextResponse.json(
+    {
+      total: rows.length,
+      needsReviewCount,
+      traceableCount,
+      traceabilityCoverage: rows.length ? Number(((traceableCount / rows.length) * 100).toFixed(1)) : 0,
+      byCategory,
+      bySeverity,
+      byStatus,
+      bySentiment,
+      prerequisites: summary?.prerequisites ?? null,
+      pipeline_state:
+        summary?.pipeline_state ??
+        buildPipelineStateSummary({
+          observationsInWindow: 0,
+          classifiedCount: 0,
+          clusteredCount: 0,
+          sourceHealthy: false,
+        }),
+    },
+    { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+  )
 }
