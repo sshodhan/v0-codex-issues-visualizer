@@ -399,7 +399,7 @@ export async function GET(request: NextRequest) {
     competitiveMentionsMeta,
     lastScrape,
     asOf: asOf ? asOf.toISOString() : null,
-  })
+  }, { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } })
 }
 
 // Per-cluster source diversity feeds the 7% source-diversity term in the

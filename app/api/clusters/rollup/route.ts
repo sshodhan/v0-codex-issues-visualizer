@@ -35,14 +35,17 @@ export async function GET(request: NextRequest) {
       .eq("slug", categorySlug)
     categoryIds = (catRows || []).map((r: { id: string }) => r.id)
     if (categoryIds.length === 0) {
-      return NextResponse.json({
-        clusters: [],
-        pipeline_state: buildPipelineStateSummary({
-          observationsInWindow: 0,
-          classifiedCount: 0,
-          clusteredCount: 0,
-        }),
-      })
+      return NextResponse.json(
+        {
+          clusters: [],
+          pipeline_state: buildPipelineStateSummary({
+            observationsInWindow: 0,
+            classifiedCount: 0,
+            clusteredCount: 0,
+          }),
+        },
+        { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+      )
     }
   }
 
@@ -137,7 +140,10 @@ export async function GET(request: NextRequest) {
     .slice(0, 50)
 
   if (sorted.length === 0) {
-    return NextResponse.json({ clusters: [], pipeline_state })
+    return NextResponse.json(
+      { clusters: [], pipeline_state },
+      { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+    )
   }
 
   const { data: clusterRows, error: cErr } = await supabase
@@ -456,5 +462,8 @@ export async function GET(request: NextRequest) {
     }
   })
 
-  return NextResponse.json({ clusters, pipeline_state })
+  return NextResponse.json(
+    { clusters, pipeline_state },
+    { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
+  )
 }

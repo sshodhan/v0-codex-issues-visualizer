@@ -201,7 +201,7 @@ export function useDashboardStats(options?: {
     url,
     fetcher,
     {
-      refreshInterval: options?.asOf ? 0 : 60000, // Disable auto-refresh in replay mode
+      refreshInterval: options?.asOf ? 0 : 180000, // Disable auto-refresh in replay mode
     }
   )
 
@@ -269,7 +269,7 @@ export function useClusterRollup(options: { days?: number; category: string }) {
   const { data, error, isLoading, mutate } = useSWR<{
     clusters: ClusterRollupRow[]
     pipeline_state: PipelineStateSummary
-  }>(url, fetcher, { refreshInterval: 120_000 })
+  }>(url, fetcher, { refreshInterval: 300_000 })
   return { data, isLoading, isError: error, refresh: mutate }
 }
 
@@ -380,7 +380,7 @@ export function useClusters(options?: { days?: number; limit?: number; asOf?: st
 export function useFingerprintSurges(windowHours = 24) {
   const url = `/api/fingerprints/surge?window_hours=${windowHours}`
   const { data, error, isLoading, mutate } = useSWR<FingerprintSurgeResponse>(url, fetcher, {
-    refreshInterval: 60000,
+    refreshInterval: 180000,
   })
 
   return {
@@ -497,7 +497,7 @@ export function useClassifications(filters?: {
   const { data, error, isLoading, mutate } = useSWR<{ data: ClassificationRecord[] }>(
     `/api/classifications?${params.toString()}`,
     fetcher,
-    { refreshInterval: filters?.asOf ? 0 : 60000 } // Disable auto-refresh in replay mode
+    { refreshInterval: filters?.asOf ? 0 : 180000 } // Disable auto-refresh in replay mode
   )
 
   return {
@@ -518,7 +518,7 @@ export function useClassificationStats(options?: { asOf?: string; days?: number 
   const { data, error, isLoading, mutate } = useSWR<ClassificationStats>(
     url,
     fetcher,
-    { refreshInterval: options?.asOf ? 0 : 60000 }
+    { refreshInterval: options?.asOf ? 0 : 180000 }
   )
 
   return {
