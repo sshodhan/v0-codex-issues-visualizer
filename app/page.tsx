@@ -663,10 +663,10 @@ function DashboardContentInner() {
                 <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
                 <span className="truncate">Triage</span>
               </TabsTrigger>
-              <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
-                <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="truncate">Story</span>
-              </TabsTrigger>
+  <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
+  <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
+  <span className="truncate">Birds Eye View</span>
+  </TabsTrigger>
               <TabsTrigger value="classifications" className="gap-1.5 text-xs sm:text-sm py-2.5 relative">
                 <BrainCircuit className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
                 <span className="truncate sm:hidden">AI</span>
