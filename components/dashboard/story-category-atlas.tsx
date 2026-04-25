@@ -106,7 +106,7 @@ function BubbleField({
         viewBox={`0 0 ${GW} ${GH}`}
         className="h-[min(38vh,280px)] w-full touch-manipulation"
         role="img"
-        aria-label={kind === "heuristic" ? "Heuristic category sizes" : "LLM category sizes"}
+        aria-label={kind === "heuristic" ? "Topic sizes (heuristic)" : "LLM category sizes"}
       >
         <defs>
           <filter id={`${baseId}-g`} x="-30%" y="-30%" width="160%" height="160%">

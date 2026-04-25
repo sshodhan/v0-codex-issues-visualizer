@@ -82,7 +82,7 @@ export function HeroInsight({
             No urgent insights detected
           </h2>
           <p className="text-muted-foreground">
-            All categories are within normal thresholds. Check back after your next data sync.
+            All topics are within normal thresholds. Check back after your next data sync.
           </p>
         </CardContent>
       </Card>
