@@ -198,7 +198,7 @@ export function CategoryIssuesGrid({
             What Engineers Should Fix Now
           </CardTitle>
           <CardDescription>
-            Top categories ranked by urgency with their most impactful issues
+            Top topics ranked by urgency with their most impactful issues
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -221,8 +221,8 @@ export function CategoryIssuesGrid({
         </CardTitle>
         <CardDescription>
           {skipFirstCategorySlug
-            ? "More categories from the last 72 hours. The lead story above is #1 by urgency."
-            : "Top categories ranked by urgency (volume + momentum + impact + source diversity)"}
+            ? "More topics from the last 72 hours. The lead story above is #1 by urgency."
+            : "Top topics ranked by urgency (volume + momentum + impact + source diversity)"}
         </CardDescription>
       </CardHeader>
 

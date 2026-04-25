@@ -86,7 +86,9 @@ export function DashboardStoryView({
 
   const clusterDisplayLabel = (r: ClusterRollupRow) => {
     if (r.label && r.label_confidence != null && r.label_confidence >= 0.6) return r.label
-    return "Unlabelled cluster"
+    // "Unnamed family" — clusters are surfaced as Families in user copy.
+    // See docs/ARCHITECTURE.md §6.0.
+    return "Unnamed family"
   }
 
   return (
@@ -127,7 +129,7 @@ export function DashboardStoryView({
       <StoryCategoryAtlas
         globalTimeLabel={globalTimeLabel}
         globalCategoryLabel={
-          categoryOptions.find((o) => o.value === categoryValue)?.label ?? "All categories"
+          categoryOptions.find((o) => o.value === categoryValue)?.label ?? "All topics"
         }
         totalIssues={statsTotalIssues}
         heuristicRows={categoryBreakdown}

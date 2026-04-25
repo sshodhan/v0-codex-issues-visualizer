@@ -231,6 +231,13 @@ function countMatches(text: string, phrase: string, wholeWord = false): number {
   return (text.match(new RegExp(pattern, "g")) || []).length
 }
 
+// Heuristic top-level "topic" classifier. Returns a slug from the
+// `categories` SQL table (bug, feature-request, performance, ux-ui, …).
+// In the UI this value is surfaced as "Topic" — deliberately disjoint
+// from the LLM `category` enum produced by lib/classification/pipeline.ts
+// (surfaced as "LLM category"). The function name and `categories`
+// parameter are kept for legacy reasons; the user-facing noun is "Topic".
+// See docs/ARCHITECTURE.md §6.0 — Glossary.
 export function categorizeIssue(
   text: string,
   categories: Category[]

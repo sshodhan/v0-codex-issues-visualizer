@@ -237,10 +237,10 @@ export function StoryCategoryAtlas({
           Where the volume lives — two honest lenses
         </h3>
         <p className="text-base text-muted-foreground leading-relaxed max-w-2xl">
-          Every count below is from the <strong>same</strong> time window and category focus as the main dashboard
+          Every count below is from the <strong>same</strong> time window and topic focus as the main dashboard
           ({globalTimeLabel}
-          {globalCategoryLabel && globalCategoryLabel !== "All categories" ? ` · ${globalCategoryLabel}` : ""}).
-          The top chart uses the scraper&rsquo;s <strong>heuristic</strong> buckets (what colors the signal cloud). The
+          {globalCategoryLabel && globalCategoryLabel !== "All topics" ? ` · ${globalCategoryLabel}` : ""}).
+          The top chart uses the scraper&rsquo;s <strong>heuristic</strong> topics (what colors the signal cloud). The
           second uses <strong>LLM</strong> categories joined on each observation in the materialized view — only reports with
           a resolved classification are counted; pending rows are called out, not imputed.
         </p>
@@ -254,10 +254,11 @@ export function StoryCategoryAtlas({
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <Tag className="h-4 w-4 text-primary" />
-          <h4 className="font-serif text-lg font-semibold">Heuristic categories</h4>
+          {/* "Topics" = heuristic regex buckets. See docs/ARCHITECTURE.md §6.0. */}
+          <h4 className="font-serif text-lg font-semibold">Topics (heuristic)</h4>
         </div>
         <p className="text-sm text-muted-foreground">
-          Bigger circles = more observations in the selected scope. Click a circle to set the global category focus (same
+          Bigger circles = more observations in the selected scope. Click a circle to set the global topic focus (same
           as the filter bar) — it updates the whole page, including the signal cloud and dashboard charts.
         </p>
         <BubbleField
@@ -267,7 +268,7 @@ export function StoryCategoryAtlas({
           activeId={heuActiveId}
         />
         <p className="text-xs text-muted-foreground">
-          Drag the <strong>Category focus</strong> slider above, or use a bubble here, to match the main dashboard&rsquo;s
+          Drag the <strong>Topic focus</strong> slider above, or use a bubble here, to match the main dashboard&rsquo;s
           heuristic filter.
         </p>
       </div>

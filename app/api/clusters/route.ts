@@ -146,9 +146,10 @@ export async function GET(request: NextRequest) {
 
     // Fetch label + confidence for every surfaced cluster in one round
     // trip. Degrade gracefully if the label fetch fails — the chip
-    // strip renders "Unlabelled cluster" as the placeholder in that
-    // case. Label fetch is scoped to cluster_ids referenced by the
-    // observation rows so we don't over-fetch.
+    // strip renders "Unnamed family" as the placeholder in that case
+    // (clusters are surfaced to users as Families; see
+    // docs/ARCHITECTURE.md §6.0). Label fetch is scoped to cluster_ids
+    // referenced by the observation rows so we don't over-fetch.
     const clusterIds = Array.from(
       new Set(rows.map((r) => r.cluster_id).filter((v): v is string => Boolean(v))),
     )

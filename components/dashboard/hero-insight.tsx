@@ -499,8 +499,14 @@ function LlmClassificationCloud({
   return (
     <div className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-2">
+        {/*
+          Heading reads "LLM category" so the noun matches the
+          CATEGORY_ENUM field name in lib/classification/taxonomy.ts.
+          {categoryName} interpolates the heuristic Topic name (e.g.
+          "Bug") — disjoint namespace. See docs/ARCHITECTURE.md §6.0.
+        */}
         <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Inside {categoryName} · LLM classification
+          Inside {categoryName} · LLM category
         </h3>
         {breakdown.length > 0 && (
           <span className="text-xs text-muted-foreground tabular-nums">

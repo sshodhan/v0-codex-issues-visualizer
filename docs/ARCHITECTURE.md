@@ -605,6 +605,41 @@ Invariants preserved:
 
 ## 6) Analytics and triage quality model
 
+### 6.0 Glossary — what the UI calls vs. what the code calls
+
+Three distinct concepts in this system all historically got called
+"category", which has caused enough confusion that we now use distinct
+UI nouns for each. The code identifiers are **deliberately unchanged** —
+renaming columns, enum fields, and props would cascade through the DB,
+the OpenAI strict schema, the materialized views, and every API
+consumer for no functional gain. The mapping below is the contract; new
+code should respect both columns.
+
+| Concept                       | Code identifier                                                  | Storage                                                  | UI label (user-facing)                              | Source                                                                |
+|-------------------------------|------------------------------------------------------------------|----------------------------------------------------------|-----------------------------------------------------|-----------------------------------------------------------------------|
+| Heuristic top-level bucket    | `category` / `categorySlug` / `category_id`                      | `categories` table; `observations.category_id`            | **"Topic"**                                         | Regex scorer (`lib/scrapers/shared.ts:categorizeIssue`)               |
+| LLM strict-schema enum (12)   | `llm_category` (MV); `category` on `classifications` rows        | `classifications.category`                                | **"LLM category"**                                  | OpenAI classifier (`lib/classification/pipeline.ts` + `prompt.ts` + `schema.ts`) |
+| LLM free-text per-issue tag   | `llm_subcategory` (MV); `subcategory` on `classifications` rows  | `classifications.subcategory`                             | **"LLM subcategory"**                               | OpenAI classifier (same call, separate field)                         |
+| Cluster (semantic family)     | `cluster_id` / `cluster_key`                                     | `clusters` / `cluster_members`                            | **"Family"** (technical contexts: "Semantic cluster, Layer A") | Embedding-based grouping (`lib/storage/semantic-clusters.ts`)         |
+| Cluster display name          | `clusters.label` / `label_confidence`                            | `clusters.label`                                          | **"Family name"** (placeholder: "Unnamed family")   | LLM cluster labeller (`lib/storage/semantic-clusters.ts:labelSemanticCluster`) |
+
+Rules for new code:
+
+1. **User-visible strings** (JSX text, button labels, dropdown items, placeholders, badge text, tooltips) — use the UI label column above. Do not write "category" in user-facing copy unless you mean the LLM enum.
+2. **Code identifiers** (variables, props, types, function names, DB columns) — keep the legacy names. The disjointness is documented; renaming costs more than it saves and would invalidate the OpenAI strict-schema contract.
+3. **Comments at confusion-prone call sites** — `categorizeIssue` (lib/scrapers/shared.ts), `CATEGORY_ENUM` (lib/classification/taxonomy.ts), `labelSemanticCluster` (lib/storage/semantic-clusters.ts), the issues-table LLM-subcategory dropdown, the Hero classification cloud — link back to this glossary (`§6.0`).
+4. **Methodology surfaces** (the LayerExplainerRow in classification-triage with `title="Semantic cluster"`, the methodology dialogs) keep the technical noun "Semantic cluster (Layer A)" — that's reviewer-facing language and changing it would be misleading.
+
+Decisions and rationale for the names:
+
+- **"Topic"** for the heuristic bucket: the values (Bug, Feature Request, Performance, …) read as topical groupings of feedback, and the word is short and unambiguous in dashboard copy. The legacy `categories` table name is kept because RLS policies, FKs, and stats payload contracts all key off it.
+- **"LLM category"** (singular) for the enum: matches the field name `category` in `classifications` and in the OpenAI strict schema. Pluralised in dropdowns ("All LLM Subcategories" — no "All LLM Categories" to avoid ambiguity with the dropdown that actually reads `llm_subcategory`).
+- **"LLM subcategory"** for the free-text field: also matches the column name `classifications.subcategory`. The dropdown in the issues table previously read "All LLM Categories" while filtering on `llm_subcategory`; that was renamed in the same pass that introduced this glossary.
+- **"Family"** for the semantic cluster as a user-facing concept: the dashboard already had a "Top Families" section before this glossary; the term spreads to fallback strings ("Unnamed family") and active-drill-down chips for consistency. Layer-A methodology language stays "Semantic cluster" so reviewer documentation remains literal.
+- **"Family name"** for the LLM-generated cluster label: ties the LLM-produced string to the user-facing noun and removes the verb-form awkwardness of "label/unlabelled". When the labeller fails or confidence is below `0.6`, the UI shows "Unnamed family".
+
+History: §6.1 ("Heuristic category model") and §6.3 ("LLM triage quality controls") have always treated these as separate concepts in the doc; the drift was at the UI label level. This glossary closes that gap.
+
 ### 6.1 Heuristic category model
 
 Current model: weighted phrase matching with optional whole-word mode.

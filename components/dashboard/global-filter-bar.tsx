@@ -61,18 +61,27 @@ export function GlobalFilterBar({
           />
         </div>
 
+        {/*
+          "Topic" is the user-facing name for the heuristic regex bucket
+          (Bug, Feature Request, Performance, …). Backed by the `categories`
+          SQL table and `categorizeIssue` in lib/scrapers/shared.ts —
+          deliberately disjoint from the LLM `category` enum surfaced
+          elsewhere as "LLM category". See docs/ARCHITECTURE.md §6.0.
+          Code identifiers (`categoryOptions`, `categoryValue`,
+          `onCategoryChange`) are kept as-is to avoid a churn-only rename.
+        */}
         <div className="space-y-3 rounded-lg border border-border/60 bg-secondary/30 p-3">
           <div className="flex items-center justify-between gap-2">
             <p className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
               <Filter className="h-4 w-4 text-primary" />
-              Category focus
+              Topic focus
             </p>
             <span className="text-xs text-muted-foreground">
-              {categoryValue === "" ? "All categories" : "Filtering"}
+              {categoryValue === "" ? "All topics" : "Filtering"}
             </span>
           </div>
-          
-          {/* Selected Category Display */}
+
+          {/* Selected Topic Display */}
           <div className="flex items-center gap-2">
             {categoryValue !== "" ? (
               <>
@@ -84,13 +93,13 @@ export function GlobalFilterBar({
                   size="sm"
                   onClick={() => onCategoryChange("")}
                   className="h-6 w-6 p-0 hover:bg-destructive/20"
-                  title="Reset to all categories"
+                  title="Reset to all topics"
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>
               </>
             ) : (
-              <span className="text-xs text-muted-foreground italic">No category filter applied</span>
+              <span className="text-xs text-muted-foreground italic">No topic filter applied</span>
             )}
           </div>
 
@@ -105,9 +114,9 @@ export function GlobalFilterBar({
             }}
           />
           <p className="text-xs text-muted-foreground">
-            {categoryValue === "" 
-              ? "Total issues across all categories" 
-              : `${categoryOptions[categoryIndex]?.count ?? 0} issues in ${categoryOptions[categoryIndex]?.label ?? "selected"} category`}
+            {categoryValue === ""
+              ? "Total issues across all topics"
+              : `${categoryOptions[categoryIndex]?.count ?? 0} issues in ${categoryOptions[categoryIndex]?.label ?? "selected"} topic`}
           </p>
         </div>
       </CardContent>
