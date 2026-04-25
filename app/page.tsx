@@ -76,7 +76,7 @@ function DashboardContentInner() {
     return asOfRaw
   }, [asOfRaw])
 
-  const [activeTab, setActiveTab] = useState("v3")
+  const [activeTab, setActiveTab] = useState("dashboard")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [globalDays, setGlobalDays] = useState(30)
   const [globalCategory, setGlobalCategory] = useState("all")
