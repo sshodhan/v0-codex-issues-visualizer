@@ -30,6 +30,7 @@ import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-stri
 import { PipelineFreshnessStrip } from "@/components/dashboard/pipeline-freshness-strip"
 import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
 import { V3View } from "@/components/dashboard/v3-view"
+import { QuickStatsBar } from "@/components/dashboard/quick-stats-bar"
 
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
@@ -891,219 +892,39 @@ function DashboardContentInner() {
               </div>
             </TabsContent>
 
-            {/* V3 Tab */}
-            <TabsContent value="v3" className="space-y-8 mt-6">
-              {uxVersion === "v3" ? <V3View clusters={clusterRollup?.clusters || []} days={globalDays} pipelineState={clusterRollup?.pipeline_state} /> : null}
-
-              {isV2 && (
-                <DataProvenanceStrip
-                  lastSyncLabel={lastScrapeTime}
-                  issueWindowLabel={globalTimeLabel}
-                  asOfActive={asOf != null}
-                />
-              )}
-
-              {/*
-                V1: fingerprint surges (bug signal) above the hero — original hierarchy.
-                V2: hero-first narrative, then surges (see prior NYT-style work).
-              */}
-              {isV2 ? (
-                <>
-                  <HeroInsight
-                    topInsight={heroInsight}
-                    onExploreIssues={handleHeroExploreIssues}
-                    onNavigateToCategory={handleNavigateToCategory}
-                    issueTableTimeLabel={globalTimeLabel}
-                    variant="v2"
-                  />
-                  <FingerprintSurgeCard
-                    data={fingerprintSurges}
-                    windowHours={24}
-                    windowLabelForCopy={fingerprintWindowLabel}
-                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
-                    variant="v2"
-                  />
-                  {nowNextCrosswalk && (
-                    <Card className="border-primary/20 bg-primary/5">
-                      <CardContent className="py-3 px-4">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-primary mb-1">
-                          Crosswalk · now vs next
-                        </p>
-                        <p className="text-sm text-foreground">
-                          <span className="font-medium">{nowNextCrosswalk.category}</span> is{" "}
-                          <span className="font-medium">#{nowNextCrosswalk.breakingNowRank}</span> in
-                          Breaking Now (72h) and{" "}
-                          <span className="font-medium">#{nowNextCrosswalk.fixFirstRank}</span> in
-                          Fix-First Queue
-                          {nowNextCrosswalk.actionabilityScore != null
-                            ? ` (${nowNextCrosswalk.actionabilityScore}/100 actionability).`
-                            : "."}
-                        </p>
-                      </CardContent>
-                    </Card>
-                  )}
-                </>
-              ) : (
-                <>
-                  <FingerprintSurgeCard
-                    data={fingerprintSurges}
-                    windowHours={24}
-                    windowLabelForCopy={fingerprintWindowLabel}
-                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
-                    variant="v1"
-                  />
-                  <HeroInsight
-                    topInsight={heroInsight}
-                    onExploreIssues={handleHeroExploreIssues}
-                    onNavigateToCategory={handleNavigateToCategory}
-                    issueTableTimeLabel={globalTimeLabel}
-                    variant="v1"
-                  />
-                </>
-              )}
-
-              {/* Secondary KPI Cards - Insight-first design */}
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {kpiSummary.topRiskCategory && (
-                  <InsightKpiCard
-                    category={kpiSummary.topRiskCategory.name}
-                    headline={`${kpiSummary.topRiskCategory.name} has the highest urgency score combining volume, sentiment, and impact.`}
-                    metrics={{
-                      total: kpiSummary.topRiskCategory.total,
-                      negativeShare: kpiSummary.topRiskCategory.negativeShare,
-                      avgImpact: kpiSummary.topRiskCategory.avgImpact,
-                    }}
-                    topIssue={kpiSummary.topRiskCategory.topIssue || undefined}
-                    variant="risk"
-                  />
-                )}
-                
-                {kpiSummary.mostImpactfulTheme && kpiSummary.mostImpactfulTheme.name !== kpiSummary.topRiskCategory?.name && (
-                  <InsightKpiCard
-                    category={kpiSummary.mostImpactfulTheme.name}
-                    headline={`Highest average impact score among categories with sustained volume.`}
-                    metrics={{
-                      total: kpiSummary.mostImpactfulTheme.total,
-                      negativeShare: kpiSummary.mostImpactfulTheme.negativeShare,
-                      avgImpact: kpiSummary.mostImpactfulTheme.avgImpact,
-                    }}
-                    topIssue={kpiSummary.mostImpactfulTheme.topIssue || undefined}
-                    variant="impact"
-                  />
-                )}
-
-                {/* Orientation metric - kept minimal */}
-                <StatCard
-                  title="Total Signals"
-                  value={kpiSummary.totalSignals}
-                  subtitle="Baseline volume across all sources"
-                  contextText={kpiSummary.otherRate > 10 
-                    ? `${kpiSummary.otherRate.toFixed(0)}% uncategorized - consider taxonomy review`
-                    : "Use trends and categories for prioritization, not raw counts."
-                  }
-                  icon={<BarChart3 className="h-5 w-5" />}
-                  variant={kpiSummary.otherRate > 15 ? "warning" : "default"}
-                />
-              </div>
-
-              {/* Global Filters */}
-              <GlobalFilterBar
-                timeDays={globalDays}
-                onTimeChange={setGlobalDays}
-                categoryOptions={categoryOptions}
-                categoryValue={globalCategory}
-                onCategoryChange={setGlobalCategory}
+            {/* V3 Tab - Simplified Priority Rails Focus */}
+            <TabsContent value="v3" className="space-y-6 mt-6">
+              {/* Quick Stats Bar */}
+              <QuickStatsBar
+                clusters={clusterRollup?.clusters || []}
+                pipelineState={clusterRollup?.pipeline_state}
+                days={globalDays}
               />
 
-              {/* Charts Row - Visual context */}
-              <div className="grid gap-6 lg:grid-cols-3">
-                <SentimentChart data={stats.sentimentBreakdown} />
-                <SourceChart data={stats.sourceBreakdown} />
-                <CategoryHeatmap data={stats.categorySentimentBreakdown} />
+              {/* Days Filter - simplified to just time range */}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Time range:</span>
+                <div className="flex gap-1">
+                  {[7, 14, 30, 0].map((d) => (
+                    <Button
+                      key={d}
+                      size="sm"
+                      variant={globalDays === d ? "default" : "outline"}
+                      onClick={() => setGlobalDays(d)}
+                      className="h-7 px-2.5 text-xs"
+                    >
+                      {d === 0 ? "All" : `${d}d`}
+                    </Button>
+                  ))}
+                </div>
               </div>
 
-              {/* Priority Matrix - Actionable view */}
-              <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                Breaking Now = urgency trend (last 72h). Fix-First Queue = implementation actionability.
-                These can differ and are intended to be read together.
-              </div>
-              <PriorityMatrix
-                data={stats.priorityMatrix}
-                onFilterChange={handleFilterChange}
-                variant={isV2 ? "v2" : "v1"}
+              {/* Priority Rails - The core decision-making interface */}
+              <V3View 
+                clusters={clusterRollup?.clusters || []} 
+                days={globalDays} 
+                pipelineState={clusterRollup?.pipeline_state} 
               />
-
-              <div className="grid gap-6 lg:grid-cols-2">
-                <CategoryIssuesGrid
-                  insights={stats.realtimeInsights}
-                  skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
-                />
-                <CompetitiveMentions
-                  mentions={stats.competitiveMentions || []}
-                  meta={stats.competitiveMentionsMeta}
-                />
-              </div>
-
-              {/* Trend Chart - Historical context */}
-              {stats.trendData.length > 0 && (
-                <TrendChart data={stats.trendData} />
-              )}
-
-              <section className="space-y-3">
-                <div className="flex items-end justify-between gap-3">
-                  <div>
-                    <h3 className="text-xl font-semibold">Top Families (primary workflow)</h3>
-                    <p className="text-sm text-muted-foreground">
-                      Family = semantic/title fallback. Variant = regex fingerprint. Triage = LLM + review judgment.
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={scrollToIssuesTable}>
-                    Issues table (secondary drill-down)
-                  </Button>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {(clusterRollup?.clusters || []).slice(0, 6).map((cluster) => {
-                    const familyLabel =
-                      cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.6
-                        ? cluster.label
-                        : cluster.representative_title || "Unlabelled family"
-                    return (
-                      <Link
-                        key={cluster.id}
-                        href={`/families/${cluster.id}?days=${globalDays}`}
-                        className="block"
-                      >
-                        <Card className="h-full transition-colors hover:border-primary/60 hover:bg-muted/30">
-                          <CardContent className="p-4 space-y-2">
-                            <p className="font-medium line-clamp-2">{familyLabel}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {cluster.count} observations · {cluster.classified_count} triaged ·{" "}
-                              {cluster.source_count ?? 0} sources
-                            </p>
-                            <ClusterTrustRibbon cluster={cluster} />
-                          </CardContent>
-                        </Card>
-                      </Link>
-                    )
-                  })}
-                </div>
-              </section>
-
-              {/* Issues Table - Deep dive zone */}
-              <div id="issues-table-anchor" className="scroll-mt-20">
-                <IssuesTable
-                  issues={issues}
-                  isLoading={issuesLoading}
-                  globalTimeLabel={globalTimeLabel}
-                  globalCategoryLabel={globalCategoryLabel}
-                  observationCount={issues.length}
-                  canonicalCount={stats?.totalIssues || issues.length}
-                  onFilterChange={handleFilterChange}
-                  activeCompoundKey={compoundKeyFromUrl}
-                  activeClusterId={clusterIdFromUrl ?? undefined}
-                  activeClusterLabel={activeClusterLabel ?? undefined}
-                />
-              </div>
             </TabsContent>
 
             <TabsContent value="story" className="mt-6 min-h-screen">
