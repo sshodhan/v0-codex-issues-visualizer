@@ -20,3 +20,6 @@ tsconfig.tsbuildinfo
 *.tsbuildinfo
 # Generated migration dry-run artifacts
 scripts/tmp/
+
+# scripts/export-for-analyst.sh output
+exports/
