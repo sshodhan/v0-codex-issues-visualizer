@@ -51,6 +51,13 @@ import {
 import type { ClassificationRecord, ClassificationStats, ClusterSummary } from "@/hooks/use-dashboard-data"
 import { useClusters } from "@/hooks/use-dashboard-data"
 import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
+import { CATEGORY_ENUM } from "@/lib/classification/taxonomy"
+
+// Two example LLM-category slugs interpolated into reviewer-facing copy
+// that explains why the global heuristic filter doesn't apply to the LLM
+// tab. Sourced from CATEGORY_ENUM so renaming a slug in taxonomy.ts can
+// never leave stale copy in this file.
+const SAMPLE_LLM_SLUGS = CATEGORY_ENUM.slice(0, 2).join(", ")
 import { reviewClassification } from "@/hooks/use-dashboard-data"
 import { logClientError } from "@/lib/error-tracking/client-logger"
 import { track } from "@vercel/analytics"
@@ -136,6 +143,7 @@ export function ClassificationTriage({
   const [statusOverride, setStatusOverride] = useState<string>("triaged")
   const [severityOverride, setSeverityOverride] = useState<string>("medium")
   const [categoryOverride, setCategoryOverride] = useState<string>("")
+  const [subcategoryOverride, setSubcategoryOverride] = useState<string>("")
   const [reviewer, setReviewer] = useState<string>("")
   const [notes, setNotes] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -164,11 +172,12 @@ export function ClassificationTriage({
   // *heuristic* slug from `categories.slug` (e.g. "bug",
   // "feature-request"), populated by lib/scrapers/shared.ts →
   // categorizeIssue. The classification triage queue, however, uses the
-  // *LLM* category enum (e.g. "code-generation-quality",
-  // "tool-use-failure"). The two namespaces are intentionally disjoint
-  // (only "other" overlaps). Without this guard, navigating from the
-  // hero "Review {category}" CTA into this tab silently filters to
-  // zero rows, undermining the cron-backfill payoff.
+  // *LLM* category enum from lib/classification/taxonomy.ts (e.g.
+  // `code_generation_bug`, `tool_invocation_error`). The two namespaces
+  // are intentionally disjoint — there is no overlapping slug in v2.
+  // Without this guard, navigating from the hero "Review {category}" CTA
+  // into this tab silently filters to zero rows, undermining the
+  // cron-backfill payoff.
   //
   // If the active category isn't a slug present in the LLM-side data,
   // ignore it (show all) and surface a notice below.
@@ -204,7 +213,7 @@ export function ClassificationTriage({
   const groups = useMemo(() => {
     const grouped = new Map<string, { total: number; highRisk: number }>()
     for (const record of globallyFilteredRecords) {
-      const key = `${record.effective_category} › ${record.subcategory || "General"}`
+      const key = `${record.effective_category} › ${record.effective_subcategory || "General"}`
       const current = grouped.get(key) || { total: 0, highRisk: 0 }
       current.total += 1
       if (record.effective_severity === "critical" || record.effective_severity === "high") current.highRisk += 1
@@ -236,7 +245,7 @@ export function ClassificationTriage({
     return globallyFilteredRecords.filter((record) => {
       const groupMatch =
         groupFilter === "all" ||
-        `${record.effective_category} › ${record.subcategory || "General"}` === groupFilter
+        `${record.effective_category} › ${record.effective_subcategory || "General"}` === groupFilter
       const semanticMatch =
         semanticClusterFilter === "all" || record.cluster_id === semanticClusterFilter
       return groupMatch && semanticMatch
@@ -267,6 +276,7 @@ export function ClassificationTriage({
         setStatusOverride(firstRecord.effective_status)
         setSeverityOverride(firstRecord.effective_severity)
         setCategoryOverride(firstRecord.effective_category)
+        setSubcategoryOverride(firstRecord.effective_subcategory)
       }
     }
   }, [groupFilter, semanticClusterFilter, triageRecords])
@@ -322,6 +332,7 @@ export function ClassificationTriage({
         status: statusOverride as (typeof STATUS_OPTIONS)[number],
         severity: severityOverride as (typeof SEVERITY_OPTIONS)[number],
         category: categoryOverride || selected.category,
+        subcategory: subcategoryOverride.trim() || undefined,
         needs_human_review: false,
         reviewed_by: trimmedReviewer,
         reviewer_notes: notes || undefined,
@@ -417,9 +428,8 @@ export function ClassificationTriage({
             <p>
               Global category filter <span className="font-medium">"{activeCategory}"</span>{" "}
               uses the dashboard's heuristic taxonomy (Bug, Feature Request, Performance, …); LLM
-              classifications use a different category enum (code-generation-quality,
-              tool-use-failure, …). Showing all LLM classifications in scope. Use the group
-              filter below to narrow.
+              classifications use a different category enum ({SAMPLE_LLM_SLUGS}, …). Showing all
+              LLM classifications in scope. Use the group filter below to narrow.
             </p>
           </div>
         )}
@@ -631,6 +641,7 @@ export function ClassificationTriage({
                       setStatusOverride(record.effective_status)
                       setSeverityOverride(record.effective_severity)
                       setCategoryOverride(record.effective_category)
+                      setSubcategoryOverride(record.effective_subcategory)
                     }}
                     className="cursor-pointer"
                   >
@@ -639,7 +650,7 @@ export function ClassificationTriage({
                         {record.effective_needs_human_review && <AlertTriangle className="h-4 w-4 text-amber-500" />}
                         <span>{record.effective_category}</span>
                       </div>
-                      <p className="text-xs text-muted-foreground">{record.subcategory}</p>
+                      <p className="text-xs text-muted-foreground">{record.effective_subcategory}</p>
                       <LayerBreadcrumb record={record} compact />
                     </TableCell>
                     <TableCell><Badge variant="outline">{record.effective_severity}</Badge></TableCell>
@@ -813,7 +824,7 @@ export function ClassificationTriage({
                 </CollapsibleContent>
               </Collapsible>
             )}
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-2">
               <Select value={statusOverride} onValueChange={setStatusOverride}>
                 <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
                 <SelectContent>
@@ -826,7 +837,19 @@ export function ClassificationTriage({
                   {SEVERITY_OPTIONS.map((severity) => <SelectItem key={severity} value={severity}>{severity}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Input value={categoryOverride} onChange={(event) => setCategoryOverride(event.target.value)} placeholder="Category override" />
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Input
+                value={categoryOverride}
+                onChange={(event) => setCategoryOverride(event.target.value)}
+                placeholder="Category override"
+              />
+              <Input
+                value={subcategoryOverride}
+                onChange={(event) => setSubcategoryOverride(event.target.value)}
+                placeholder="Subcategory override (snake_case mechanism)"
+                maxLength={60}
+              />
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <Input value={reviewer} onChange={(event) => setReviewer(event.target.value)} placeholder="Your name, required for audit log" />
@@ -1139,7 +1162,7 @@ function LayerExplainerPanel() {
           letter="B"
           icon={<Tag className="h-4 w-4 text-primary" />}
           title="Triage group"
-          body="Client-side group-by on (effective_category × subcategory). Comes from the LLM classification enum (code-generation-quality, tool-use-failure, …) — distinct from the dashboard's heuristic taxonomy used by the global slider."
+          body={`Client-side group-by on (effective_category × subcategory). Comes from the LLM classification enum (${SAMPLE_LLM_SLUGS}, …) — distinct from the dashboard's heuristic taxonomy used by the global slider.`}
           adminLink={{ href: "/admin?tab=classify-backfill", label: "Classify backfill" }}
         />
         <LayerExplainerRow
@@ -1253,7 +1276,7 @@ function LayerBreadcrumb({
       ? record.cluster_label
       : "Unnamed family"
     : null
-  const groupLabel = `${record.effective_category} › ${record.subcategory || "General"}`
+  const groupLabel = `${record.effective_category} › ${record.effective_subcategory || "General"}`
 
   const baseClass = compact
     ? "mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"

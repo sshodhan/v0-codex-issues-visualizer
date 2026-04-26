@@ -168,6 +168,10 @@ export async function recordClassification(
 export interface ClassificationReviewPayload {
   status?: string
   category?: string
+  // subcategory override added in scripts/020_classification_reviews_add_subcategory.sql.
+  // Optional; absent means "reviewer did not override; effective_subcategory
+  // falls back to the baseline classifications.subcategory".
+  subcategory?: string
   severity?: string
   needs_human_review?: boolean
   reviewer_notes?: string

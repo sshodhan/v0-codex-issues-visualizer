@@ -47,7 +47,7 @@ export const CLASSIFICATION_SCHEMA = {
       },
       alternate_categories: {
         type: "array",
-        items: { type: "string" },
+        items: { type: "string", enum: CATEGORY_ENUM },
         maxItems: 2,
       },
       tags: {
@@ -80,6 +80,21 @@ export function validateEnumFields(payload: object): { field: string; valid: rea
     const value = data[field]
     if (typeof value !== "string" || !valid.includes(value)) {
       return { field, valid }
+    }
+  }
+
+  // alternate_categories is array<IssueCategory>. The strict JSON schema
+  // already enforces the enum at the model surface (items.enum), so this
+  // is belt-and-braces: rejects payloads where a non-strict caller (e.g.
+  // a future re-classify path that bypasses Responses API) injects a
+  // legacy or arbitrary slug.
+  const alternates = data.alternate_categories
+  if (!Array.isArray(alternates)) {
+    return { field: "alternate_categories", valid: CATEGORY_ENUM }
+  }
+  for (const item of alternates) {
+    if (typeof item !== "string" || !CATEGORY_ENUM.includes(item as typeof CATEGORY_ENUM[number])) {
+      return { field: "alternate_categories", valid: CATEGORY_ENUM }
     }
   }
 

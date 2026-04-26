@@ -15,7 +15,11 @@ import assert from "node:assert/strict"
 interface MinimalRecord {
   id: string
   effective_category: string
-  subcategory: string | null
+  // effective_subcategory mirrors the API's resolution of
+  // (latest review override ?? baseline.subcategory). The triage UI keys
+  // its (effective_category × effective_subcategory) group on this field
+  // so reviewer-overridden mechanisms drive the chip strip.
+  effective_subcategory: string | null
   cluster_id: string | null
   cluster_key: string | null
   cluster_label: string | null
@@ -48,24 +52,40 @@ function applyCompoundFilter(
   return records.filter((record) => {
     const groupMatch =
       groupFilter === "all" ||
-      `${record.effective_category} › ${record.subcategory || "General"}` === groupFilter
+      `${record.effective_category} › ${record.effective_subcategory || "General"}` === groupFilter
     const semanticMatch =
       semanticClusterFilter === "all" || record.cluster_id === semanticClusterFilter
     return groupMatch && semanticMatch
   })
 }
 
-const mkRecord = (partial: Partial<MinimalRecord>): MinimalRecord => ({
-  id: "r",
-  effective_category: "bug",
-  subcategory: "general",
-  cluster_id: null,
-  cluster_key: null,
-  cluster_label: null,
-  cluster_label_confidence: null,
-  cluster_size: null,
-  ...partial,
-})
+const mkRecord = (
+  partial: Partial<MinimalRecord> & { subcategory?: string | null },
+): MinimalRecord => {
+  // Allow callers to pass either subcategory (legacy shorthand) or
+  // effective_subcategory directly. effective_subcategory wins; otherwise
+  // subcategory is mapped onto it; otherwise default to "general". A
+  // caller-supplied null on either field flows through as null so the
+  // simulator's "General" fallback in applyCompoundFilter still fires.
+  const { subcategory, ...rest } = partial
+  let effective: string | null = "general"
+  if ("effective_subcategory" in partial) {
+    effective = partial.effective_subcategory ?? null
+  } else if ("subcategory" in partial) {
+    effective = subcategory ?? null
+  }
+  return {
+    id: "r",
+    effective_category: "bug",
+    effective_subcategory: effective,
+    cluster_id: null,
+    cluster_key: null,
+    cluster_label: null,
+    cluster_label_confidence: null,
+    cluster_size: null,
+    ...rest,
+  }
+}
 
 // --- confidence bucketing (data-scientist review M1) ------------------------
 

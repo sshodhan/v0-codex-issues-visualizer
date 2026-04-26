@@ -410,6 +410,9 @@ export interface ClassificationReviewRecord {
   classification_id: string
   status: string | null
   category: string | null
+  // subcategory override landed in 020_classification_reviews_add_subcategory.sql.
+  // Pre-020 rows are null; the API resolves null → baseline classifications.subcategory.
+  subcategory: string | null
   severity: string | null
   needs_human_review: boolean | null
   reviewer_notes: string | null
@@ -447,6 +450,7 @@ export interface ClassificationRecord {
   latest_review: ClassificationReviewRecord | null
   effective_status: string
   effective_category: string
+  effective_subcategory: string
   effective_severity: string
   effective_needs_human_review: boolean
   // Traceability fields — sourced from the linked observation at response time,
@@ -538,6 +542,7 @@ export async function reviewClassification(
   payload: {
     status?: "new" | "triaged" | "in-progress" | "resolved" | "wont-fix" | "duplicate"
     category?: string
+    subcategory?: string
     severity?: "critical" | "high" | "medium" | "low"
     needs_human_review?: boolean
     reviewer_notes?: string

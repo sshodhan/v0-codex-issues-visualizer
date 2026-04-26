@@ -10,9 +10,12 @@ import assert from "node:assert/strict"
 //     bug, feature-request, performance, documentation, integration,
 //     pricing, security, ux-ui, api, other
 //   - LLM enum from lib/classification/taxonomy.ts:
-//     code-generation-quality, hallucination, tool-use-failure,
-//     context-handling, latency-performance, auth-session, cli-ux,
-//     install-env, cost-quota, safety-policy, integration-mcp, other
+//     incomplete_context_overflow, structural_dependency_oversight,
+//     tool_invocation_error, dependency_environment_failure,
+//     code_generation_bug, hallucinated_code, retrieval_context_mismatch,
+//     user_intent_misinterpretation, autonomy_safety_violation,
+//     performance_latency_issue, cost_quota_overrun, session_auth_error,
+//     cli_user_experience_bug, integration_plugin_failure
 //
 // The hero "Review {category}" CTA sets globalCategory to a heuristic
 // slug (e.g. "bug") and switches to the AI tab. Without this guard,
@@ -41,10 +44,10 @@ function deriveEffectiveCategoryFilter(
 }
 
 const llmRecords: MinimalRecord[] = [
-  { effective_category: "code-generation-quality" },
-  { effective_category: "tool-use-failure" },
-  { effective_category: "context-handling" },
-  { effective_category: "other" },
+  { effective_category: "code_generation_bug" },
+  { effective_category: "tool_invocation_error" },
+  { effective_category: "incomplete_context_overflow" },
+  { effective_category: "integration_plugin_failure" },
 ]
 
 test("guard ignores heuristic 'bug' slug — LLM tab shows all instead of empty", () => {
@@ -65,16 +68,19 @@ test("guard ignores heuristic 'feature-request' slug — common Hero CTA target"
 test("guard accepts an LLM enum value when present in records", () => {
   const { effective, applicable } = deriveEffectiveCategoryFilter(
     llmRecords,
-    "tool-use-failure",
+    "tool_invocation_error",
   )
   assert.equal(applicable, true)
-  assert.equal(effective, "tool-use-failure")
+  assert.equal(effective, "tool_invocation_error")
 })
 
-test("guard accepts the only overlapping slug 'other' in either namespace", () => {
-  const { effective, applicable } = deriveEffectiveCategoryFilter(llmRecords, "other")
+test("guard keeps working for a valid non-overlapping LLM enum value", () => {
+  const { effective, applicable } = deriveEffectiveCategoryFilter(
+    llmRecords,
+    "integration_plugin_failure",
+  )
   assert.equal(applicable, true)
-  assert.equal(effective, "other")
+  assert.equal(effective, "integration_plugin_failure")
 })
 
 test("guard short-circuits 'all' without consulting record set", () => {
@@ -94,8 +100,8 @@ test("guard treats empty record set as 'no LLM categories known' — every non-a
 
 test("guard is case-insensitive on the comparison", () => {
   const { applicable } = deriveEffectiveCategoryFilter(
-    [{ effective_category: "Code-Generation-Quality" }],
-    "code-generation-quality",
+    [{ effective_category: "Code_Generation_Bug" }],
+    "code_generation_bug",
   )
   assert.equal(applicable, true)
 })
