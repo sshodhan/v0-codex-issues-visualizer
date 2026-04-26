@@ -1,6 +1,12 @@
 /**
- * Backfill `bug_report_classifications` from the legacy LLM category enum
- * to the robust enum introduced in lib/classification/taxonomy.ts.
+ * Backfill legacy LLM category slugs to the robust enum introduced in
+ * lib/classification/taxonomy.ts.
+ *
+ * Important:
+ * - This script targets the three-layer schema tables:
+ *   - `classifications` (baseline derivation rows)
+ *   - `classification_reviews` (review overrides)
+ * - It does NOT touch the removed `bug_report_classifications` table.
  *
  * Usage:
  *   node --experimental-strip-types scripts/019_migrate_llm_categories.ts --dry-run
@@ -14,11 +20,16 @@ import { fileURLToPath } from "node:url"
 import { createAdminClient } from "../lib/supabase/admin.ts"
 import { CATEGORY_ENUM, type IssueCategory } from "../lib/classification/taxonomy.ts"
 
-type LegacyRow = {
+type ClassificationRow = {
   id: string
   category: string
   alternate_categories: string[] | null
   raw_json: Record<string, unknown> | null
+}
+
+type ReviewRow = {
+  id: string
+  category: string | null
 }
 
 const LEGACY_TO_ROBUST: Record<string, IssueCategory> = {
@@ -40,6 +51,13 @@ type ParsedArgs = {
   apply: boolean
   batchSize: number
   fallback: IssueCategory
+}
+
+interface MigrationStats {
+  scanned: number
+  updated: number
+  fallbackCount: number
+  fallbackSamples: Map<string, number>
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -70,10 +88,133 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function mapCategory(value: string | null | undefined, fallback: IssueCategory): IssueCategory {
   if (!value) return fallback
-  if ((CATEGORY_ENUM as readonly string[]).includes(value)) {
-    return value as IssueCategory
-  }
+  if ((CATEGORY_ENUM as readonly string[]).includes(value)) return value as IssueCategory
   return LEGACY_TO_ROBUST[value] ?? fallback
+}
+
+function recordFallback(stats: MigrationStats, legacyValue: string | null | undefined) {
+  const key = legacyValue ?? "(null)"
+  stats.fallbackCount += 1
+  stats.fallbackSamples.set(key, (stats.fallbackSamples.get(key) ?? 0) + 1)
+}
+
+async function migrateClassifications(args: ParsedArgs): Promise<MigrationStats> {
+  const admin = createAdminClient()
+  const stats: MigrationStats = {
+    scanned: 0,
+    updated: 0,
+    fallbackCount: 0,
+    fallbackSamples: new Map<string, number>(),
+  }
+
+  let lastId: string | null = null
+  while (true) {
+    let query = admin
+      .from("classifications")
+      .select("id, category, alternate_categories, raw_json")
+      .order("id", { ascending: true })
+      .limit(args.batchSize)
+    if (lastId) query = query.gt("id", lastId)
+
+    const { data, error } = await query
+    if (error) throw new Error(`[classifications] fetch failed: ${error.message}`)
+    if (!data || data.length === 0) break
+
+    for (const row of data as ClassificationRow[]) {
+      stats.scanned += 1
+      const nextCategory = mapCategory(row.category, args.fallback)
+      const nextAlternates = (row.alternate_categories ?? []).map((v) => mapCategory(v, args.fallback))
+      const nextRawJson = row.raw_json
+        ? { ...row.raw_json, category: nextCategory, alternate_categories: nextAlternates }
+        : row.raw_json
+
+      const usedFallbackForPrimary =
+        !(CATEGORY_ENUM as readonly string[]).includes(row.category) && !(row.category in LEGACY_TO_ROBUST)
+      if (usedFallbackForPrimary) recordFallback(stats, row.category)
+
+      const categoryChanged = row.category !== nextCategory
+      const alternatesChanged = JSON.stringify(row.alternate_categories ?? []) !== JSON.stringify(nextAlternates)
+      if (!categoryChanged && !alternatesChanged) continue
+
+      if (args.apply) {
+        const { error: updateError } = await admin
+          .from("classifications")
+          .update({
+            category: nextCategory,
+            alternate_categories: nextAlternates,
+            raw_json: nextRawJson,
+          })
+          .eq("id", row.id)
+        if (updateError) throw new Error(`[classifications] update failed for ${row.id}: ${updateError.message}`)
+      }
+      stats.updated += 1
+    }
+
+    lastId = data[data.length - 1]?.id ?? null
+    if (data.length < args.batchSize) break
+  }
+
+  return stats
+}
+
+async function migrateClassificationReviews(args: ParsedArgs): Promise<MigrationStats> {
+  const admin = createAdminClient()
+  const stats: MigrationStats = {
+    scanned: 0,
+    updated: 0,
+    fallbackCount: 0,
+    fallbackSamples: new Map<string, number>(),
+  }
+
+  let lastId: string | null = null
+  while (true) {
+    let query = admin
+      .from("classification_reviews")
+      .select("id, category")
+      .not("category", "is", null)
+      .order("id", { ascending: true })
+      .limit(args.batchSize)
+    if (lastId) query = query.gt("id", lastId)
+
+    const { data, error } = await query
+    if (error) throw new Error(`[classification_reviews] fetch failed: ${error.message}`)
+    if (!data || data.length === 0) break
+
+    for (const row of data as ReviewRow[]) {
+      stats.scanned += 1
+      const nextCategory = mapCategory(row.category, args.fallback)
+      const usedFallback =
+        !!row.category &&
+        !(CATEGORY_ENUM as readonly string[]).includes(row.category) &&
+        !(row.category in LEGACY_TO_ROBUST)
+      if (usedFallback) recordFallback(stats, row.category)
+      if (row.category === nextCategory) continue
+
+      if (args.apply) {
+        const { error: updateError } = await admin
+          .from("classification_reviews")
+          .update({ category: nextCategory })
+          .eq("id", row.id)
+        if (updateError) throw new Error(`[classification_reviews] update failed for ${row.id}: ${updateError.message}`)
+      }
+      stats.updated += 1
+    }
+
+    lastId = data[data.length - 1]?.id ?? null
+    if (data.length < args.batchSize) break
+  }
+  return stats
+}
+
+function collapseFallbackSamples(entries: Array<Map<string, number>>) {
+  const merged = new Map<string, number>()
+  for (const map of entries) {
+    for (const [key, count] of map) merged.set(key, (merged.get(key) ?? 0) + count)
+  }
+  return [...merged.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([legacy, count]) => ({ legacy, count }))
 }
 
 async function run() {
@@ -83,78 +224,24 @@ async function run() {
     process.exit(2)
   }
 
-  const admin = createAdminClient()
-  let lastId: string | null = null
-  let scanned = 0
-  let updated = 0
-  let fallbackCount = 0
-  const fallbackSamples = new Map<string, number>()
-
-  while (true) {
-    let query = admin
-      .from("bug_report_classifications")
-      .select("id, category, alternate_categories, raw_json")
-      .order("id", { ascending: true })
-      .limit(args.batchSize)
-    if (lastId) query = query.gt("id", lastId)
-
-    const { data, error } = await query
-    if (error) {
-      console.error("[category-migration] fetch failed:", error)
-      process.exit(1)
-    }
-    if (!data || data.length === 0) break
-
-    for (const row of data as LegacyRow[]) {
-      scanned += 1
-      const nextCategory = mapCategory(row.category, args.fallback)
-      const nextAlternates = (row.alternate_categories ?? []).map((v) => mapCategory(v, args.fallback))
-      const nextRawJson = row.raw_json
-        ? { ...row.raw_json, category: nextCategory, alternate_categories: nextAlternates }
-        : row.raw_json
-
-      const usedFallbackForPrimary =
-        !(CATEGORY_ENUM as readonly string[]).includes(row.category) && !(row.category in LEGACY_TO_ROBUST)
-      if (usedFallbackForPrimary) {
-        fallbackCount += 1
-        fallbackSamples.set(row.category, (fallbackSamples.get(row.category) ?? 0) + 1)
-      }
-
-      const categoryChanged = row.category !== nextCategory
-      const alternatesChanged = JSON.stringify(row.alternate_categories ?? []) !== JSON.stringify(nextAlternates)
-      if (!categoryChanged && !alternatesChanged) continue
-
-      if (args.apply) {
-        const { error: updateError } = await admin
-          .from("bug_report_classifications")
-          .update({
-            category: nextCategory,
-            alternate_categories: nextAlternates,
-            raw_json: nextRawJson,
-          })
-          .eq("id", row.id)
-        if (updateError) {
-          console.error("[category-migration] update failed:", row.id, updateError)
-          process.exit(1)
-        }
-      }
-      updated += 1
-    }
-
-    lastId = data[data.length - 1]?.id ?? null
-    if (data.length < args.batchSize) break
-  }
+  const classifications = await migrateClassifications(args)
+  const reviews = await migrateClassificationReviews(args)
 
   const summary = {
     mode: args.dryRun ? "dry-run" : "apply",
     fallback_category: args.fallback,
-    scanned_rows: scanned,
-    updated_rows: updated,
-    fallback_primary_count: fallbackCount,
-    fallback_primary_samples: [...fallbackSamples.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 20)
-      .map(([legacy, count]) => ({ legacy, count })),
+    classifications: {
+      scanned_rows: classifications.scanned,
+      updated_rows: classifications.updated,
+      fallback_primary_count: classifications.fallbackCount,
+      fallback_primary_samples: collapseFallbackSamples([classifications.fallbackSamples]),
+    },
+    classification_reviews: {
+      scanned_rows: reviews.scanned,
+      updated_rows: reviews.updated,
+      fallback_primary_count: reviews.fallbackCount,
+      fallback_primary_samples: collapseFallbackSamples([reviews.fallbackSamples]),
+    },
   }
 
   console.log(JSON.stringify(summary, null, 2))
