@@ -54,8 +54,10 @@ function isUuid(s: string): boolean {
 
 // Inner component that uses useSearchParams (requires Suspense boundary)
 function DashboardContentInner() {
-  const { version: uxVersion } = useDashboardUxVersion()
-  const isV2 = isUxV2(uxVersion)
+    const { version: uxVersion } = useDashboardUxVersion()
+    // V2 is now the default - all Dashboard components render V2 variants.
+    // Keeping isV2 for potential future A/B testing or rollback.
+    const isV2 = isUxV2(uxVersion) // eslint-disable-line @typescript-eslint/no-unused-vars
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
@@ -725,74 +727,56 @@ const handleHeroLlmCategoryDrill = (
 
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
-              {isV2 && (
-                <DataProvenanceStrip
-                  lastSyncLabel={lastScrapeTime}
-                  issueWindowLabel={globalTimeLabel}
-                  asOfActive={asOf != null}
-                />
+              {/* V2: Always show DataProvenanceStrip */}
+              <DataProvenanceStrip
+                lastSyncLabel={lastScrapeTime}
+                issueWindowLabel={globalTimeLabel}
+                asOfActive={asOf != null}
+              />
+
+              {/* V2: Hero-first narrative, then surges (NYT-style layout) */}
+              <HeroInsight
+                topInsight={heroInsight}
+                onExploreIssues={handleHeroExploreIssues}
+                onNavigateToCategory={handleNavigateToCategory}
+                onLlmCategoryDrill={handleHeroLlmCategoryDrill}
+                issueTableTimeLabel={globalTimeLabel}
+                variant="v2"
+              />
+              <FingerprintSurgeCard
+                data={fingerprintSurges}
+                windowHours={24}
+                windowLabelForCopy={fingerprintWindowLabel}
+                onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+                variant="v2"
+              />
+              {nowNextCrosswalk && (
+                <Card className="border-primary/20 bg-primary/5">
+                  <CardContent className="py-3 px-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary mb-1">
+                      Crosswalk · now vs next
+                    </p>
+                    <p className="text-sm text-foreground">
+                      <span className="font-medium">{nowNextCrosswalk.category}</span> is{" "}
+                      <span className="font-medium">#{nowNextCrosswalk.breakingNowRank}</span> in
+                      Breaking Now (72h) and{" "}
+                      <span className="font-medium">#{nowNextCrosswalk.fixFirstRank}</span> in
+                      Fix-First Queue
+                      {nowNextCrosswalk.actionabilityScore != null
+                        ? ` (${nowNextCrosswalk.actionabilityScore}/100 actionability).`
+                        : "."}
+                    </p>
+                  </CardContent>
+                </Card>
               )}
 
               {/*
-                V1: fingerprint surges (bug signal) above the hero — original hierarchy.
-                V2: hero-first narrative, then surges (see prior NYT-style work).
+                [V1 - DEPRECATED] Original layout: fingerprint surges above hero.
+                Keeping for reference but not rendered. Remove when V2 is stable.
+                
+                <FingerprintSurgeCard variant="v1" ... />
+                <HeroInsight variant="v1" ... />
               */}
-              {isV2 ? (
-                <>
-                  <HeroInsight
-                    topInsight={heroInsight}
-                    onExploreIssues={handleHeroExploreIssues}
-                    onNavigateToCategory={handleNavigateToCategory}
-                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
-                    issueTableTimeLabel={globalTimeLabel}
-                    variant="v2"
-                  />
-                  <FingerprintSurgeCard
-                    data={fingerprintSurges}
-                    windowHours={24}
-                    windowLabelForCopy={fingerprintWindowLabel}
-                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
-                    variant="v2"
-                  />
-                  {nowNextCrosswalk && (
-                    <Card className="border-primary/20 bg-primary/5">
-                      <CardContent className="py-3 px-4">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-primary mb-1">
-                          Crosswalk · now vs next
-                        </p>
-                        <p className="text-sm text-foreground">
-                          <span className="font-medium">{nowNextCrosswalk.category}</span> is{" "}
-                          <span className="font-medium">#{nowNextCrosswalk.breakingNowRank}</span> in
-                          Breaking Now (72h) and{" "}
-                          <span className="font-medium">#{nowNextCrosswalk.fixFirstRank}</span> in
-                          Fix-First Queue
-                          {nowNextCrosswalk.actionabilityScore != null
-                            ? ` (${nowNextCrosswalk.actionabilityScore}/100 actionability).`
-                            : "."}
-                        </p>
-                      </CardContent>
-                    </Card>
-                  )}
-                </>
-              ) : (
-                <>
-                  <FingerprintSurgeCard
-                    data={fingerprintSurges}
-                    windowHours={24}
-                    windowLabelForCopy={fingerprintWindowLabel}
-                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
-                    variant="v1"
-                  />
-                  <HeroInsight
-                    topInsight={heroInsight}
-                    onExploreIssues={handleHeroExploreIssues}
-                    onNavigateToCategory={handleNavigateToCategory}
-                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
-                    issueTableTimeLabel={globalTimeLabel}
-                    variant="v1"
-                  />
-                </>
-              )}
 
               {/* Global Filters */}
               <GlobalFilterBar
@@ -814,17 +798,21 @@ const handleHeroLlmCategoryDrill = (
                 Breaking Now = urgency trend (last 72h). Fix-First Queue = implementation actionability.
                 These can differ and are intended to be read together.
               </div>
+              {/* V2: Enhanced PriorityMatrix with additional visual elements */}
               <PriorityMatrix
                 data={stats.priorityMatrix}
                 onFilterChange={handleFilterChange}
-                variant={isV2 ? "v2" : "v1"}
+                variant="v2"
               />
+              {/* [V1 - DEPRECATED] variant="v1" - simpler matrix without V2 enhancements */}
 
+              {/* V2: Skip hero category since it's already featured above */}
               <CategoryIssuesGrid
                 insights={stats.realtimeInsights}
-                skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
+                skipFirstCategorySlug={heroInsight?.categorySlug}
                 onViewFullList={handleHeroExploreIssues}
               />
+              {/* [V1 - DEPRECATED] skipFirstCategorySlug={undefined} - shows all categories including hero */}
 
               {/* Trend Chart - Historical context */}
               {stats.trendData.length > 0 && (
@@ -1001,7 +989,8 @@ const handleHeroLlmCategoryDrill = (
                 onRefresh={async () => {
                   await Promise.all([refreshClassifications(), refreshClassificationStats()])
                 }}
-                uxVariant={isV2 ? "v2" : "v1"}
+                uxVariant="v2"
+                /* [V1 - DEPRECATED] uxVariant="v1" - older triage layout */
                 lastSyncLabel={lastScrapeTime}
                 asOfActive={asOf != null}
                 heuristicScopeIssueCount={heuristicScopeIssueCount}
