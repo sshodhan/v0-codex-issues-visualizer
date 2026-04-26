@@ -62,6 +62,63 @@ facets: language (`typescript`, `python`), surface (`cli`,
 `vscode-extension`, `jetbrains-plugin`), workflow stage (`pre-commit`, `ci`,
 `deploy`). Subcategory is required; tags are optional and capped at 8.
 
+### Few-shot anchors and anti-bias guard
+
+The system prompt embeds 7 worked examples that anchor the tiebreaker for
+the most-confused category pairs:
+
+| Slot | Source | Category |
+|---|---|---|
+| A | `github.com/openai/codex/issues/13627` | `retrieval_context_mismatch` (cwd switch after compaction) |
+| B | synthetic | `dependency_environment_failure` (3-way: tool vs env vs plugin) |
+| C | `github.com/openai/codex/issues/6765` | `hallucinated_code` (Firebase Auth `continueUrl` fabrication) |
+| D | `github.com/anthropics/claude-code/issues/15804` | `structural_dependency_oversight` (PHP signature) |
+| E | `github.com/openai/codex/issues/4969` | `autonomy_safety_violation` (deleted uncommitted files) |
+| F | `github.com/openai/codex/issues/6885` | `code_generation_bug` (weak Lua regression assertion) |
+| G | `github.com/openai/codex/issues/8564` | `user_intent_misinterpretation` (Chat-mode constraint ignored) |
+
+Six are verbatim public bug reports; one (B) is synthetic because no
+public report cleanly disambiguates the 3-way tool/env/plugin bucket.
+Each example cites its source URL inline so future maintainers can audit
+the anchor against the original report.
+
+E and G are deliberately paired — they teach the safety-vs-intent
+tiebreaker in both directions. E shows when the destructive action
+itself is the primary harm (`autonomy_safety_violation` with
+`user_intent_misinterpretation` as alternate); G shows when ignoring a
+stated constraint is the primary harm (`user_intent_misinterpretation`
+with `autonomy_safety_violation` as alternate).
+
+The prompt also includes a USING THE EXAMPLES anti-bias guard (rendered
+between HARD RULES and the examples block) that tells the model:
+
+- Examples are tiebreakers, not templates.
+- Don't pattern-match on surface similarity (product, vocabulary, prose
+  style) or recency / memorability bias.
+- "Codex deleted X" alone does not make a report
+  `autonomy_safety_violation` — the destruction must actually have been
+  an unauthorized action.
+- If the report doesn't fit any of the 14 categories well, lower
+  confidence below 0.7 and let HARD RULE 5 route it to human review.
+  Forcing a confident classification onto a category that doesn't match
+  is a worse failure than admitting uncertainty.
+
+#### Refresh policy
+
+Re-evaluate the few-shot anchors annually, or when the v2 taxonomy
+distribution observed in `classifications.category` shifts > 20% from
+the previous quarter. Examples bias the model toward these specific
+failure-mode patterns by design — stale anchors become drag.
+
+`scripts/extract-prompt-candidates.sql` (and the equivalent TS at
+`scripts/extract-prompt-candidates.ts`) pulls real candidate
+`observations` rows by keyword for the most-confused category pairs;
+operators can swap an example by replacing the relevant block in
+`lib/classification/prompt.ts` `FEW_SHOT_EXAMPLES`. The
+`tests/classifier-prompt.test.ts` `prompt contains exactly 7 anchored
+few-shot examples` test acts as a regression guard so a future edit
+can't silently drop one.
+
 ## Request payload
 
 Matches the report summary builder contract in `lib/classification/report-summary.ts`.
@@ -108,7 +165,7 @@ The triage panel shows the full LLM-structured output for the selected record so
 
 | Schema field | Source | Where it renders | Notes |
 | --- | --- | --- | --- |
-| `category`, `subcategory` | LLM enum (12 values; "LLM category" in UI) + free-text ≤60 chars ("LLM subcategory" in UI) | Row, breadcrumb (Layer B), reviewer override dropdown, IssuesTable "All LLM Subcategories" filter, Hero classification-cloud pills | `effective_*` reflects the latest review override; do not confuse with the heuristic "Topic" (`categories` table) |
+| `category`, `subcategory` | LLM enum (14 values, v2 taxonomy in `lib/classification/taxonomy.ts` `CATEGORY_ENUM` + `CATEGORY_DEFINITIONS`; "LLM category" in UI) + text ≤ 60 chars with stable per-category seed list (`SUBCATEGORY_EXAMPLES`; "LLM subcategory" in UI) | Row, breadcrumb (Layer B), reviewer override **and subcategory override** input, IssuesTable "All LLM Subcategories" filter, Hero classification-cloud pills | `effective_category` and `effective_subcategory` reflect the latest review override (subcategory override added in `scripts/020_classification_reviews_add_subcategory.sql`); do not confuse with the heuristic "Topic" (`categories` table) |
 | `severity` | LLM enum | Row badge, reviewer override dropdown | `effective_severity` after override |
 | `status` | LLM enum | Row, reviewer override dropdown | `effective_status` after override |
 | `confidence` | LLM 0..1 | Row column, reviewer panel header `C · NN%` badge | Triggers low-confidence hint when `< 0.7` (escalation threshold) |

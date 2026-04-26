@@ -937,7 +937,7 @@ count-only leaderboard.
 
 **Fix sketch:** Delete the duplicate §3.2 block (lines 168-186). Rewrite §4.2 to describe the post-split read pattern: one scan of `mv_observation_current` filtered to `is_canonical`, aggregates computed in the API route or (once P1-14/P1-15 land) from a pre-aggregated MV.
 
-**Status:** _still-open_ (logged 2026-04-22 during DB-analyst holistic migration review).
+**Status:** _partially-resolved_. Verified 2026-04-26: §3.2 now correctly describes the `classifications` + `classification_reviews` flow (the duplicate `bug_report_classifications` block has been removed in some prior PR — only line-3 v10 changelog and §11 Migration Runbook still mention the dropped table, both as legitimate historical references). §4.2 portion remains open: `app/api/stats/route.ts` still has the canonical-filter inconsistency between Priority Matrix and the other aggregates (`totalIssues`, `sentimentBreakdown`, `sourceBreakdown`, `categoryBreakdown`, `trendByDay`, `realtimeInsights`, `competitiveMentions`).
 
 ---
 
@@ -979,7 +979,7 @@ count-only leaderboard.
 | P2-4   | P2       | still-open          | UI correctness | `components/dashboard/issues-table.tsx:137` | Chip label reads "Cluster:" but renders category label (predates PR #12) |
 | P2-5   | P2       | addressed           | Prioritization | `app/page.tsx` + dashboard components     | Story-first priority framing (category + sentiment + representative issues) replaces count-centric KPI ranking |
 | P2-6   | P2       | still-open          | Debuggability  | `lib/scrapers/providers/reddit.ts:75` + `.../hackernews.ts:76` | `relevance_reason` emitted but never persisted after 007 drop |
-| P2-7   | P2       | still-open          | Docs           | `docs/ARCHITECTURE.md:168,263`            | Zombie pre-split sections still describe `bug_report_classifications` and `issues` |
+| P2-7   | P2       | partially-resolved  | Docs           | `docs/ARCHITECTURE.md:168,263`            | §3.2 zombie block resolved (verified 2026-04-26); §4.2 canonical-filter inconsistency still open |
 
 ## Discovered during PR #11 review (not yet prioritised)
 
