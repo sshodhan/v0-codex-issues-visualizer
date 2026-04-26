@@ -78,7 +78,8 @@ function DashboardContentInner() {
     return asOfRaw
   }, [asOfRaw])
 
-  const [activeTab, setActiveTab] = useState("dashboard")
+  // Default tab based on UX version: V2 → "dashboard" tab, V3 → "v3" tab
+  const [activeTab, setActiveTab] = useState(uxVersion === "v3" ? "v3" : "dashboard")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [globalDays, setGlobalDays] = useState(30)
   const [globalCategory, setGlobalCategory] = useState("all")

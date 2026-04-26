@@ -21,13 +21,16 @@ export function UxVersionToggle() {
         size="sm"
         value={version}
         onValueChange={(next) => {
-          if (next === "v3") {
+          if (next === "v2" || next === "v3") {
             setVersion(next)
           }
         }}
         aria-label="Dashboard user interface version"
       >
-        <ToggleGroupItem value="v3" aria-label="Version 3">
+        <ToggleGroupItem value="v2" aria-label="Version 2 - Full dashboard with hero insights, charts, and matrix">
+          V2
+        </ToggleGroupItem>
+        <ToggleGroupItem value="v3" aria-label="Version 3 - Simplified triage with priority rails">
           V3
         </ToggleGroupItem>
       </ToggleGroup>
