@@ -1,4 +1,4 @@
-// LLM `category` enum — fixed 12-value strict-schema field produced by
+// LLM `category` enum — fixed strict-schema field produced by
 // the OpenAI classifier (lib/classification/schema.ts). Surfaced in the
 // UI as "LLM category" (e.g. the Hero card classification cloud).
 // Deliberately disjoint from the heuristic `categories` SQL table
@@ -8,18 +8,20 @@
 // consumer — kept as-is on purpose. See docs/ARCHITECTURE.md §6.0 —
 // Glossary.
 export const CATEGORY_ENUM = [
-  "code-generation-quality",
-  "hallucination",
-  "tool-use-failure",
-  "context-handling",
-  "latency-performance",
-  "auth-session",
-  "cli-ux",
-  "install-env",
-  "cost-quota",
-  "safety-policy",
-  "integration-mcp",
-  "other",
+  "incomplete_context_overflow",
+  "structural_dependency_oversight",
+  "tool_invocation_error",
+  "dependency_environment_failure",
+  "code_generation_bug",
+  "hallucinated_code",
+  "retrieval_context_mismatch",
+  "user_intent_misinterpretation",
+  "autonomy_safety_violation",
+  "performance_latency_issue",
+  "cost_quota_overrun",
+  "session_auth_error",
+  "cli_user_experience_bug",
+  "integration_plugin_failure",
 ] as const
 
 export const SEVERITY_ENUM = ["critical", "high", "medium", "low"] as const

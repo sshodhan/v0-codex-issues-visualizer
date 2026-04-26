@@ -112,9 +112,9 @@ function applyHardReviewRules(classification: ClassificationApiRecord, reportTex
     needsHumanReview = true
     mergedReasons.add("critical_severity")
   }
-  if (classification.category === "safety-policy") {
+  if (classification.category === "autonomy_safety_violation") {
     needsHumanReview = true
-    mergedReasons.add("safety_policy_category")
+    mergedReasons.add("autonomy_safety_violation_category")
   }
   if (mentionSensitive) {
     needsHumanReview = true
