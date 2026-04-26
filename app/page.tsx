@@ -258,8 +258,16 @@ function DashboardContentInner() {
   }
 
   const handleNavigateToCategory = (slug: string) => {
+    // Stay on Dashboard tab and scroll to issues table with category filter
     setGlobalCategory(slug)
-    setActiveTab("classifications")
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        document.getElementById("dashboard-issues-table-anchor")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        })
+      })
+    }
   }
 
   const handleHeroExploreIssues = (categorySlug: string) => {
