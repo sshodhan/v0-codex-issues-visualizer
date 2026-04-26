@@ -213,7 +213,7 @@ export function ClassificationTriage({
   const groups = useMemo(() => {
     const grouped = new Map<string, { total: number; highRisk: number }>()
     for (const record of globallyFilteredRecords) {
-      const key = `${record.effective_category} › ${record.subcategory || "General"}`
+      const key = `${record.effective_category} › ${record.effective_subcategory || "General"}`
       const current = grouped.get(key) || { total: 0, highRisk: 0 }
       current.total += 1
       if (record.effective_severity === "critical" || record.effective_severity === "high") current.highRisk += 1
@@ -245,7 +245,7 @@ export function ClassificationTriage({
     return globallyFilteredRecords.filter((record) => {
       const groupMatch =
         groupFilter === "all" ||
-        `${record.effective_category} › ${record.subcategory || "General"}` === groupFilter
+        `${record.effective_category} › ${record.effective_subcategory || "General"}` === groupFilter
       const semanticMatch =
         semanticClusterFilter === "all" || record.cluster_id === semanticClusterFilter
       return groupMatch && semanticMatch
@@ -650,7 +650,7 @@ export function ClassificationTriage({
                         {record.effective_needs_human_review && <AlertTriangle className="h-4 w-4 text-amber-500" />}
                         <span>{record.effective_category}</span>
                       </div>
-                      <p className="text-xs text-muted-foreground">{record.subcategory}</p>
+                      <p className="text-xs text-muted-foreground">{record.effective_subcategory}</p>
                       <LayerBreadcrumb record={record} compact />
                     </TableCell>
                     <TableCell><Badge variant="outline">{record.effective_severity}</Badge></TableCell>
@@ -1276,7 +1276,7 @@ function LayerBreadcrumb({
       ? record.cluster_label
       : "Unnamed family"
     : null
-  const groupLabel = `${record.effective_category} › ${record.subcategory || "General"}`
+  const groupLabel = `${record.effective_category} › ${record.effective_subcategory || "General"}`
 
   const baseClass = compact
     ? "mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"

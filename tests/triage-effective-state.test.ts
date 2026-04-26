@@ -22,6 +22,9 @@ interface BaselineClassification {
 interface ReviewOverride {
   classification_id: string
   reviewed_category: string | null
+  // reviewed_subcategory landed in 020_classification_reviews_add_subcategory.sql.
+  // Pre-020 review fixtures should set this null; the resolver falls back to baseline.
+  reviewed_subcategory: string | null
   reviewed_severity: string | null
   reviewed_status: string | null
   reviewed_needs_human_review: boolean | null
@@ -32,6 +35,7 @@ interface ReviewOverride {
 
 interface EffectiveClassification extends BaselineClassification {
   effective_category: string
+  effective_subcategory: string | null
   effective_severity: string
   effective_status: string
   effective_needs_human_review: boolean
@@ -47,6 +51,7 @@ function computeEffectiveClassification(
   return {
     ...baseline,
     effective_category: review?.reviewed_category ?? baseline.category,
+    effective_subcategory: review?.reviewed_subcategory ?? baseline.subcategory,
     effective_severity: review?.reviewed_severity ?? baseline.severity,
     effective_status: review?.reviewed_status ?? baseline.status,
     effective_needs_human_review:
@@ -70,7 +75,7 @@ function filterByEffectiveCategory(
 function groupByEffectiveCategory(records: EffectiveClassification[]) {
   const grouped = new Map<string, { total: number; highRisk: number }>()
   for (const record of records) {
-    const key = `${record.effective_category} › ${record.subcategory || "General"}`
+    const key = `${record.effective_category} › ${record.effective_subcategory || "General"}`
     const current = grouped.get(key) || { total: 0, highRisk: 0 }
     current.total += 1
     if (record.effective_severity === "critical" || record.effective_severity === "high") {
@@ -97,6 +102,7 @@ test("effective state renders review override, not baseline", () => {
   const review: ReviewOverride = {
     classification_id: "cls-1",
     reviewed_category: "Feature Request",
+    reviewed_subcategory: null,
     reviewed_severity: "low",
     reviewed_status: "resolved",
     reviewed_needs_human_review: false,
@@ -171,6 +177,7 @@ test("filter chips key on effective_category after review", () => {
   const review1: ReviewOverride = {
     classification_id: "cls-1",
     reviewed_category: "Feature Request",
+    reviewed_subcategory: null,
     reviewed_severity: null,
     reviewed_status: null,
     reviewed_needs_human_review: null,
@@ -222,6 +229,7 @@ test("cluster grouping uses effective_category and effective_severity", () => {
   const review2: ReviewOverride = {
     classification_id: "cls-2",
     reviewed_category: null,
+    reviewed_subcategory: null,
     reviewed_severity: "critical",
     reviewed_status: null,
     reviewed_needs_human_review: null,
@@ -259,6 +267,7 @@ test("review history shows baseline with algorithm version", () => {
   const review: ReviewOverride = {
     classification_id: "cls-1",
     reviewed_category: "Feature Request",
+    reviewed_subcategory: null,
     reviewed_severity: "low",
     reviewed_status: "resolved",
     reviewed_needs_human_review: false,
@@ -296,6 +305,7 @@ test("partial review overrides only affect specified fields", () => {
   const partialReview: ReviewOverride = {
     classification_id: "cls-1",
     reviewed_category: null,
+    reviewed_subcategory: null,
     reviewed_severity: "low",
     reviewed_status: null,
     reviewed_needs_human_review: null,
