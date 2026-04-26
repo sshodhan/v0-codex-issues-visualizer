@@ -116,7 +116,7 @@ function DashboardContentInner() {
   }, [searchParams])
 
   const applyIssueSearchParams = useCallback(
-    (patch: { clusterId?: string | null; compoundKey?: string | null }) => {
+    (patch: { clusterId?: string | null; compoundKey?: string | null; llmCategory?: string | null }) => {
       const next = new URLSearchParams(searchParams.toString())
       if ("clusterId" in patch) {
         if (patch.clusterId) next.set("cluster", patch.clusterId)
@@ -125,6 +125,10 @@ function DashboardContentInner() {
       if ("compoundKey" in patch) {
         if (patch.compoundKey) next.set("fingerprint", patch.compoundKey)
         else next.delete("fingerprint")
+      }
+      if ("llmCategory" in patch) {
+        if (patch.llmCategory) next.set("llm_category", patch.llmCategory)
+        else next.delete("llm_category")
       }
       const qs = next.toString()
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
@@ -143,6 +147,7 @@ function DashboardContentInner() {
     order: issueFilters.order,
     compound_key: compoundKeyFromUrl,
     cluster_id: clusterIdFromUrl || undefined,
+    llm_category: llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined,
     days: globalDays || undefined,
     category: globalCategory === "all" ? undefined : globalCategory,
     asOf: asOf || undefined,
@@ -202,13 +207,15 @@ function DashboardContentInner() {
     compound_key?: string
     /** Use `null` to clear the cluster param from the URL. */
     cluster_id?: string | null
+    /** Use `null` to clear the llm_category param from the URL. */
+    llm_category?: string | null
   }) => {
-    const { compound_key, cluster_id, ...tableOnly } = newFilters
+    const { compound_key, cluster_id, llm_category, ...tableOnly } = newFilters
     if (Object.keys(tableOnly).length > 0) {
       setIssueFilters((prev) => ({ ...prev, ...tableOnly }))
     }
 
-    if (compound_key !== undefined || cluster_id !== undefined) {
+    if (compound_key !== undefined || cluster_id !== undefined || llm_category !== undefined) {
       const next = new URLSearchParams(searchParams.toString())
       if (compound_key !== undefined) {
         if (compound_key) {
@@ -224,6 +231,13 @@ function DashboardContentInner() {
           next.delete("fingerprint")
         } else {
           next.delete("cluster")
+        }
+      }
+      if (llm_category !== undefined) {
+        if (llm_category) {
+          next.set("llm_category", llm_category)
+        } else {
+          next.delete("llm_category")
         }
       }
       const qs = next.toString()
@@ -346,24 +360,19 @@ function DashboardContentInner() {
     }
   }
 
-  const handleHeroLlmCategoryDrill = (
-    categorySlug: string,
-    llmCategorySlug: string,
+const handleHeroLlmCategoryDrill = (
+  categorySlug: string,
+  llmCategorySlug: string,
   ) => {
-    setGlobalCategory(categorySlug)
-    setActiveTab("classifications")
-    applyTriageContextParams({
-      llm: llmCategorySlug,
-      group: null,
-    })
-    if (typeof window !== "undefined") {
-      requestAnimationFrame(() => {
-        const el =
-          document.getElementById("triage-llm-link-scope") ||
-          document.getElementById("triage-top-groups")
-        el?.scrollIntoView({ behavior: "smooth", block: "start" })
-      })
-    }
+  // Stay on Dashboard tab and scroll to issues table with LLM category filter
+  setGlobalCategory(categorySlug)
+  applyIssueSearchParams({ llmCategory: llmCategorySlug })
+  if (typeof window !== "undefined") {
+  requestAnimationFrame(() => {
+  const el = document.getElementById("dashboard-issues-table-anchor")
+  el?.scrollIntoView({ behavior: "smooth", block: "start" })
+  })
+  }
   }
 
   const handleOpenDashboardFromStoryAtlas = () => {
@@ -854,22 +863,23 @@ function DashboardContentInner() {
                 </div>
               </section>
 
-              {/* Issues Table - Deep dive zone */}
-              <div id="dashboard-issues-table-anchor" className="scroll-mt-20">
-                <IssuesTable
-                  issues={issues}
-                  isLoading={issuesLoading}
-                  globalTimeLabel={globalTimeLabel}
-                  globalCategoryLabel={globalCategoryLabel}
-                  observationCount={issues.length}
-                  canonicalCount={stats?.totalIssues || issues.length}
-                  onFilterChange={handleFilterChange}
-                  activeCompoundKey={compoundKeyFromUrl}
-                  activeClusterId={clusterIdFromUrl ?? undefined}
-                  activeClusterLabel={activeClusterLabel ?? undefined}
-                />
-              </div>
-            </TabsContent>
+{/* Issues Table - Deep dive zone */}
+<div id="dashboard-issues-table-anchor" className="scroll-mt-20">
+<IssuesTable
+  issues={issues}
+  isLoading={issuesLoading}
+  globalTimeLabel={globalTimeLabel}
+  globalCategoryLabel={globalCategoryLabel}
+  observationCount={issues.length}
+  canonicalCount={stats?.totalIssues || issues.length}
+  onFilterChange={handleFilterChange}
+  activeCompoundKey={compoundKeyFromUrl}
+  activeClusterId={clusterIdFromUrl ?? undefined}
+  activeClusterLabel={activeClusterLabel ?? undefined}
+  activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
+  />
+</div>
+</TabsContent>
 
             {/* V3 Tab - Simplified Priority Rails Focus */}
             <TabsContent value="v3" className="space-y-6 mt-6">
