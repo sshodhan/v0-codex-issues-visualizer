@@ -95,11 +95,62 @@ test("subcategory guidance forbids vague labels", () => {
   }
 })
 
-test("prompt contains at least 4 anchored few-shot examples", () => {
+test("prompt contains exactly 7 anchored few-shot examples", () => {
   const exampleHeaders = CLASSIFIER_SYSTEM_PROMPT.match(/Example [A-Z] —/g) ?? []
+  assert.equal(
+    exampleHeaders.length,
+    7,
+    `expected exactly 7 worked examples (A–G), found ${exampleHeaders.length}`,
+  )
+})
+
+test("real few-shot examples cite their source URLs", () => {
+  // Six of the seven anchors are real public bug reports. Each must cite
+  // its source URL inline so future maintainers can audit the anchor
+  // against the original report. The synthetic example explicitly labels
+  // itself synthetic.
+  const sourceLines = CLASSIFIER_SYSTEM_PROMPT.match(/^ {2}source: .+$/gm) ?? []
+  assert.equal(
+    sourceLines.length,
+    7,
+    `expected 7 source: lines (one per example), found ${sourceLines.length}`,
+  )
+  const realSourceLines = sourceLines.filter((line) => /github\.com|community\.openai\.com/.test(line))
   assert.ok(
-    exampleHeaders.length >= 4,
-    `expected ≥ 4 worked examples, found ${exampleHeaders.length}`,
+    realSourceLines.length >= 5,
+    `expected ≥ 5 real-source citations, found ${realSourceLines.length}`,
+  )
+  const syntheticLines = sourceLines.filter((line) => /synthetic/.test(line))
+  assert.ok(
+    syntheticLines.length >= 1,
+    "synthetic examples must explicitly self-label as synthetic",
+  )
+})
+
+test("prompt contains an anti-bias guard for example use", () => {
+  // Regression guard: with 7 anchored examples the model is at risk of
+  // pattern-matching superficial features (product, vocabulary). The
+  // USING THE EXAMPLES section tells the model when NOT to apply an
+  // example. Removing or weakening it should fail this test.
+  assert.match(
+    CLASSIFIER_SYSTEM_PROMPT,
+    /USING THE EXAMPLES/,
+    "prompt missing USING THE EXAMPLES section",
+  )
+  assert.match(
+    CLASSIFIER_SYSTEM_PROMPT,
+    /not templates/i,
+    "anti-bias guard should explicitly say examples are NOT templates",
+  )
+  assert.match(
+    CLASSIFIER_SYSTEM_PROMPT,
+    /surface similarity|shared vocabulary/i,
+    "anti-bias guard should call out surface-similarity / shared-vocabulary anti-patterns",
+  )
+  assert.match(
+    CLASSIFIER_SYSTEM_PROMPT,
+    /lower confidence|admitting uncertainty/i,
+    "anti-bias guard should route uncertain cases to lowered confidence + human review",
   )
 })
 
