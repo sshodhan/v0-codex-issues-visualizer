@@ -1,37 +1,32 @@
 /**
- * Backfill legacy LLM category slugs to the robust enum introduced in
- * lib/classification/taxonomy.ts.
+ * Read-only preview for the v2 LLM-category backfill.
  *
- * Important:
- * - This script targets the three-layer schema tables:
- *   - `classifications` (baseline derivation rows)
- *   - `classification_reviews` (review overrides)
- * - It does NOT touch the removed `bug_report_classifications` table.
+ * The actual migration is `scripts/019_migrate_llm_categories.sql` and must be
+ * run by the postgres / migration role:
+ *
+ *   psql "$SUPABASE_DB_URL" -f scripts/019_migrate_llm_categories.sql
+ *
+ * This TS script does NOT perform any writes. It cannot, by design — migration
+ * 008 (`scripts/008_revoke_service_role_dml.sql`) revokes UPDATE on
+ * `classifications` and `classification_reviews` from `service_role`, and this
+ * file connects via `lib/supabase/admin.ts` (a service-role JWT). Use it to
+ * preview the rows the SQL migration will touch and to confirm post-apply that
+ * no legacy slugs remain.
  *
  * Usage:
- *   node --experimental-strip-types scripts/019_migrate_llm_categories.ts --dry-run
- *   CATEGORY_MIGRATION_CONFIRM=yes node --experimental-strip-types scripts/019_migrate_llm_categories.ts --apply
- *   CATEGORY_MIGRATION_CONFIRM=yes node --experimental-strip-types scripts/019_migrate_llm_categories.ts --apply --fallback=user_intent_misinterpretation
+ *   node --experimental-strip-types scripts/019_migrate_llm_categories.ts
+ *   node --experimental-strip-types scripts/019_migrate_llm_categories.ts --report=tmp/preview.json
  */
 
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+
 import { createAdminClient } from "../lib/supabase/admin.ts"
 import { CATEGORY_ENUM, type IssueCategory } from "../lib/classification/taxonomy.ts"
 
-type ClassificationRow = {
-  id: string
-  category: string
-  alternate_categories: string[] | null
-  raw_json: Record<string, unknown> | null
-}
-
-type ReviewRow = {
-  id: string
-  category: string | null
-}
-
+// Mirrors the CASE expressions in scripts/019_migrate_llm_categories.sql.
+// Keep this map and the SQL CASE in lockstep.
 const LEGACY_TO_ROBUST: Record<string, IssueCategory> = {
   "code-generation-quality": "code_generation_bug",
   hallucination: "hallucinated_code",
@@ -44,218 +39,156 @@ const LEGACY_TO_ROBUST: Record<string, IssueCategory> = {
   "cost-quota": "cost_quota_overrun",
   "safety-policy": "autonomy_safety_violation",
   "integration-mcp": "integration_plugin_failure",
+  other: "user_intent_misinterpretation",
 }
 
-type ParsedArgs = {
-  dryRun: boolean
-  apply: boolean
-  batchSize: number
-  fallback: IssueCategory
-}
+const LEGACY_SLUGS = Object.keys(LEGACY_TO_ROBUST)
 
-interface MigrationStats {
-  scanned: number
-  updated: number
-  fallbackCount: number
-  fallbackSamples: Map<string, number>
+interface ParsedArgs {
+  reportPath?: string
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const args: ParsedArgs = {
-    dryRun: true,
-    apply: false,
-    batchSize: 500,
-    fallback: "user_intent_misinterpretation",
-  }
+  const out: ParsedArgs = {}
   for (const arg of argv.slice(2)) {
-    if (arg === "--dry-run") args.dryRun = true
-    else if (arg === "--apply") {
-      args.apply = true
-      args.dryRun = false
-    } else if (arg.startsWith("--batch-size=")) {
-      args.batchSize = Number(arg.split("=")[1] ?? "500")
-    } else if (arg.startsWith("--fallback=")) {
-      const fallback = arg.split("=")[1] ?? ""
-      if ((CATEGORY_ENUM as readonly string[]).includes(fallback)) {
-        args.fallback = fallback as IssueCategory
-      } else {
-        throw new Error(`Invalid --fallback category: ${fallback}`)
-      }
+    if (arg.startsWith("--report=")) {
+      out.reportPath = arg.slice("--report=".length)
+    } else if (arg === "--apply") {
+      throw new Error(
+        "--apply is not supported in this script. The migration is SQL: " +
+          'run `psql "$SUPABASE_DB_URL" -f scripts/019_migrate_llm_categories.sql`.',
+      )
+    } else if (arg === "--help" || arg === "-h") {
+      console.log(
+        "Usage: node --experimental-strip-types scripts/019_migrate_llm_categories.ts [--report=PATH]\n" +
+          "       Read-only preview of rows the v2 LLM-category SQL migration will touch.",
+      )
+      process.exit(0)
+    } else {
+      throw new Error(`Unknown argument: ${arg}`)
     }
   }
-  return args
+  return out
 }
 
-function mapCategory(value: string | null | undefined, fallback: IssueCategory): IssueCategory {
-  if (!value) return fallback
-  if ((CATEGORY_ENUM as readonly string[]).includes(value)) return value as IssueCategory
-  return LEGACY_TO_ROBUST[value] ?? fallback
+interface CategoryCount {
+  category: string
+  rows: number
+  remaps_to: IssueCategory
 }
 
-function recordFallback(stats: MigrationStats, legacyValue: string | null | undefined) {
-  const key = legacyValue ?? "(null)"
-  stats.fallbackCount += 1
-  stats.fallbackSamples.set(key, (stats.fallbackSamples.get(key) ?? 0) + 1)
-}
-
-async function migrateClassifications(args: ParsedArgs): Promise<MigrationStats> {
-  const admin = createAdminClient()
-  const stats: MigrationStats = {
-    scanned: 0,
-    updated: 0,
-    fallbackCount: 0,
-    fallbackSamples: new Map<string, number>(),
-  }
-
-  let lastId: string | null = null
-  while (true) {
-    let query = admin
-      .from("classifications")
-      .select("id, category, alternate_categories, raw_json")
-      .order("id", { ascending: true })
-      .limit(args.batchSize)
-    if (lastId) query = query.gt("id", lastId)
-
-    const { data, error } = await query
-    if (error) throw new Error(`[classifications] fetch failed: ${error.message}`)
-    if (!data || data.length === 0) break
-
-    for (const row of data as ClassificationRow[]) {
-      stats.scanned += 1
-      const nextCategory = mapCategory(row.category, args.fallback)
-      const nextAlternates = (row.alternate_categories ?? []).map((v) => mapCategory(v, args.fallback))
-      const nextRawJson = row.raw_json
-        ? { ...row.raw_json, category: nextCategory, alternate_categories: nextAlternates }
-        : row.raw_json
-
-      const usedFallbackForPrimary =
-        !(CATEGORY_ENUM as readonly string[]).includes(row.category) && !(row.category in LEGACY_TO_ROBUST)
-      if (usedFallbackForPrimary) recordFallback(stats, row.category)
-
-      const categoryChanged = row.category !== nextCategory
-      const alternatesChanged = JSON.stringify(row.alternate_categories ?? []) !== JSON.stringify(nextAlternates)
-      if (!categoryChanged && !alternatesChanged) continue
-
-      if (args.apply) {
-        const { error: updateError } = await admin
-          .from("classifications")
-          .update({
-            category: nextCategory,
-            alternate_categories: nextAlternates,
-            raw_json: nextRawJson,
-          })
-          .eq("id", row.id)
-        if (updateError) throw new Error(`[classifications] update failed for ${row.id}: ${updateError.message}`)
-      }
-      stats.updated += 1
+async function countByCategory(
+  admin: ReturnType<typeof createAdminClient>,
+  table: "classifications" | "classification_reviews",
+): Promise<CategoryCount[]> {
+  const result: CategoryCount[] = []
+  for (const slug of LEGACY_SLUGS) {
+    const { count, error } = await admin
+      .from(table)
+      .select("id", { count: "exact", head: true })
+      .eq("category", slug)
+    if (error) throw new Error(`[${table}] count for "${slug}" failed: ${error.message}`)
+    if ((count ?? 0) > 0) {
+      result.push({ category: slug, rows: count ?? 0, remaps_to: LEGACY_TO_ROBUST[slug] })
     }
-
-    lastId = data[data.length - 1]?.id ?? null
-    if (data.length < args.batchSize) break
   }
-
-  return stats
+  return result
 }
 
-async function migrateClassificationReviews(args: ParsedArgs): Promise<MigrationStats> {
-  const admin = createAdminClient()
-  const stats: MigrationStats = {
-    scanned: 0,
-    updated: 0,
-    fallbackCount: 0,
-    fallbackSamples: new Map<string, number>(),
-  }
-
-  let lastId: string | null = null
-  while (true) {
-    let query = admin
-      .from("classification_reviews")
-      .select("id, category")
-      .not("category", "is", null)
-      .order("id", { ascending: true })
-      .limit(args.batchSize)
-    if (lastId) query = query.gt("id", lastId)
-
-    const { data, error } = await query
-    if (error) throw new Error(`[classification_reviews] fetch failed: ${error.message}`)
-    if (!data || data.length === 0) break
-
-    for (const row of data as ReviewRow[]) {
-      stats.scanned += 1
-      const nextCategory = mapCategory(row.category, args.fallback)
-      const usedFallback =
-        !!row.category &&
-        !(CATEGORY_ENUM as readonly string[]).includes(row.category) &&
-        !(row.category in LEGACY_TO_ROBUST)
-      if (usedFallback) recordFallback(stats, row.category)
-      if (row.category === nextCategory) continue
-
-      if (args.apply) {
-        const { error: updateError } = await admin
-          .from("classification_reviews")
-          .update({ category: nextCategory })
-          .eq("id", row.id)
-        if (updateError) throw new Error(`[classification_reviews] update failed for ${row.id}: ${updateError.message}`)
-      }
-      stats.updated += 1
-    }
-
-    lastId = data[data.length - 1]?.id ?? null
-    if (data.length < args.batchSize) break
-  }
-  return stats
+async function countAlternates(admin: ReturnType<typeof createAdminClient>): Promise<number> {
+  const { count, error } = await admin
+    .from("classifications")
+    .select("id", { count: "exact", head: true })
+    .overlaps("alternate_categories", LEGACY_SLUGS)
+  if (error) throw new Error(`[classifications.alternate_categories] count failed: ${error.message}`)
+  return count ?? 0
 }
 
-function collapseFallbackSamples(entries: Array<Map<string, number>>) {
-  const merged = new Map<string, number>()
-  for (const map of entries) {
-    for (const [key, count] of map) merged.set(key, (merged.get(key) ?? 0) + count)
+async function countLegacyReviewReason(
+  admin: ReturnType<typeof createAdminClient>,
+): Promise<number> {
+  const { count, error } = await admin
+    .from("classifications")
+    .select("id", { count: "exact", head: true })
+    .contains("review_reasons", ["safety_policy_category"])
+  if (error) throw new Error(`[classifications.review_reasons] count failed: ${error.message}`)
+  return count ?? 0
+}
+
+async function sampleUnknownCategories(
+  admin: ReturnType<typeof createAdminClient>,
+  table: "classifications" | "classification_reviews",
+): Promise<{ count: number; samples: string[] }> {
+  // Streams up to 1k category values, counts any that are neither in the v2
+  // enum nor in the legacy set. If unknown values exist they will not be
+  // touched by the SQL migration; flag them so the operator notices.
+  const known = new Set<string>([...CATEGORY_ENUM, ...LEGACY_SLUGS])
+  const { data, error } = await admin
+    .from(table)
+    .select("category")
+    .limit(1000)
+  if (error) throw new Error(`[${table}] unknown sample failed: ${error.message}`)
+  const samples = new Set<string>()
+  let count = 0
+  for (const row of data ?? []) {
+    const value = (row as { category: string | null }).category
+    if (typeof value !== "string") continue
+    if (known.has(value)) continue
+    count += 1
+    if (samples.size < 10) samples.add(value)
   }
-  return [...merged.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 20)
-    .map(([legacy, count]) => ({ legacy, count }))
+  return { count, samples: [...samples] }
 }
 
 async function run() {
   const args = parseArgs(process.argv)
-  if (args.apply && process.env.CATEGORY_MIGRATION_CONFIRM !== "yes") {
-    console.error("Refusing to --apply without CATEGORY_MIGRATION_CONFIRM=yes.")
-    process.exit(2)
-  }
+  const admin = createAdminClient()
 
-  const classifications = await migrateClassifications(args)
-  const reviews = await migrateClassificationReviews(args)
+  const classificationsByCategory = await countByCategory(admin, "classifications")
+  const reviewsByCategory = await countByCategory(admin, "classification_reviews")
+  const alternateRowCount = await countAlternates(admin)
+  const reviewReasonRowCount = await countLegacyReviewReason(admin)
+  const classificationsUnknown = await sampleUnknownCategories(admin, "classifications")
+  const reviewsUnknown = await sampleUnknownCategories(admin, "classification_reviews")
 
   const summary = {
-    mode: args.dryRun ? "dry-run" : "apply",
-    fallback_category: args.fallback,
+    generated_at: new Date().toISOString(),
+    mode: "preview",
+    legacy_to_v2_mapping: LEGACY_TO_ROBUST,
     classifications: {
-      scanned_rows: classifications.scanned,
-      updated_rows: classifications.updated,
-      fallback_primary_count: classifications.fallbackCount,
-      fallback_primary_samples: collapseFallbackSamples([classifications.fallbackSamples]),
+      legacy_baseline_rows_by_category: classificationsByCategory,
+      legacy_alternate_categories_rows: alternateRowCount,
+      legacy_review_reason_rows: reviewReasonRowCount,
+      unknown_category: classificationsUnknown,
     },
     classification_reviews: {
-      scanned_rows: reviews.scanned,
-      updated_rows: reviews.updated,
-      fallback_primary_count: reviews.fallbackCount,
-      fallback_primary_samples: collapseFallbackSamples([reviews.fallbackSamples]),
+      legacy_category_rows_by_category: reviewsByCategory,
+      unknown_category: reviewsUnknown,
     },
+    next_step:
+      'Apply: psql "$SUPABASE_DB_URL" -f scripts/019_migrate_llm_categories.sql',
   }
 
   console.log(JSON.stringify(summary, null, 2))
 
+  if (classificationsUnknown.count > 0 || reviewsUnknown.count > 0) {
+    console.error(
+      `\nWARNING: found ${classificationsUnknown.count} classifications and ${reviewsUnknown.count} reviews with category values that are neither v2 nor legacy.\n` +
+        "These rows will NOT be touched by the SQL migration. Inspect manually before applying.",
+    )
+  }
+
   const here = path.dirname(fileURLToPath(import.meta.url))
   const tmpDir = path.join(here, "tmp")
-  await mkdir(tmpDir, { recursive: true })
-  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "")
-  const outPath = path.join(tmpDir, `llm-category-migration-${stamp}.json`)
-  await writeFile(outPath, JSON.stringify(summary, null, 2))
-  console.error(`[category-migration] wrote report to ${outPath}`)
+  const stamp = summary.generated_at.slice(0, 10).replace(/-/g, "")
+  const reportPath =
+    args.reportPath ?? path.join(tmpDir, `llm-category-migration-preview-${stamp}.json`)
+  await mkdir(path.dirname(reportPath), { recursive: true })
+  await writeFile(reportPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8")
+  console.error(`\n[migration-019-preview] report written to ${reportPath}`)
 }
 
 run().catch((err) => {
-  console.error("[category-migration] failed:", err)
+  console.error("[migration-019-preview] failed:", err)
   process.exit(1)
 })
