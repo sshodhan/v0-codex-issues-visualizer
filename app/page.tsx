@@ -54,8 +54,10 @@ function isUuid(s: string): boolean {
 
 // Inner component that uses useSearchParams (requires Suspense boundary)
 function DashboardContentInner() {
-  const { version: uxVersion } = useDashboardUxVersion()
-  const isV2 = isUxV2(uxVersion)
+    const { version: uxVersion } = useDashboardUxVersion()
+    // V2 is now the default - all Dashboard components render V2 variants.
+    // Keeping isV2 for potential future A/B testing or rollback.
+    const isV2 = isUxV2(uxVersion) // eslint-disable-line @typescript-eslint/no-unused-vars
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
@@ -76,7 +78,8 @@ function DashboardContentInner() {
     return asOfRaw
   }, [asOfRaw])
 
-  const [activeTab, setActiveTab] = useState("dashboard")
+  // Default tab based on UX version: V2 → "dashboard" tab, V3 → "v3" tab
+  const [activeTab, setActiveTab] = useState(uxVersion === "v3" ? "v3" : "dashboard")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [globalDays, setGlobalDays] = useState(30)
   const [globalCategory, setGlobalCategory] = useState("all")
@@ -116,7 +119,7 @@ function DashboardContentInner() {
   }, [searchParams])
 
   const applyIssueSearchParams = useCallback(
-    (patch: { clusterId?: string | null; compoundKey?: string | null }) => {
+    (patch: { clusterId?: string | null; compoundKey?: string | null; llmCategory?: string | null }) => {
       const next = new URLSearchParams(searchParams.toString())
       if ("clusterId" in patch) {
         if (patch.clusterId) next.set("cluster", patch.clusterId)
@@ -125,6 +128,10 @@ function DashboardContentInner() {
       if ("compoundKey" in patch) {
         if (patch.compoundKey) next.set("fingerprint", patch.compoundKey)
         else next.delete("fingerprint")
+      }
+      if ("llmCategory" in patch) {
+        if (patch.llmCategory) next.set("llm_category", patch.llmCategory)
+        else next.delete("llm_category")
       }
       const qs = next.toString()
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
@@ -143,6 +150,7 @@ function DashboardContentInner() {
     order: issueFilters.order,
     compound_key: compoundKeyFromUrl,
     cluster_id: clusterIdFromUrl || undefined,
+    llm_category: llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined,
     days: globalDays || undefined,
     category: globalCategory === "all" ? undefined : globalCategory,
     asOf: asOf || undefined,
@@ -202,13 +210,15 @@ function DashboardContentInner() {
     compound_key?: string
     /** Use `null` to clear the cluster param from the URL. */
     cluster_id?: string | null
+    /** Use `null` to clear the llm_category param from the URL. */
+    llm_category?: string | null
   }) => {
-    const { compound_key, cluster_id, ...tableOnly } = newFilters
+    const { compound_key, cluster_id, llm_category, ...tableOnly } = newFilters
     if (Object.keys(tableOnly).length > 0) {
       setIssueFilters((prev) => ({ ...prev, ...tableOnly }))
     }
 
-    if (compound_key !== undefined || cluster_id !== undefined) {
+    if (compound_key !== undefined || cluster_id !== undefined || llm_category !== undefined) {
       const next = new URLSearchParams(searchParams.toString())
       if (compound_key !== undefined) {
         if (compound_key) {
@@ -224,6 +234,13 @@ function DashboardContentInner() {
           next.delete("fingerprint")
         } else {
           next.delete("cluster")
+        }
+      }
+      if (llm_category !== undefined) {
+        if (llm_category) {
+          next.set("llm_category", llm_category)
+        } else {
+          next.delete("llm_category")
         }
       }
       const qs = next.toString()
@@ -244,8 +261,16 @@ function DashboardContentInner() {
   }
 
   const handleNavigateToCategory = (slug: string) => {
+    // Stay on Dashboard tab and scroll to issues table with category filter
     setGlobalCategory(slug)
-    setActiveTab("classifications")
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        document.getElementById("dashboard-issues-table-anchor")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        })
+      })
+    }
   }
 
   const handleHeroExploreIssues = (categorySlug: string) => {
@@ -346,24 +371,19 @@ function DashboardContentInner() {
     }
   }
 
-  const handleHeroLlmCategoryDrill = (
-    categorySlug: string,
-    llmCategorySlug: string,
+const handleHeroLlmCategoryDrill = (
+  categorySlug: string,
+  llmCategorySlug: string,
   ) => {
-    setGlobalCategory(categorySlug)
-    setActiveTab("classifications")
-    applyTriageContextParams({
-      llm: llmCategorySlug,
-      group: null,
-    })
-    if (typeof window !== "undefined") {
-      requestAnimationFrame(() => {
-        const el =
-          document.getElementById("triage-llm-link-scope") ||
-          document.getElementById("triage-top-groups")
-        el?.scrollIntoView({ behavior: "smooth", block: "start" })
-      })
-    }
+  // Stay on Dashboard tab and scroll to issues table with LLM category filter
+  setGlobalCategory(categorySlug)
+  applyIssueSearchParams({ llmCategory: llmCategorySlug })
+  if (typeof window !== "undefined") {
+  requestAnimationFrame(() => {
+  const el = document.getElementById("dashboard-issues-table-anchor")
+  el?.scrollIntoView({ behavior: "smooth", block: "start" })
+  })
+  }
   }
 
   const handleOpenDashboardFromStoryAtlas = () => {
@@ -708,74 +728,56 @@ function DashboardContentInner() {
 
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
-              {isV2 && (
-                <DataProvenanceStrip
-                  lastSyncLabel={lastScrapeTime}
-                  issueWindowLabel={globalTimeLabel}
-                  asOfActive={asOf != null}
-                />
+              {/* V2: Always show DataProvenanceStrip */}
+              <DataProvenanceStrip
+                lastSyncLabel={lastScrapeTime}
+                issueWindowLabel={globalTimeLabel}
+                asOfActive={asOf != null}
+              />
+
+              {/* V2: Hero-first narrative, then surges (NYT-style layout) */}
+              <HeroInsight
+                topInsight={heroInsight}
+                onExploreIssues={handleHeroExploreIssues}
+                onNavigateToCategory={handleNavigateToCategory}
+                onLlmCategoryDrill={handleHeroLlmCategoryDrill}
+                issueTableTimeLabel={globalTimeLabel}
+                variant="v2"
+              />
+              <FingerprintSurgeCard
+                data={fingerprintSurges}
+                windowHours={24}
+                windowLabelForCopy={fingerprintWindowLabel}
+                onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
+                variant="v2"
+              />
+              {nowNextCrosswalk && (
+                <Card className="border-primary/20 bg-primary/5">
+                  <CardContent className="py-3 px-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary mb-1">
+                      Crosswalk · now vs next
+                    </p>
+                    <p className="text-sm text-foreground">
+                      <span className="font-medium">{nowNextCrosswalk.category}</span> is{" "}
+                      <span className="font-medium">#{nowNextCrosswalk.breakingNowRank}</span> in
+                      Breaking Now (72h) and{" "}
+                      <span className="font-medium">#{nowNextCrosswalk.fixFirstRank}</span> in
+                      Fix-First Queue
+                      {nowNextCrosswalk.actionabilityScore != null
+                        ? ` (${nowNextCrosswalk.actionabilityScore}/100 actionability).`
+                        : "."}
+                    </p>
+                  </CardContent>
+                </Card>
               )}
 
               {/*
-                V1: fingerprint surges (bug signal) above the hero — original hierarchy.
-                V2: hero-first narrative, then surges (see prior NYT-style work).
+                [V1 - DEPRECATED] Original layout: fingerprint surges above hero.
+                Keeping for reference but not rendered. Remove when V2 is stable.
+                
+                <FingerprintSurgeCard variant="v1" ... />
+                <HeroInsight variant="v1" ... />
               */}
-              {isV2 ? (
-                <>
-                  <HeroInsight
-                    topInsight={heroInsight}
-                    onExploreIssues={handleHeroExploreIssues}
-                    onNavigateToCategory={handleNavigateToCategory}
-                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
-                    issueTableTimeLabel={globalTimeLabel}
-                    variant="v2"
-                  />
-                  <FingerprintSurgeCard
-                    data={fingerprintSurges}
-                    windowHours={24}
-                    windowLabelForCopy={fingerprintWindowLabel}
-                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
-                    variant="v2"
-                  />
-                  {nowNextCrosswalk && (
-                    <Card className="border-primary/20 bg-primary/5">
-                      <CardContent className="py-3 px-4">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-primary mb-1">
-                          Crosswalk · now vs next
-                        </p>
-                        <p className="text-sm text-foreground">
-                          <span className="font-medium">{nowNextCrosswalk.category}</span> is{" "}
-                          <span className="font-medium">#{nowNextCrosswalk.breakingNowRank}</span> in
-                          Breaking Now (72h) and{" "}
-                          <span className="font-medium">#{nowNextCrosswalk.fixFirstRank}</span> in
-                          Fix-First Queue
-                          {nowNextCrosswalk.actionabilityScore != null
-                            ? ` (${nowNextCrosswalk.actionabilityScore}/100 actionability).`
-                            : "."}
-                        </p>
-                      </CardContent>
-                    </Card>
-                  )}
-                </>
-              ) : (
-                <>
-                  <FingerprintSurgeCard
-                    data={fingerprintSurges}
-                    windowHours={24}
-                    windowLabelForCopy={fingerprintWindowLabel}
-                    onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
-                    variant="v1"
-                  />
-                  <HeroInsight
-                    topInsight={heroInsight}
-                    onExploreIssues={handleHeroExploreIssues}
-                    onNavigateToCategory={handleNavigateToCategory}
-                    onLlmCategoryDrill={handleHeroLlmCategoryDrill}
-                    issueTableTimeLabel={globalTimeLabel}
-                    variant="v1"
-                  />
-                </>
-              )}
 
               {/* Global Filters */}
               <GlobalFilterBar
@@ -797,17 +799,21 @@ function DashboardContentInner() {
                 Breaking Now = urgency trend (last 72h). Fix-First Queue = implementation actionability.
                 These can differ and are intended to be read together.
               </div>
+              {/* V2: Enhanced PriorityMatrix with additional visual elements */}
               <PriorityMatrix
                 data={stats.priorityMatrix}
                 onFilterChange={handleFilterChange}
-                variant={isV2 ? "v2" : "v1"}
+                variant="v2"
               />
+              {/* [V1 - DEPRECATED] variant="v1" - simpler matrix without V2 enhancements */}
 
+              {/* V2: Skip hero category since it's already featured above */}
               <CategoryIssuesGrid
                 insights={stats.realtimeInsights}
-                skipFirstCategorySlug={isV2 ? heroInsight?.categorySlug : undefined}
+                skipFirstCategorySlug={heroInsight?.categorySlug}
                 onViewFullList={handleHeroExploreIssues}
               />
+              {/* [V1 - DEPRECATED] skipFirstCategorySlug={undefined} - shows all categories including hero */}
 
               {/* Trend Chart - Historical context */}
               {stats.trendData.length > 0 && (
@@ -854,22 +860,23 @@ function DashboardContentInner() {
                 </div>
               </section>
 
-              {/* Issues Table - Deep dive zone */}
-              <div id="dashboard-issues-table-anchor" className="scroll-mt-20">
-                <IssuesTable
-                  issues={issues}
-                  isLoading={issuesLoading}
-                  globalTimeLabel={globalTimeLabel}
-                  globalCategoryLabel={globalCategoryLabel}
-                  observationCount={issues.length}
-                  canonicalCount={stats?.totalIssues || issues.length}
-                  onFilterChange={handleFilterChange}
-                  activeCompoundKey={compoundKeyFromUrl}
-                  activeClusterId={clusterIdFromUrl ?? undefined}
-                  activeClusterLabel={activeClusterLabel ?? undefined}
-                />
-              </div>
-            </TabsContent>
+{/* Issues Table - Deep dive zone */}
+<div id="dashboard-issues-table-anchor" className="scroll-mt-20">
+<IssuesTable
+  issues={issues}
+  isLoading={issuesLoading}
+  globalTimeLabel={globalTimeLabel}
+  globalCategoryLabel={globalCategoryLabel}
+  observationCount={issues.length}
+  canonicalCount={stats?.totalIssues || issues.length}
+  onFilterChange={handleFilterChange}
+  activeCompoundKey={compoundKeyFromUrl}
+  activeClusterId={clusterIdFromUrl ?? undefined}
+  activeClusterLabel={activeClusterLabel ?? undefined}
+  activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
+  />
+</div>
+</TabsContent>
 
             {/* V3 Tab - Simplified Priority Rails Focus */}
             <TabsContent value="v3" className="space-y-6 mt-6">
@@ -983,7 +990,8 @@ function DashboardContentInner() {
                 onRefresh={async () => {
                   await Promise.all([refreshClassifications(), refreshClassificationStats()])
                 }}
-                uxVariant={isV2 ? "v2" : "v1"}
+                uxVariant="v2"
+                /* [V1 - DEPRECATED] uxVariant="v1" - older triage layout */
                 lastSyncLabel={lastScrapeTime}
                 asOfActive={asOf != null}
                 heuristicScopeIssueCount={heuristicScopeIssueCount}

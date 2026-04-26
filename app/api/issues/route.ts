@@ -58,6 +58,7 @@ export async function GET(request: NextRequest) {
   const source = searchParams.get("source")
   const category = searchParams.get("category")
   const sentiment = searchParams.get("sentiment")
+  const llmCategory = searchParams.get("llm_category")?.trim() || null
   const days = searchParams.get("days")
   const search = searchParams.get("q")
   // Compound-key drill-down (outcome A). Two accepted forms:
@@ -165,6 +166,9 @@ export async function GET(request: NextRequest) {
     if (clusterId) {
       rows = rows.filter((r: any) => r.cluster_id === clusterId)
     }
+    if (llmCategory) {
+      rows = rows.filter((r: any) => r.llm_category === llmCategory)
+    }
 
     // Sort
     rows.sort((a: any, b: any) => {
@@ -219,6 +223,9 @@ export async function GET(request: NextRequest) {
     }
     if (clusterId) {
       query = query.eq("cluster_id", clusterId)
+    }
+    if (llmCategory) {
+      query = query.eq("llm_category", llmCategory)
     }
 
     const result = await query

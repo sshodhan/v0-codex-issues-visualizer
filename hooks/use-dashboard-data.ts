@@ -288,6 +288,8 @@ export function useIssues(filters?: {
   compound_key?: string
   /** Layer-A cluster filter (read-time); UUID */
   cluster_id?: string
+  /** LLM category filter (12-value enum: bug, feature-request, etc.) */
+  llm_category?: string
   asOf?: string
 }) {
   const params = new URLSearchParams()
@@ -300,6 +302,7 @@ export function useIssues(filters?: {
   if (filters?.q) params.set("q", filters.q)
   if (filters?.compound_key) params.set("compound_key", filters.compound_key)
   if (filters?.cluster_id) params.set("cluster_id", filters.cluster_id)
+  if (filters?.llm_category) params.set("llm_category", filters.llm_category)
   if (filters?.asOf) params.set("as_of", filters.asOf)
 
   const { data, error, isLoading, mutate } = useSWR<{
