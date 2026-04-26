@@ -822,7 +822,7 @@ This is the primary justification for the three-layer split: scoring-algorithm d
 ### Medium-term (1–2 months)
 
 - Introduce agreement metrics between heuristic category and LLM category.
-- Add anomaly alerts for sudden spikes in critical/safety-policy classifications.
+- Add anomaly alerts for sudden spikes in critical/`autonomy_safety_violation` classifications.
 - Implement weekly few-shot refresh from highest-signal reviewed overrides.
 
 ### Long-term

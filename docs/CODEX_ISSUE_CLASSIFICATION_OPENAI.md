@@ -6,8 +6,8 @@
 > | Field                        | UI label              | Source                                                  |
 > |------------------------------|-----------------------|---------------------------------------------------------|
 > | Heuristic regex bucket       | **"Topic"**           | `lib/scrapers/shared.ts:categorizeIssue` → `categories` table |
-> | Strict-schema enum (12)      | **"LLM category"**    | `classifications.category` (this doc)                   |
-> | Free-text per-issue tag      | **"LLM subcategory"** | `classifications.subcategory` (this doc)                |
+> | Strict-schema enum (14)      | **"LLM category"**    | `classifications.category` (this doc, v2 taxonomy)      |
+> | Stable mechanism slug        | **"LLM subcategory"** | `classifications.subcategory` (this doc, snake_case 2–4 words) |
 >
 > See `docs/ARCHITECTURE.md` §6.0 for the full glossary. The names
 > `category` / `subcategory` in this doc and in the schema refer **only
@@ -20,6 +20,47 @@ This repo now includes a standalone API route for structured issue classificatio
 - Escalation model: `gpt-5` (`CLASSIFIER_MODEL_LARGE`) when `confidence < 0.7`
 - Temperature: `0.2`
 - Structured output: JSON schema (`strict: true`)
+
+## Taxonomy (v2)
+
+The `category` field is constrained to a 14-value enum defined in
+`lib/classification/taxonomy.ts` (`CATEGORY_ENUM`). Each value carries a
+structured `CATEGORY_DEFINITIONS` entry — a one-line meaning, concrete
+`pick_when` signals, and `not_when` tiebreakers against the closest-confusion
+sibling — that the prompt renders into the system message at build time. The
+strict JSON schema picks up `CATEGORY_ENUM` directly, so taxonomy edits in
+`taxonomy.ts` automatically propagate to the model contract, the prompt, and
+the UI label/palette map (`lib/classification/llm-category-display.ts`).
+
+`alternate_categories` is constrained to the same enum at both the strict
+schema (`items.enum: CATEGORY_ENUM`) and `validateEnumFields()`.
+
+The v1 → v2 vocabulary remap is handled by
+`scripts/019_migrate_llm_categories.sql`. See that file's header for the
+deploy order, replay caveat, and rollback steps.
+
+### Subcategory guidance
+
+`subcategory` is the second axis of the client-side `(effective_category,
+subcategory)` triage group. It's intentionally text (≤ 60 chars) rather than
+a hard enum, but the prompt's SUBCATEGORY GUIDANCE block (rendered from
+`SUBCATEGORY_EXAMPLES` in `taxonomy.ts`) gives the model a per-category seed
+list of stable snake_case mechanism slugs and rules:
+
+- snake_case, 2–4 words, concrete mechanism over broad symptom.
+- Reuse exact spellings from the seed list when one fits; coin a new slug
+  only when none do.
+- Forbidden vague labels: `bug`, `issue`, `problem`, `failure`, `error`,
+  `other`. Falls back to `unknown_mechanism` when the model cannot infer a
+  concrete mechanism.
+- Subcategory must not repeat the category name.
+
+### Tags vs subcategory
+
+`subcategory` is the single root-cause mechanism. `tags` are orthogonal
+facets: language (`typescript`, `python`), surface (`cli`,
+`vscode-extension`, `jetbrains-plugin`), workflow stage (`pre-commit`, `ci`,
+`deploy`). Subcategory is required; tags are optional and capped at 8.
 
 ## Request payload
 
@@ -37,18 +78,19 @@ Optional:
 
 `app/api/classify/route.ts` enforces:
 
-1. Enum validation (`category`, `severity`, `status`, `reproducibility`, `impact`) with explicit 400 responses and valid options.
-2. `evidence_quotes` substring validation against the user-turn payload.
-3. Hard human-review rules for low confidence, critical severity, safety-policy, and sensitive report text.
-4. Optional dual-write to Supabase table `bug_report_classifications`.
+1. Enum validation for `category`, `severity`, `status`, `reproducibility`, `impact`, and `alternate_categories[]` with explicit 400 responses and valid options. `alternate_categories` is constrained to the same 14-value `CATEGORY_ENUM` as `category` (see `lib/classification/schema.ts`).
+2. `evidence_quotes` substring validation against the user-turn payload — every quote must appear verbatim in `report_text`, `transcript_tail`, `tool_calls_tail`, `breadcrumbs`, or `logs`.
+3. Hard human-review rules for low confidence, critical severity, `category=autonomy_safety_violation`, and sensitive report text (`data loss`, `secret`, `billing`, `customer`).
 
 ## Persistence
 
-Migration: `scripts/003_create_bug_report_classifications.sql`
+Migrations:
 
-- Stores normalized columns + `raw_json` verbatim payload.
-- Adds triage index on `(category, severity, needs_human_review, created_at DESC)`.
-- Includes `related_report_ids` for dedupe/cross-link workflows.
+- `scripts/007_three_layer_split.sql` — creates `classifications` (immutable baseline) and `classification_reviews` (append-only reviewer overrides) in the three-layer schema.
+- `scripts/019_migrate_llm_categories.sql` — backfills legacy v1 category slugs to the v2 taxonomy.
+- `scripts/020_classification_reviews_add_subcategory.sql` — adds `classification_reviews.subcategory` so reviewers can override the LLM mechanism slug independently of category.
+
+Reviewer overrides are append-only via `record_classification_review` (SECURITY DEFINER); `effective_category` and `effective_subcategory` resolve to the latest review row by `reviewed_at desc`, falling back to the baseline classification when no override exists.
 
 
 ## Dashboard integration

@@ -11,6 +11,9 @@ import { recordProcessingEvent } from "@/lib/storage/processing-events"
 const reviewUpdateSchema = z.object({
   status: z.enum(["new", "triaged", "in-progress", "resolved", "wont-fix", "duplicate"]).optional(),
   category: z.string().optional(),
+  // Reviewer can override the LLM mechanism slug independently of category.
+  // 60-char cap mirrors classifications.subcategory (schema.ts maxLength: 60).
+  subcategory: z.string().min(1).max(60).optional(),
   severity: z.enum(["critical", "high", "medium", "low"]).optional(),
   needs_human_review: z.boolean().optional(),
   reviewer_notes: z.string().optional(),

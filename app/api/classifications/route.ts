@@ -171,6 +171,9 @@ export async function GET(request: NextRequest) {
       // Effective fields = review override when present, else baseline.
       effective_status: latest?.status ?? row.status,
       effective_category: latest?.category ?? row.category,
+      // subcategory override landed in 020_classification_reviews_add_subcategory.sql;
+      // historical reviews have subcategory = NULL and fall through to baseline.
+      effective_subcategory: latest?.subcategory ?? row.subcategory,
       effective_severity: latest?.severity ?? row.severity,
       effective_needs_human_review:
         latest?.needs_human_review ?? row.needs_human_review,

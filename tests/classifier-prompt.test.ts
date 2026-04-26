@@ -122,3 +122,29 @@ test("prompt does not reference any legacy v1 category slug", () => {
     )
   }
 })
+
+test("strict schema constrains alternate_categories to CATEGORY_ENUM", async () => {
+  const { CLASSIFICATION_SCHEMA, validateEnumFields } = await import(
+    "../lib/classification/schema.ts"
+  )
+  const altSchema = (CLASSIFICATION_SCHEMA.schema.properties as Record<string, unknown>)
+    .alternate_categories as { items?: { enum?: readonly string[] } }
+  assert.ok(altSchema.items?.enum, "alternate_categories.items.enum missing")
+  assert.deepEqual(altSchema.items.enum, CATEGORY_ENUM)
+
+  // validateEnumFields rejects payloads with a legacy alternate slug.
+  const validBase = {
+    category: CATEGORY_ENUM[0],
+    severity: "medium",
+    status: "new",
+    reproducibility: "always",
+    impact: "single-user",
+    alternate_categories: [CATEGORY_ENUM[1]],
+  }
+  assert.equal(validateEnumFields(validBase), null, "valid payload should pass")
+
+  const withLegacyAlt = { ...validBase, alternate_categories: ["safety-policy"] }
+  const result = validateEnumFields(withLegacyAlt)
+  assert.ok(result, "legacy alternate slug must be rejected")
+  assert.equal(result?.field, "alternate_categories")
+})
