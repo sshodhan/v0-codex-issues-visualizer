@@ -3,7 +3,13 @@ import type { createAdminClient } from "@/lib/supabase/admin"
 import { extractResponsesOutputText } from "@/lib/classification/openai-responses"
 import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import { attachToCluster } from "@/lib/storage/clusters"
+import {
+  composeDeterministicLabel,
+  mode,
+  topicNameForSlug,
+} from "@/lib/storage/cluster-label-fallback"
 import { recordProcessingEvent } from "@/lib/storage/processing-events"
+import { logServer } from "@/lib/error-tracking/server-logger"
 
 import {
   buildEmbeddingInputText,
@@ -24,6 +30,16 @@ type AdminClient = ReturnType<typeof createAdminClient>
 
 const DEFAULT_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small"
 const DEFAULT_LABEL_MODEL = process.env.OPENAI_CLUSTER_LABEL_MODEL ?? "gpt-5-mini"
+// Mirrors the classifier escalation pattern (lib/classification/pipeline.ts).
+// When the small-model labelling response comes back below the escalation
+// confidence floor, we retry once with the larger model. Defaults to the
+// same small model so deployments that don't opt in see no behaviour change.
+const DEFAULT_LABEL_MODEL_LARGE =
+  process.env.OPENAI_CLUSTER_LABEL_MODEL_LARGE ?? DEFAULT_LABEL_MODEL
+const LABEL_ESCALATE_BELOW = 0.7
+const LABEL_ACCEPT_BELOW = 0.6
+const LABEL_PROMPT_TITLE_LIMIT = 8
+const LABEL_PROMPT_ERROR_CODE_LIMIT = 3
 
 async function createEmbedding(input: string): Promise<number[] | null> {
   const apiKey = process.env.OPENAI_API_KEY
@@ -108,20 +124,58 @@ function semanticClusterKey(observationIds: string[]): string {
   return `semantic:${digest}`
 }
 
-// LLM cluster-name generator. Result is stored on `clusters.label` /
-// `label_confidence` and surfaced in the UI as the Family's display
-// name (the row title in "Top Families"). When labelling fails or
-// confidence is below the threshold, the UI shows "Unnamed family".
-// Distinct from per-issue `llm_subcategory` (free-text on the
-// classification record) — that's per-observation, this is per-cluster.
-// See docs/ARCHITECTURE.md §6.0 — Glossary.
-async function labelSemanticCluster(titles: string[]): Promise<{
+interface LlmLabelResult {
   label: string
   rationale: string
   confidence: number
-} | null> {
+  model: string
+}
+
+interface LabelInput {
+  titles: string[]
+  topicSlug: string | null
+  errorCodes: string[]
+}
+
+// LLM cluster-name generator. Result is stored on `clusters.label` /
+// `label_confidence` and surfaced in the UI as the Family's display
+// name (the row title in "Top Families"). When the LLM call fails or
+// confidence is too low, callers fall back to
+// `composeDeterministicLabel(...)` — the UI then renders that derived
+// label instead of "Unnamed family". Distinct from per-issue
+// `llm_subcategory` (free-text on the classification record) — that's
+// per-observation; this is per-cluster. See docs/ARCHITECTURE.md §6.0.
+async function callLabelModel(
+  modelName: string,
+  input: LabelInput,
+): Promise<LlmLabelResult | null> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) return null
+
+  const topicName = topicNameForSlug(input.topicSlug)
+  const contextLines: string[] = []
+  if (topicName) {
+    contextLines.push(`Likely Topic for the cluster: ${topicName}.`)
+  }
+  if (input.errorCodes.length > 0) {
+    contextLines.push(`Recurring error codes: ${input.errorCodes.join(", ")}.`)
+  }
+  const contextBlock = contextLines.length > 0 ? `${contextLines.join("\n")}\n\n` : ""
+
+  const titlesBlock = input.titles
+    .slice(0, LABEL_PROMPT_TITLE_LIMIT)
+    .map((t, idx) => `${idx + 1}. ${t}`)
+    .join("\n")
+
+  const userPrompt =
+    "You are naming a cluster of related user-reported issues. Return JSON with keys " +
+    "label (<= 6 words, topic-flavoured even when uncertain — e.g. 'Auth Issue Cluster' " +
+    "rather than refusing), rationale (<= 1 sentence), confidence (0..1, lower it honestly " +
+    "when the titles are heterogeneous; do not penalise terse but topical labels). " +
+    "Prefer a label grounded in the supplied Topic and recurring error code when present.\n\n" +
+    contextBlock +
+    `Issue titles (${input.titles.length} total, showing up to ${LABEL_PROMPT_TITLE_LIMIT}):\n` +
+    titlesBlock
 
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -130,15 +184,8 @@ async function labelSemanticCluster(titles: string[]): Promise<{
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: DEFAULT_LABEL_MODEL,
-      input: [
-        {
-          role: "user",
-          content:
-            "Given these issue titles, return JSON with keys label (<=6 words), rationale (<=1 sentence), confidence (0..1). Titles:\n" +
-            titles.map((t, idx) => `${idx + 1}. ${t}`).join("\n"),
-        },
-      ],
+      model: modelName,
+      input: [{ role: "user", content: userPrompt }],
       text: {
         format: {
           type: "json_schema",
@@ -174,10 +221,25 @@ async function labelSemanticCluster(titles: string[]): Promise<{
       label: parsed.label.trim(),
       rationale: parsed.rationale.trim(),
       confidence: Math.max(0, Math.min(parsed.confidence, 1)),
+      model: modelName,
     }
   } catch {
     return null
   }
+}
+
+// Two-pass labeller: small model first, escalate to large on low
+// confidence. Returns the best LLM result we got (may be low confidence)
+// or null if both passes failed outright. Caller decides whether to use
+// it or fall through to the deterministic fallback.
+async function labelSemanticCluster(input: LabelInput): Promise<LlmLabelResult | null> {
+  const small = await callLabelModel(DEFAULT_LABEL_MODEL, input)
+  if (small && small.confidence >= LABEL_ESCALATE_BELOW) return small
+  if (DEFAULT_LABEL_MODEL_LARGE === DEFAULT_LABEL_MODEL) return small
+  const large = await callLabelModel(DEFAULT_LABEL_MODEL_LARGE, input)
+  if (!large) return small
+  if (!small) return large
+  return large.confidence >= small.confidence ? large : small
 }
 
 export async function runSemanticClusteringForBatch(
@@ -235,36 +297,90 @@ export async function runSemanticClusteringForBatch(
       }
     }
 
-    const first = group[0]
     const { data: clusterIdResult } = await supabase
       .from("clusters")
       .select("id")
       .eq("cluster_key", key)
       .maybeSingle()
 
-    const label = await labelSemanticCluster(group.map((g) => g.title))
-    if (clusterIdResult?.id && label) {
+    const titles = group.map((g) => g.title)
+    const topicSlugs = group.map((g) => g.topicSlug ?? null)
+    const errorCodesAll = group.map((g) => g.errorCode ?? null)
+    const distinctErrorCodes = Array.from(
+      new Set(errorCodesAll.filter((c): c is string => Boolean(c))),
+    ).slice(0, LABEL_PROMPT_ERROR_CODE_LIMIT)
+    // Mode-based, lex-tiebreak: deterministic across runs and matches the
+    // dominant topic the fallback labeller would pick from the same data.
+    const dominantTopicSlug = mode(topicSlugs)
+
+    const llm = await labelSemanticCluster({
+      titles,
+      topicSlug: dominantTopicSlug,
+      errorCodes: distinctErrorCodes,
+    })
+
+    // Use the LLM label only if it cleared the accept threshold; below
+    // that, the deterministic fallback is more honest than a confident-
+    // looking but underspecified LLM string.
+    let chosenLabel: string
+    let chosenRationale: string
+    let chosenConfidence: number
+    let chosenModel: string
+    let usedFallback = false
+
+    if (llm && llm.confidence >= LABEL_ACCEPT_BELOW) {
+      chosenLabel = llm.label
+      chosenRationale = llm.rationale
+      chosenConfidence = llm.confidence
+      chosenModel = `openai:${llm.model}`
+    } else {
+      const fallback = composeDeterministicLabel({
+        topicSlugs,
+        errorCodes: errorCodesAll,
+        titles,
+      })
+      chosenLabel = fallback.label
+      chosenRationale = fallback.rationale
+      chosenConfidence = fallback.confidence
+      chosenModel = fallback.model
+      usedFallback = true
+    }
+
+    if (clusterIdResult?.id) {
       const updateRes = await supabase.rpc("set_cluster_label", {
         cluster_uuid: clusterIdResult.id,
-        lbl: label.label,
-        lbl_rationale: label.rationale,
-        lbl_confidence: label.confidence,
-        lbl_model: DEFAULT_LABEL_MODEL,
+        lbl: chosenLabel,
+        lbl_rationale: chosenRationale,
+        lbl_confidence: chosenConfidence,
+        lbl_model: chosenModel,
         lbl_alg_ver: CURRENT_VERSIONS.semantic_cluster_label,
       })
       if (updateRes.error) labelingFailures++
     } else {
       labelingFailures++
-      if (clusterIdResult?.id) {
-        await supabase.rpc("set_cluster_label", {
-          cluster_uuid: clusterIdResult.id,
-          lbl: first.title.slice(0, 80),
-          lbl_rationale: "Fallback label from canonical title because model labeling failed.",
-          lbl_confidence: 0.25,
-          lbl_model: "fallback:title",
-          lbl_alg_ver: CURRENT_VERSIONS.semantic_cluster_label,
-        })
-      }
+    }
+
+    // Structured log so we can watch the fallback rate post-deploy and
+    // catch regressions in LLM-label quality without scraping the DB.
+    // `clusters.label_model` is the durable per-row audit trail; this
+    // event is the time-series view.
+    if (usedFallback) {
+      logServer({
+        component: "cluster-labeling",
+        event: "deterministic_fallback_used",
+        level: "info",
+        data: {
+          cluster_key: key,
+          cluster_id: clusterIdResult?.id ?? null,
+          member_count: group.length,
+          dominant_topic_slug: dominantTopicSlug,
+          distinct_error_codes: distinctErrorCodes,
+          llm_confidence: llm?.confidence ?? null,
+          llm_model: llm?.model ?? null,
+          chosen_model: chosenModel,
+          chosen_confidence: chosenConfidence,
+        },
+      })
     }
   }
 

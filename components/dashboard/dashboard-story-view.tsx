@@ -85,10 +85,12 @@ export function DashboardStoryView({
   const showClusterSection = (clusterRows?.length ?? 0) > 0
 
   const clusterDisplayLabel = (r: ClusterRollupRow) => {
-    if (r.label && r.label_confidence != null && r.label_confidence >= 0.6) return r.label
-    // "Unnamed family" — clusters are surfaced as Families in user copy.
-    // See docs/ARCHITECTURE.md §6.0.
-    return "Unnamed family"
+    if (r.label && r.label_confidence != null && r.label_confidence >= 0.4) return r.label
+    // The labeller writes a deterministic fallback at confidence ≥ 0.4 for
+    // every cluster (lib/storage/cluster-label-fallback.ts), so this branch
+    // only fires for the rare label-IS-NULL case. Clusters surface as
+    // Families in user copy. See docs/ARCHITECTURE.md §6.0.
+    return `Cluster #${r.id.slice(0, 8)}`
   }
 
   return (

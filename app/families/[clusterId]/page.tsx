@@ -64,9 +64,9 @@ export default function FamilyDetailPage() {
   if (!data.family) return <main className="container mx-auto px-4 py-8">Family not found.</main>
 
   const familyName =
-    data.family.label && (data.family.label_confidence ?? 0) >= 0.6
+    data.family.label && (data.family.label_confidence ?? 0) >= 0.4
       ? data.family.label
-      : data.family.fallback_title || "Unnamed family"
+      : data.family.fallback_title || `Cluster #${clusterId.slice(0, 8)}`
   const representativeObservationId = data.family.representative_observations[0]?.observation_id ?? null
 
   return (

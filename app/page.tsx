@@ -412,14 +412,16 @@ const handleHeroLlmCategoryDrill = (
     if (!clusterIdFromUrl) return null
     const row = (clusterRollup?.clusters || []).find((c) => c.id === clusterIdFromUrl)
     // Display copy: clusters are surfaced to users as "Families"; the
-    // LLM-generated `label` is the family's display name. When that
-    // name is missing or below the confidence cut, we fall back to
-    // "Unnamed family". See docs/ARCHITECTURE.md §6.0.
-    if (!row) return "Unnamed family"
-    if (row.label && row.label_confidence != null && row.label_confidence >= 0.6) {
+    // labeller pipeline (LLM with a deterministic Topic+error fallback —
+    // lib/storage/cluster-label-fallback.ts) writes confidence ≥ 0.4 for
+    // every cluster, so the show-threshold is 0.4. The `Cluster #…`
+    // literal is defence-in-depth for the rare label-IS-NULL case.
+    // See docs/ARCHITECTURE.md §6.0.
+    if (!row) return `Cluster #${clusterIdFromUrl.slice(0, 8)}`
+    if (row.label && row.label_confidence != null && row.label_confidence >= 0.4) {
       return row.label
     }
-    return "Unnamed family"
+    return `Cluster #${clusterIdFromUrl.slice(0, 8)}`
   }, [clusterIdFromUrl, clusterRollup])
 
   const categoryOptions = useMemo(() => {
@@ -835,9 +837,9 @@ const handleHeroLlmCategoryDrill = (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {(clusterRollup?.clusters || []).slice(0, 6).map((cluster) => {
                     const familyLabel =
-                      cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.6
+                      cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.4
                         ? cluster.label
-                        : cluster.representative_title || "Unnamed family"
+                        : cluster.representative_title || `Cluster #${cluster.id.slice(0, 8)}`
                     return (
                       <Link
                         key={cluster.id}

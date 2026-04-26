@@ -2,6 +2,13 @@ export interface SemanticObservationInput {
   id: string
   title: string
   content?: string | null
+  // Optional Topic / fingerprint context, used by the deterministic
+  // fallback labeller when the LLM call fails or returns low confidence
+  // (lib/storage/cluster-label-fallback.ts). Not consumed by the
+  // embedding/clustering math itself, so callers that don't have these
+  // signals (legacy providers, ad-hoc rebuilds) may safely omit them.
+  topicSlug?: string | null
+  errorCode?: string | null
 }
 
 export interface EmbeddedObservation extends SemanticObservationInput {

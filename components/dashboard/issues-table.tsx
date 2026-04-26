@@ -288,38 +288,38 @@ export function IssuesTable({
                 </Badge>
               </button>
             )}
-{activeClusterId && (
-  <button
-  type="button"
-  onClick={() => onFilterChange({ cluster_id: null })}
-  className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-  aria-label="Clear semantic cluster filter"
-  title="Clear semantic cluster filter"
-  >
-  <Badge variant="outline" className="border-primary/60 text-foreground max-w-[min(280px,100%)]">
-  <span className="truncate">
-  {/* Family name fallback — clusters are surfaced as Families. See docs/ARCHITECTURE.md §6.0. */}
-  {activeClusterLabel ?? "Unnamed family"} <span className="text-muted-foreground">({activeClusterId.slice(0, 8)}…)</span>
-  </span>
-  <span className="ml-1" aria-hidden>×</span>
-  </Badge>
-  </button>
-  )}
-  {activeLlmCategory && (
-  <button
-  type="button"
-  onClick={() => onFilterChange({ llm_category: null })}
-  className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-  aria-label={`Clear LLM category filter: ${activeLlmCategory}`}
-  title="Clear LLM category filter"
-  >
-  <Badge variant="outline" className="border-amber-500/60 text-amber-600 dark:text-amber-400 capitalize">
-  {activeLlmCategory.replace(/-/g, " ")}
-  <span className="ml-1" aria-hidden>×</span>
-  </Badge>
-  </button>
-  )}
-  </div>
+            {activeClusterId && (
+              <button
+                type="button"
+                onClick={() => onFilterChange({ cluster_id: null })}
+                className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Clear semantic cluster filter"
+                title="Clear semantic cluster filter"
+              >
+                <Badge variant="outline" className="border-primary/60 text-foreground max-w-[min(280px,100%)]">
+                  <span className="truncate">
+                    {/* Family name with deterministic short-id fallback — clusters are surfaced as Families. See docs/ARCHITECTURE.md §6.0. */}
+                    {activeClusterLabel ?? `Cluster #${activeClusterId.slice(0, 8)}`} <span className="text-muted-foreground">({activeClusterId.slice(0, 8)}…)</span>
+                  </span>
+                  <span className="ml-1" aria-hidden>×</span>
+                </Badge>
+              </button>
+            )}
+            {activeLlmCategory && (
+              <button
+                type="button"
+                onClick={() => onFilterChange({ llm_category: null })}
+                className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Clear LLM category filter: ${activeLlmCategory}`}
+                title="Clear LLM category filter"
+              >
+                <Badge variant="outline" className="border-amber-500/60 text-amber-600 dark:text-amber-400 capitalize">
+                  {activeLlmCategory.replace(/-/g, " ")}
+                  <span className="ml-1" aria-hidden>×</span>
+                </Badge>
+              </button>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent>

@@ -224,7 +224,19 @@ async function persistIssueRecord(
   // split function.
   await runSemanticClusteringForBatch(
     supabase,
-    [{ id: observationId, title: issue.title, content: issue.content ?? null }],
+    [
+      {
+        id: observationId,
+        title: issue.title,
+        content: issue.content ?? null,
+        // Topic + error code feed the deterministic fallback labeller
+        // and prompt context (lib/storage/cluster-label-fallback.ts).
+        // Both are nullable: not every provider surfaces a Topic, and
+        // not every issue has a regex-extractable error code.
+        topicSlug: issue.category?.slug ?? null,
+        errorCode: fingerprint.error_code ?? null,
+      },
+    ],
     { minClusterSize: 2 },
   )
 
