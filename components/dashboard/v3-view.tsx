@@ -14,27 +14,16 @@ import { deriveClusterSignalState } from "@/lib/classification/cluster-signal-st
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import { ClusterTrustSummary } from "@/components/dashboard/cluster-trust-summary"
 
-type RailKey = "fix_next" | "breaking_now" | "review_now"
+type RailKey = "breaking_now" | "review_now"
 
 const RAILS: Array<{
   key: RailKey
   title: string
   description: string
   score: (cluster: ClusterRollupRow) => number
-  tag: "actionability" | "surge" | "review_pressure"
+  tag: "surge" | "review_pressure"
   metric: (cluster: ClusterRollupRow) => { value: string; caption: string }
 }> = [
-  {
-    key: "fix_next",
-    title: "Highest priority",
-    description: "Issues to tackle first based on impact and urgency.",
-    score: (cluster) => cluster.rail_scoring?.actionability_input ?? 0,
-    tag: "actionability",
-    metric: (cluster) => {
-      const v = cluster.avg_impact ?? cluster.rail_scoring?.actionability_input ?? 0
-      return { value: cluster.avg_impact != null ? String(v) : "—", caption: "avg impact" }
-    },
-  },
   {
     key: "breaking_now",
     title: "Spiking now",
@@ -376,14 +365,6 @@ function RailEmptyState({
   }
 
   // healthy or pending_classification — rail is genuinely quiet
-  const { observations_in_window, clustered_count } = pipelineState
-  if (railKey === "fix_next") {
-    return (
-      <p className="text-sm text-muted-foreground">
-        No clusters with concentrated error signal in this window ({observations_in_window} observations, {clustered_count} clustered).
-      </p>
-    )
-  }
   if (railKey === "breaking_now") {
     return (
       <p className="text-sm text-muted-foreground">
@@ -411,9 +392,9 @@ export function V3View({
     <section className="space-y-3">
       <div>
         <h3 className="text-xl font-semibold">Prioritized rails</h3>
-        <p className="text-sm text-muted-foreground">Three ranking rails generated from cluster rollup scoring and surfaced rationale.</p>
+        <p className="text-sm text-muted-foreground">Ranking rails for surge detection and review backlog.</p>
       </div>
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         {RAILS.map((rail) => {
           const topClusters = getTopClusters(clusters, rail.tag, rail.score)
           return (
