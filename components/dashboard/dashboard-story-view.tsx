@@ -11,6 +11,7 @@ import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fa
 import {
   ArrowDown,
   ArrowRight,
+  ArrowUp,
   BookOpen,
   ChevronDown,
   ExternalLink,
@@ -23,42 +24,63 @@ import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-stri
 
 type CatOpt = { value: string; label: string; count: number }
 
-const SEVERITY_DOT: Record<
+/**
+ * Severity badge encoding: dot color + single-letter code so the level survives
+ * for color-vision-deficient readers and grayscale prints.
+ */
+const SEVERITY_BADGE: Record<
   NonNullable<ClusterRollupRow["dominant_severity"]>,
-  { className: string; label: string }
+  { dot: string; code: "L" | "M" | "H" | "C"; label: string }
 > = {
-  low: { className: "bg-muted-foreground/40", label: "Low severity" },
-  medium: { className: "bg-amber-500", label: "Medium severity" },
-  high: { className: "bg-orange-500", label: "High severity" },
-  critical: { className: "bg-red-600", label: "Critical severity" },
+  low: { dot: "bg-muted-foreground/40", code: "L", label: "Low severity" },
+  medium: { dot: "bg-amber-500", code: "M", label: "Medium severity" },
+  high: { dot: "bg-orange-500", code: "H", label: "High severity" },
+  critical: { dot: "bg-red-600", code: "C", label: "Critical severity" },
 }
 
-function SeverityDot({
+function SeverityBadge({
   level,
 }: {
   level: NonNullable<ClusterRollupRow["dominant_severity"]>
 }) {
-  const dot = SEVERITY_DOT[level]
+  const b = SEVERITY_BADGE[level]
   return (
     <span
-      aria-label={dot.label}
-      title={dot.label}
-      className={`inline-block h-2 w-2 rounded-full ${dot.className}`}
-    />
+      aria-label={b.label}
+      title={b.label}
+      className="inline-flex items-center gap-1"
+    >
+      <span aria-hidden className={`inline-block h-2 w-2 rounded-full ${b.dot}`} />
+      <span aria-hidden className="font-mono text-[10px] font-semibold tracking-wider">
+        {b.code}
+      </span>
+    </span>
   )
 }
 
-function SurgeDelta({ pct }: { pct: number }) {
+/** Format a window of N hours into a short, readable suffix (e.g., "24h", "7d", "2w"). */
+function formatWindowHours(hours: number | undefined): string {
+  if (!hours || hours <= 0) return "prior"
+  if (hours < 24) return `prior ${Math.round(hours)}h`
+  const days = hours / 24
+  if (days < 7) return `prior ${Math.round(days)}d`
+  const weeks = days / 7
+  if (weeks < 4.5) return `prior ${Math.round(weeks)}w`
+  return `prior ${Math.round(days / 30)}mo`
+}
+
+function SurgeDelta({ pct, windowHours }: { pct: number; windowHours?: number }) {
   if (Math.abs(pct) < 5) return null
   const up = pct > 0
   const sign = up ? "+" : "−"
+  const window = formatWindowHours(windowHours)
   return (
     <span
-      title={up ? "More than the prior window" : "Fewer than the prior window"}
+      title={up ? `More than the ${window}` : `Fewer than the ${window}`}
       className={up ? "text-foreground" : "text-muted-foreground"}
     >
       {up ? "↑" : "↓"} {sign}
-      {Math.abs(Math.round(pct))}% vs prior
+      {Math.abs(Math.round(pct))}% vs {window}
     </span>
   )
 }
@@ -273,19 +295,41 @@ export function DashboardStoryView({
               ))}
             </ul>
           ) : (
-            <p className="text-sm italic text-muted-foreground border border-dashed rounded-lg p-4">
-              No multi-report families in this window — every signal so far stands alone.
-            </p>
+            <div className="rounded-lg border border-dashed border-border/70 p-4 space-y-3">
+              <p className="text-sm italic text-muted-foreground">
+                No multi-report families in this window — every signal so far stands alone.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={() =>
+                  document
+                    .getElementById("story-filters")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              >
+                Widen the window
+                <ArrowUp className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           )}
 
           {singletonClusters.length > 0 && (
             <Collapsible className="rounded-lg border border-border/50 bg-card/40">
-              <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left text-sm text-muted-foreground hover:text-foreground hover:bg-muted/30 rounded-lg">
-                <span>
-                  Show {singletonClusters.length} single-report cluster
-                  {singletonClusters.length === 1 ? "" : "s"}
-                </span>
-                <ChevronDown className="h-4 w-4 transition-transform data-[state=open]:rotate-180" />
+              <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left hover:bg-muted/30 rounded-lg">
+                <div className="flex flex-col items-start gap-0.5">
+                  <span className="text-sm text-muted-foreground hover:text-foreground">
+                    Show {singletonClusters.length} single-report cluster
+                    {singletonClusters.length === 1 ? "" : "s"}
+                  </span>
+                  <span className="text-xs text-muted-foreground/70">
+                    Reports we couldn&rsquo;t group with anything else yet — collapsed to keep the
+                    main list focused on repeated complaints.
+                  </span>
+                </div>
+                <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform data-[state=open]:rotate-180" />
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <ul className="divide-y divide-border/40 px-4 pb-2">
@@ -407,7 +451,7 @@ function ClusterStoryRow({
             {title}
           </h4>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
-            {r.dominant_severity && <SeverityDot level={r.dominant_severity} />}
+            {r.dominant_severity && <SeverityBadge level={r.dominant_severity} />}
             <span className="font-medium text-foreground/80">{reportsLabel}</span>
             {showReviewed && (
               <span>
@@ -415,11 +459,16 @@ function ClusterStoryRow({
               </span>
             )}
             {showFingerprint && (
-              <span title="Share of reports that match a known regex fingerprint">
-                {Math.round(r.fingerprint_hit_rate * 100)}% fingerprinted
+              <span>
+                {Math.round(r.fingerprint_hit_rate * 100)}% match a known error pattern
               </span>
             )}
-            {showSurge && <SurgeDelta pct={r.surge_delta_pct as number} />}
+            {showSurge && (
+              <SurgeDelta
+                pct={r.surge_delta_pct as number}
+                windowHours={r.surge_window_hours}
+              />
+            )}
           </div>
           <p className="font-mono text-[10px] tracking-tight text-muted-foreground/70">
             cluster {r.id.slice(0, 8)}
