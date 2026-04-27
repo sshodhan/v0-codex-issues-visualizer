@@ -50,7 +50,7 @@ function prepLlm(rows: LlmRow[]): LlmBubble[] {
   const other = rest.reduce((s, r) => s + r.count, 0)
   const out: LlmBubble[] = top.map((r) => ({
     id: `l:${r.name}`,
-    label: r.name.replace(/-/g, " "),
+    label: r.name.replace(/[-_]/g, " "),
     count: r.count,
     sublabel: "LLM",
     rawSlug: r.name,
@@ -157,7 +157,14 @@ function BubbleField({
             : llmColorForName(llmSlug || b.label)
           const fillOpacity = isActive ? 1 : hasSelection ? 0.32 : 0.92
           const insideText = readableTextColor(baseColor)
-          const useCallout = b.r < CALLOUT_R
+          const labelInside = b.r >= CALLOUT_R
+          const useCallout = !labelInside
+          const countFontSize = Math.min(12, Math.max(10, b.r / 3.4))
+          // Count is always centered inside the bubble. When the label is also
+          // inside (big bubbles), nudge the count below center so the label can
+          // sit above. dominantBaseline="central" keeps the count visually
+          // centered on the y coordinate, regardless of font metrics.
+          const countY = labelInside ? b.y + countFontSize * 0.55 + 2 : b.y
           // Direction of leader line for small bubbles: outward from canvas center.
           const dx = b.x - cx0
           const dy = b.y - cy0
@@ -166,13 +173,13 @@ function BubbleField({
           const uy = dy / dist
           const leadStartX = b.x + ux * b.r
           const leadStartY = b.y + uy * b.r
-          const leadEndX = b.x + ux * (b.r + 14)
-          const leadEndY = b.y + uy * (b.r + 14)
+          const leadEndX = b.x + ux * (b.r + 9)
+          const leadEndY = b.y + uy * (b.r + 9)
           const labelAnchor: "start" | "end" | "middle" =
             ux > 0.25 ? "start" : ux < -0.25 ? "end" : "middle"
-          const labelX = leadEndX + (labelAnchor === "start" ? 3 : labelAnchor === "end" ? -3 : 0)
+          const calloutLabelX = leadEndX + (labelAnchor === "start" ? 2 : labelAnchor === "end" ? -2 : 0)
           // Upward leaders need extra clearance so the text baseline doesn't touch the line.
-          const labelY = leadEndY + (uy < -0.4 ? -4 : uy > 0.4 ? 9 : 3)
+          const calloutLabelY = leadEndY + (uy < -0.4 ? -3 : uy > 0.4 ? 9 : 3)
 
           return (
             <g
@@ -203,6 +210,38 @@ function BubbleField({
                   transition: "fill-opacity 160ms ease, stroke-width 160ms ease",
                 }}
               />
+              {labelInside ? (
+                <text
+                  x={b.x}
+                  y={b.y - countFontSize * 0.6}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  className="pointer-events-none"
+                  fill={insideText}
+                  fillOpacity={isActive || !hasSelection ? 1 : 0.85}
+                  style={{
+                    fontSize: Math.min(13, Math.max(10.5, b.r / 3.1)),
+                    fontWeight: 600,
+                  }}
+                >
+                  {truncateForRadius(b.label, b.r)}
+                </text>
+              ) : null}
+              <text
+                x={b.x}
+                y={countY}
+                textAnchor="middle"
+                dominantBaseline="central"
+                className="pointer-events-none"
+                fill={insideText}
+                fillOpacity={isActive || !hasSelection ? 0.95 : 0.78}
+                style={{
+                  fontSize: countFontSize,
+                  fontWeight: 600,
+                }}
+              >
+                {b.count}
+              </text>
               {useCallout ? (
                 <>
                   <line
@@ -211,58 +250,20 @@ function BubbleField({
                     x2={leadEndX}
                     y2={leadEndY}
                     stroke="hsl(var(--muted-foreground))"
-                    strokeWidth={0.75}
-                    strokeOpacity={isActive || !hasSelection ? 0.7 : 0.3}
+                    strokeWidth={1}
+                    strokeOpacity={isActive || !hasSelection ? 0.85 : 0.35}
                   />
                   <text
-                    x={labelX}
-                    y={labelY}
+                    x={calloutLabelX}
+                    y={calloutLabelY}
                     textAnchor={labelAnchor}
                     className="pointer-events-none fill-foreground"
                     style={{ fontSize: 10.5, fontWeight: 600 }}
                   >
                     {truncateCalloutLabel(b.label)}
-                    <tspan
-                      className="fill-muted-foreground"
-                      dx={4}
-                      style={{ fontWeight: 500 }}
-                    >
-                      {b.count}
-                    </tspan>
                   </text>
                 </>
-              ) : (
-                <>
-                  <text
-                    x={b.x}
-                    y={b.y - 1}
-                    textAnchor="middle"
-                    className="pointer-events-none"
-                    fill={insideText}
-                    fillOpacity={isActive || !hasSelection ? 1 : 0.85}
-                    style={{
-                      fontSize: Math.min(13, Math.max(10.5, b.r / 3.1)),
-                      fontWeight: 600,
-                    }}
-                  >
-                    {truncateForRadius(b.label, b.r)}
-                  </text>
-                  <text
-                    x={b.x}
-                    y={b.y + Math.max(11, b.r / 3.4)}
-                    textAnchor="middle"
-                    className="pointer-events-none"
-                    fill={insideText}
-                    fillOpacity={isActive || !hasSelection ? 0.92 : 0.78}
-                    style={{
-                      fontSize: Math.min(11, Math.max(9.5, b.r / 3.8)),
-                      fontWeight: 500,
-                    }}
-                  >
-                    {b.count}
-                  </text>
-                </>
-              )}
+              ) : null}
             </g>
           )
         })}
