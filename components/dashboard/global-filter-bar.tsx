@@ -1,17 +1,9 @@
 "use client"
 
-import { CalendarDays, Filter, X } from "lucide-react"
-import { Card, CardContent } from "@/components/ui/card"
-import { Slider } from "@/components/ui/slider"
-import { Badge } from "@/components/ui/badge"
+import { CalendarDays, Filter } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
-const TIME_OPTIONS = [0, 7, 14, 30, 90, 180]
-
-const getTimeLabel = (days: number) => {
-  if (days === 0) return "All time"
-  return `Last ${days} days`
-}
+const TIME_OPTIONS = [7, 14, 30, 0]
 
 interface CategoryOption {
   value: string
@@ -34,92 +26,67 @@ export function GlobalFilterBar({
   categoryValue,
   onCategoryChange,
 }: GlobalFilterBarProps) {
-  const timeIndex = Math.max(TIME_OPTIONS.indexOf(timeDays), 0)
-
-  const categoryIndex = Math.max(
-    categoryOptions.findIndex((option) => option.value === categoryValue),
-    0
-  )
-
   return (
-    <Card className="border-border/80 bg-card/60 backdrop-blur">
-      <CardContent className="grid gap-4 p-4 md:grid-cols-2">
-        <div className="space-y-2 rounded-lg border border-border/60 bg-secondary/30 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <p className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
-              <CalendarDays className="h-4 w-4 text-primary" />
-              Global time window
-            </p>
-            <span className="text-xs text-muted-foreground">{getTimeLabel(timeDays)}</span>
-          </div>
-          <Slider
-            value={[timeIndex]}
-            min={0}
-            max={TIME_OPTIONS.length - 1}
-            step={1}
-            onValueChange={(value) => onTimeChange(TIME_OPTIONS[value[0]] ?? 0)}
-          />
-        </div>
-
-        {/*
-          "Topic" is the user-facing name for the heuristic regex bucket
-          (Bug, Feature Request, Performance, …). Backed by the `categories`
-          SQL table and `categorizeIssue` in lib/scrapers/shared.ts —
-          deliberately disjoint from the LLM `category` enum surfaced
-          elsewhere as "LLM category". See docs/ARCHITECTURE.md §6.0.
-          Code identifiers (`categoryOptions`, `categoryValue`,
-          `onCategoryChange`) are kept as-is to avoid a churn-only rename.
-        */}
-        <div className="space-y-3 rounded-lg border border-border/60 bg-secondary/30 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <p className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
-              <Filter className="h-4 w-4 text-primary" />
-              Topic focus
-            </p>
-            <span className="text-xs text-muted-foreground">
-              {categoryValue === "" ? "All topics" : "Filtering"}
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+      {/* Time Range Filter Box */}
+      <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <CalendarDays className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Time
             </span>
           </div>
-
-          {/* Selected Topic Display */}
-          <div className="flex items-center gap-2">
-            {categoryValue !== "" ? (
-              <>
-                <Badge variant="secondary" className="capitalize">
-                  {categoryOptions[categoryIndex]?.label ?? "Unknown"}
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onCategoryChange("")}
-                  className="h-6 w-6 p-0 hover:bg-destructive/20"
-                  title="Reset to all topics"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </Button>
-              </>
-            ) : (
-              <span className="text-xs text-muted-foreground italic">No topic filter applied</span>
-            )}
+          <div className="h-4 w-px bg-border" />
+          <div className="flex gap-1">
+            {TIME_OPTIONS.map((d) => (
+              <Button
+                key={d}
+                size="sm"
+                variant={timeDays === d ? "default" : "ghost"}
+                onClick={() => onTimeChange(d)}
+                className={`h-7 px-2.5 text-xs ${
+                  timeDays === d 
+                    ? "" 
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`}
+              >
+                {d === 0 ? "All" : `${d}d`}
+              </Button>
+            ))}
           </div>
-
-          <Slider
-            value={[categoryIndex]}
-            min={0}
-            max={Math.max(categoryOptions.length - 1, 0)}
-            step={1}
-            onValueChange={(value) => {
-              const selected = categoryOptions[value[0]]
-              if (selected) onCategoryChange(selected.value)
-            }}
-          />
-          <p className="text-xs text-muted-foreground">
-            {categoryValue === ""
-              ? "Total issues across all topics"
-              : `${categoryOptions[categoryIndex]?.count ?? 0} issues in ${categoryOptions[categoryIndex]?.label ?? "selected"} topic`}
-          </p>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+
+      {/* Topic Filter Box */}
+      <div className="flex-1 rounded-lg border border-border bg-muted/30 px-4 py-3">
+        <div className="flex items-start gap-3">
+          <div className="flex items-center gap-2 pt-0.5">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Topic
+            </span>
+          </div>
+          <div className="h-4 w-px bg-border mt-0.5" />
+          <div className="flex flex-wrap gap-1">
+            {categoryOptions.map((option) => (
+              <Button
+                key={option.value}
+                size="sm"
+                variant={categoryValue === option.value ? "default" : "ghost"}
+                onClick={() => onCategoryChange(option.value)}
+                className={`h-7 px-2.5 text-xs ${
+                  categoryValue === option.value 
+                    ? "" 
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`}
+              >
+                {option.value === "all" ? "All" : option.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }

@@ -407,35 +407,45 @@ export function HeroInsight({
 // Utility to compute hero insight from realtime insights data
 export function computeHeroInsight(
   realtimeInsights: Array<{
-    category: { name: string; slug: string; color: string }
-    nowCount: number
-    previousCount: number
-    momentum: number
-    avgImpact: number
-    negativeRatio: number
-    sourceDiversity: number
-    urgencyScore: number
-    llmCategoryBreakdown?: Array<{ slug: string; count: number }>
-    llmUnclassifiedCount?: number
-    topIssues: Array<{
-      id: string
-      title: string
-      url: string | null
-      source: string
-      impact_score: number
-    }>
+  category: { name: string; slug: string; color: string }
+  nowCount: number
+  previousCount: number
+  momentum: number
+  avgImpact: number
+  negativeRatio: number
+  sourceDiversity: number
+  urgencyScore: number
+  llmCategoryBreakdown?: Array<{ slug: string; count: number }>
+  llmUnclassifiedCount?: number
+  topIssues: Array<{
+  id: string
+  title: string
+  url: string | null
+  source: string
+  impact_score: number
   }>
+  }>,
+  categoryFilter?: string
 ): HeroInsightProps["topInsight"] {
   if (!realtimeInsights || realtimeInsights.length === 0) {
+  return null
+  }
+  
+  // Filter by category if a filter is applied (non-empty and not "all")
+  const filteredInsights = categoryFilter && categoryFilter !== "" && categoryFilter !== "all"
+    ? realtimeInsights.filter((r) => r.category.slug === categoryFilter)
+    : realtimeInsights
+  
+  if (filteredInsights.length === 0) {
     return null
   }
-
-  const top = realtimeInsights[0]
-
+  
+  const top = filteredInsights[0]
+  
   const insight =
-    top.category.name.toLowerCase() === "other" && realtimeInsights.length > 1
-      ? realtimeInsights[1]
-      : top
+  top.category.name.toLowerCase() === "other" && filteredInsights.length > 1
+  ? filteredInsights[1]
+  : top
 
   const isRising = insight.momentum > 0
   const momentumText = isRising ? "escalating" : "stabilizing"

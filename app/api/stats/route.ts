@@ -141,7 +141,7 @@ export async function GET(request: NextRequest) {
 
   const sentimentCounts = { positive: 0, negative: 0, neutral: 0 }
   const sourceCounts: Record<string, number> = {}
-  const categoryCounts: Record<string, { count: number; color: string }> = {}
+  const categoryCounts: Record<string, { count: number; color: string; slug: string }> = {}
   const categorySentimentMap: Record<string, CategorySentimentAccumulator> = {}
   /** Latest LLM `category` from mv (joined classifications), same window as totalIssues. */
   const llmCategoryCounts: Record<string, number> = {}
@@ -160,9 +160,9 @@ export async function GET(request: NextRequest) {
 
     const cat = r.category_id ? categoryById.get(r.category_id) : null
     if (cat) {
-      if (!categoryCounts[cat.name]) {
-        categoryCounts[cat.name] = { count: 0, color: cat.color }
-      }
+if (!categoryCounts[cat.name]) {
+categoryCounts[cat.name] = { count: 0, color: cat.color, slug: cat.slug }
+  }
       categoryCounts[cat.name].count++
 
       if (!categorySentimentMap[cat.name]) {
@@ -384,11 +384,12 @@ export async function GET(request: NextRequest) {
       name,
       count,
     })),
-    categoryBreakdown: Object.entries(categoryCounts).map(([name, data]) => ({
-      name,
-      count: data.count,
-      color: data.color,
-    })),
+categoryBreakdown: Object.entries(categoryCounts).map(([name, data]) => ({
+  name,
+  slug: data.slug,
+  count: data.count,
+  color: data.color,
+  })),
     llmCategoryBreakdown,
     llmClassifiedInWindow,
     llmPendingInWindow,

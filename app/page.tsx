@@ -33,6 +33,7 @@ import { V3View } from "@/components/dashboard/v3-view"
 import { QuickStatsBar } from "@/components/dashboard/quick-stats-bar"
 
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
+import { TopFamiliesSection } from "@/components/dashboard/family-card"
 import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
 import {
@@ -278,12 +279,19 @@ function DashboardContentInner() {
     setActiveTab("v3")
     setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
-      requestAnimationFrame(() => {
-        document.getElementById("issues-table-anchor")?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        })
-      })
+      // Retry mechanism to wait for the element to appear in the DOM after tab switch
+      const scrollToElement = (retries = 10) => {
+        const element = document.getElementById("issues-table-anchor")
+        if (element) {
+          element.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
+        } else if (retries > 0) {
+          setTimeout(() => scrollToElement(retries - 1), 50)
+        }
+      }
+      setTimeout(() => scrollToElement(), 50)
     }
   }
 
@@ -432,7 +440,8 @@ const handleHeroLlmCategoryDrill = (
 
   const categoryOptions = useMemo(() => {
     const dynamic = (stats?.categoryBreakdown || []).map((category) => ({
-      value: category.name.toLowerCase().replace(/\s+/g, "-"),
+      // Use the actual database slug to match realtimeInsights category.slug
+      value: category.slug || category.name.toLowerCase().replace(/\s+/g, "-"),
       label: category.name,
       count: category.count,
     }))
@@ -448,7 +457,7 @@ const handleHeroLlmCategoryDrill = (
     if (!stats) return 0
     if (globalCategory === "all") return stats.totalIssues
     const found = (stats.categoryBreakdown || []).find(
-      (c) => c.name.toLowerCase().replace(/\s+/g, "-") === globalCategory,
+      (c) => (c.slug || c.name.toLowerCase().replace(/\s+/g, "-")) === globalCategory,
     )
     return found?.count ?? 0
   }, [stats, globalCategory])
@@ -538,10 +547,10 @@ const handleHeroLlmCategoryDrill = (
     }
   }, [stats])
 
-  // Compute hero insight from realtime data
+  // Compute hero insight from realtime data (filtered by selected category)
   const heroInsight = useMemo(() => {
-    return computeHeroInsight(stats?.realtimeInsights || [])
-  }, [stats?.realtimeInsights])
+  return computeHeroInsight(stats?.realtimeInsights || [], globalCategory)
+  }, [stats?.realtimeInsights, globalCategory])
 
   const nowNextCrosswalk = useMemo(() => {
     if (!stats || !heroInsight) return null
@@ -734,6 +743,15 @@ const handleHeroLlmCategoryDrill = (
               </TabsTrigger>
             </TabsList>
 
+            {/* Global Filters */}
+            <GlobalFilterBar
+              timeDays={globalDays}
+              onTimeChange={setGlobalDays}
+              categoryOptions={categoryOptions}
+              categoryValue={globalCategory}
+              onCategoryChange={setGlobalCategory}
+            />
+
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
               {/* V2: Always show DataProvenanceStrip */}
@@ -787,15 +805,6 @@ const handleHeroLlmCategoryDrill = (
                 <HeroInsight variant="v1" ... />
               */}
 
-              {/* Global Filters */}
-              <GlobalFilterBar
-                timeDays={globalDays}
-                onTimeChange={setGlobalDays}
-                categoryOptions={categoryOptions}
-                categoryValue={globalCategory}
-                onCategoryChange={setGlobalCategory}
-              />
-
               {/* Charts Row - Visual context */}
               <div className="grid gap-6 lg:grid-cols-2">
                 <SentimentChart data={stats.sentimentBreakdown} />
@@ -827,48 +836,6 @@ const handleHeroLlmCategoryDrill = (
               {stats.trendData.length > 0 && (
                 <TrendChart data={stats.trendData} />
               )}
-
-              <section className="space-y-3">
-                <div className="flex items-end justify-between gap-3">
-                  <div>
-                    <h3 className="text-xl font-semibold">Top Families (primary workflow)</h3>
-                    <p className="text-sm text-muted-foreground">
-                      Family = semantic/title fallback. Variant = regex fingerprint. Triage = LLM + review judgment.
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={scrollToIssuesTable}>
-                    Issues table (secondary drill-down)
-                  </Button>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {(clusterRollup?.clusters || []).slice(0, 6).map((cluster) => {
-                    const familyLabel =
-                      cluster.label &&
-                      cluster.label_confidence != null &&
-                      cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
-                        ? cluster.label
-                        : cluster.representative_title || `Cluster #${cluster.id.slice(0, 8)}`
-                    return (
-                      <Link
-                        key={cluster.id}
-                        href={`/families/${cluster.id}?days=${globalDays}`}
-                        className="block"
-                      >
-                        <Card className="h-full transition-colors hover:border-primary/60 hover:bg-muted/30">
-                          <CardContent className="p-4 space-y-2">
-                            <p className="font-medium line-clamp-2">{familyLabel}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {cluster.count} observations · {cluster.classified_count} triaged ·{" "}
-                              {cluster.source_count ?? 0} sources
-                            </p>
-                            <ClusterTrustRibbon cluster={cluster} />
-                          </CardContent>
-                        </Card>
-                      </Link>
-                    )
-                  })}
-                </div>
-              </section>
 
 {/* Issues Table - Deep dive zone */}
 <div id="dashboard-issues-table-anchor" className="scroll-mt-20">
@@ -914,6 +881,12 @@ const handleHeroLlmCategoryDrill = (
                   ))}
                 </div>
               </div>
+
+              {/* Top Families - Semantic clusters with LOUDEST/FIX FIRST badges */}
+              <TopFamiliesSection
+                clusters={clusterRollup?.clusters || []}
+                days={globalDays}
+              />
 
               {/* Priority Rails - The core decision-making interface */}
               <V3View 
@@ -981,17 +954,9 @@ const handleHeroLlmCategoryDrill = (
               </div>
             </TabsContent>
 
-            {/* AI Classifications Tab */}
-            <TabsContent value="classifications" className="space-y-6 mt-6">
-              <GlobalFilterBar
-                timeDays={globalDays}
-                onTimeChange={setGlobalDays}
-                categoryOptions={categoryOptions}
-                categoryValue={globalCategory}
-                onCategoryChange={setGlobalCategory}
-              />
-
-              <ClassificationTriage
+  {/* AI Classifications Tab */}
+  <TabsContent value="classifications" className="space-y-6 mt-6">
+    <ClassificationTriage
                 records={classifications}
                 stats={classificationStats}
                 isLoading={classificationsLoading}
