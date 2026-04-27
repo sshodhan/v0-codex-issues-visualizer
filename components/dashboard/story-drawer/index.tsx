@@ -1,8 +1,13 @@
 "use client"
 
 import { useMemo } from "react"
-import { Sheet, SheetContent } from "@/components/ui/sheet"
-import { Drawer, DrawerContent } from "@/components/ui/drawer"
+import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet"
+import {
+  Drawer,
+  DrawerContent,
+  DrawerTitle,
+  DrawerDescription,
+} from "@/components/ui/drawer"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { ClusterRollupRow, Issue } from "@/hooks/use-dashboard-data"
 import { formatLlmCategorySlug } from "@/lib/dashboard/story-category-atlas-layout"
@@ -66,6 +71,34 @@ export function StoryDrawer({
     if (target?.kind !== "issue") return null
     return issues.find((i) => i.id === target.issueId) ?? null
   }, [target, issues])
+
+  // Title + description for the underlying Radix Dialog. Visible in screen readers
+  // only — the in-content <h3> remains the visual heading. Required by Radix
+  // (DialogContent without a Title logs an a11y warning in dev).
+  const a11y = useMemo(() => {
+    if (!target) return { title: "Detail", description: "" }
+    if (target.kind === "heuristic")
+      return {
+        title: `Heuristic topic: ${target.label}`,
+        description: "Detail panel showing volume, sentiment, sources, and top reports.",
+      }
+    if (target.kind === "llm")
+      return {
+        title: `LLM category: ${target.label}`,
+        description: "Detail panel showing volume, sentiment, sources, and top reports.",
+      }
+    if (target.kind === "cluster")
+      return {
+        title: cluster?.representative_title?.trim() || cluster?.label?.trim() || "Cluster detail",
+        description: "Detail panel for a cluster of related reports.",
+      }
+    if (target.kind === "issue")
+      return {
+        title: issue?.title ?? "Issue detail",
+        description: "Detail panel for a single report with similar reports from its cluster.",
+      }
+    return { title: "Detail", description: "" }
+  }, [target, cluster, issue])
 
   const body = useMemo(() => {
     if (!target) return null
@@ -170,6 +203,8 @@ export function StoryDrawer({
     return (
       <Drawer open={open} onOpenChange={(o) => !o && onClose()}>
         <DrawerContent className="max-h-[88vh] motion-reduce:transition-none">
+          <DrawerTitle className="sr-only">{a11y.title}</DrawerTitle>
+          <DrawerDescription className="sr-only">{a11y.description}</DrawerDescription>
           <div className="flex h-full max-h-[88vh] flex-col">{body}</div>
         </DrawerContent>
       </Drawer>
@@ -181,6 +216,8 @@ export function StoryDrawer({
         side="right"
         className="w-full p-0 sm:max-w-md md:max-w-lg lg:max-w-xl motion-reduce:transition-none"
       >
+        <SheetTitle className="sr-only">{a11y.title}</SheetTitle>
+        <SheetDescription className="sr-only">{a11y.description}</SheetDescription>
         {body}
       </SheetContent>
     </Sheet>

@@ -291,7 +291,15 @@ export function useIssues(filters?: {
   /** LLM category filter (12-value enum: bug, feature-request, etc.) */
   llm_category?: string
   asOf?: string
+  /** Cap rows returned by the API; useful for drawer previews. */
+  limit?: number
+  /**
+   * When false, SWR skips the fetch entirely. Use for hooks that mount before
+   * a key is known (e.g. an issue drawer for an issue that has no cluster).
+   */
+  enabled?: boolean
 }) {
+  const enabled = filters?.enabled !== false
   const params = new URLSearchParams()
   if (filters?.source) params.set("source", filters.source)
   if (filters?.category) params.set("category", filters.category)
@@ -304,11 +312,12 @@ export function useIssues(filters?: {
   if (filters?.cluster_id) params.set("cluster_id", filters.cluster_id)
   if (filters?.llm_category) params.set("llm_category", filters.llm_category)
   if (filters?.asOf) params.set("as_of", filters.asOf)
+  if (filters?.limit && filters.limit > 0) params.set("limit", String(filters.limit))
 
   const { data, error, isLoading, mutate } = useSWR<{
     data: Issue[]
     count: number
-  }>(`/api/issues?${params.toString()}`, fetcher, {
+  }>(enabled ? `/api/issues?${params.toString()}` : null, fetcher, {
     refreshInterval: filters?.asOf ? 0 : undefined, // Disable auto-refresh in replay mode
   })
 
