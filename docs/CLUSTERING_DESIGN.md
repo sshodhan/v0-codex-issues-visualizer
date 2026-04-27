@@ -92,8 +92,15 @@ surfaces (e.g. the `LayerExplainerRow` in classification-triage). See
 
 #### 4.4.1 Source priority (`semantic_cluster_label` v2)
 
-The labeller writes one of six possible source tags into
-`clusters.label_model`. Resolution order, evaluated per cluster:
+The labeller writes one of five possible v2 source tags into
+`clusters.label_model` (a sixth, the legacy `fallback:title`, only
+appears on pre-v2 rows that have not yet been backfilled). All tags
+are surfaced as a typed const-object `LABEL_MODEL` in
+`lib/storage/cluster-label-fallback.ts`, so a typo at any write site
+is a compile error and `grep LABEL_MODEL` enumerates every emission
+and read site.
+
+Resolution order, evaluated per cluster:
 
 ```
 ┌─────────────────────────────┐  confidence ≥ 0.7
@@ -163,18 +170,23 @@ self-reported score from the labeller. They are picked as
 
 | Threshold | Meaning | Used where |
 |-----------|---------|------------|
-| `0.4` | UI show-floor | `app/page.tsx`, `app/families/[clusterId]/page.tsx`, `components/dashboard/{dashboard-story-view,v3-view,classification-triage,issues-table}.tsx` |
-| `0.4` | Lowest deterministic write | `cluster-label-fallback.ts:78` (`CONFIDENCE_TITLE_ONLY`) |
-| `0.55` | Highest deterministic write | `cluster-label-fallback.ts:75` (`CONFIDENCE_TOPIC_AND_ERROR`) |
-| `0.6` | LLM accept floor | `semantic-clusters.ts:39` (`LABEL_ACCEPT_BELOW`) |
-| `0.7` | LLM escalation trigger | `semantic-clusters.ts:38` (`LABEL_ESCALATE_BELOW`) — matches `pipeline.ts` |
-| `0.8` | "High confidence" badge | `classification-triage.tsx:112` (`LABEL_CONFIDENCE_HIGH_THRESHOLD`) — only LLM-confident labels qualify |
+| `0.4` | UI show-floor | exported constant `MIN_DISPLAYABLE_LABEL_CONFIDENCE` in `lib/storage/cluster-label-fallback.ts`, imported by `app/page.tsx`, `app/families/[clusterId]/page.tsx`, `components/dashboard/{dashboard-story-view,v3-view,classification-triage}.tsx` |
+| `0.4` | Lowest deterministic write | `cluster-label-fallback.ts` `CONFIDENCE_TITLE_ONLY` (defined as `= MIN_DISPLAYABLE_LABEL_CONFIDENCE`, so a single edit moves both) |
+| `0.55` | Highest deterministic write | `cluster-label-fallback.ts` `CONFIDENCE_TOPIC_AND_ERROR` |
+| `0.6` | LLM accept floor | `semantic-clusters.ts` `LABEL_ACCEPT_BELOW` |
+| `0.7` | LLM escalation trigger | `semantic-clusters.ts` `LABEL_ESCALATE_BELOW` — matches `pipeline.ts` |
+| `0.8` | "High confidence" badge | `classification-triage.tsx` `LABEL_CONFIDENCE_HIGH_THRESHOLD` — only LLM-confident labels qualify |
 
-**Self-enforcing contract.** The UI show-floor (`0.4`) equals the
-lowest deterministic write (`0.4`), so it is impossible for the
-labeller to write a value the UI would suppress. A future engineer
-adding a new rung at confidence `0.3` would have to lower the UI
-floor to match — visible at code-review time as a coupled change.
+**Self-enforcing contract.** Both the UI show-floor and the lowest
+deterministic write reference the *same* exported constant
+(`MIN_DISPLAYABLE_LABEL_CONFIDENCE`), so a single edit moves both in
+lockstep — it is impossible for the labeller to write a value the UI
+would suppress. A future engineer adding a new rung at confidence
+`0.3` would have to lower the constant, which mechanically lowers the
+UI floor at every render site. The contract is also pinned at runtime
+by `tests/label-confidence-contract.test.ts`, which fails the build
+if any UI file regresses to a hardcoded `0.4` literal next to
+`label_confidence`.
 
 The deterministic ceiling (`0.55`) sits below the LLM accept floor
 (`0.6`), so a confident LLM label always out-ranks the strongest
@@ -214,8 +226,15 @@ Per-row, on `clusters`:
 - `label_rationale` — the labeller's one-sentence justification
   (LLM rationale or deterministic-fallback prose).
 - `label_confidence` — see §4.4.3.
-- `label_model` — one of six values (§4.4.1).
-- `label_algorithm_version` — `semantic_cluster_label` (currently `v2`).
+- `label_model` — one of five v2 values (§4.4.1) on rows written
+  under v2; pre-v2 rows may still carry the legacy `fallback:title`
+  stub until the backfill has run (§4.4.7).
+- `label_algorithm_version` — `semantic_cluster_label` (currently
+  `v2`). Pinned across the runtime registry
+  (`lib/storage/algorithm-versions.ts`) and the schema verifier
+  manifest (`lib/schema/expected-manifest.ts`) by
+  `tests/algorithm-version-manifest-contract.test.ts`, which fails
+  the build if either half of that pair is bumped without the other.
 - `labeling_updated_at` — last write.
 
 All written via the `set_cluster_label` SECURITY DEFINER RPC
@@ -271,9 +290,12 @@ follows `scripts/013_backfill_fingerprints.ts` exactly:
 2. `--apply` requires the env var `CLUSTER_LABEL_CONFIRM=yes` —
    refusal exit code `2` otherwise.
 3. Selection: clusters where
-   `label_confidence < 0.6 OR label_model = 'fallback:title'
-    OR label IS NULL`. Idempotent: re-running preserves confident
-   LLM labels written between runs.
+   `label_confidence < 0.6 OR label_model = LABEL_MODEL.LEGACY_FALLBACK_TITLE
+    OR label IS NULL`. The legacy tag is the v1 stub model string
+   (`'fallback:title'`); the script references it via the typed
+   constant in `cluster-label-fallback.ts` so the migration target
+   is grep-discoverable and survives a rename. Idempotent:
+   re-running preserves confident LLM labels written between runs.
 4. Per cluster: pulls active members from `cluster_members`
    (`detached_at IS NULL`), then their Topic slugs and error codes
    in batched lookups, calls `composeDeterministicLabel(...)`,
@@ -296,32 +318,51 @@ CLUSTER_LABEL_CONFIRM=yes \
 
 #### 4.4.8 UI rendering contract
 
-Producer (`semantic-clusters.ts:347-358`) guarantees:
+Producer (`semantic-clusters.ts`, after the labeller runs) guarantees:
 
 > Every cluster row has `label IS NOT NULL` and
-> `label_confidence >= 0.4` after the labeller runs.
+> `label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` after the
+> labeller runs.
 
-Consumer (the five render sites) guarantees:
+Consumer (the render sites listed below) guarantees:
 
-> Anything `label_confidence >= 0.4` is shown verbatim. Anything
-> below is impossible (the producer cannot emit it). `label IS NULL`
-> is defence-in-depth only — rendered as `Cluster #<short-id>`
-> rather than the legacy "Unnamed family" placeholder. The
-> `LABEL_CONFIDENCE_HIGH_THRESHOLD = 0.8` separately gates the
-> "High confidence" badge so the *quality* signal is preserved at
-> a different surface (badge vs name).
+> Anything `label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` is
+> shown verbatim. Anything below is impossible (the producer cannot
+> emit it). `label IS NULL` is defence-in-depth only — rendered as
+> `Cluster #<short-id>` rather than the legacy "Unnamed family"
+> placeholder. The `LABEL_CONFIDENCE_HIGH_THRESHOLD = 0.8`
+> separately gates the "High confidence" badge so the *quality*
+> signal is preserved at a different surface (badge vs name).
 
-Two thresholds, two non-overlapping meanings. Render-site list:
+The two contracts compose mechanically because they reference the
+**same exported constant**. Two thresholds, two non-overlapping
+meanings. Render-site list:
 
 | Surface | File | Threshold check |
 |---------|------|------------------|
-| Top Families card grid | `app/page.tsx:830` | `cluster.label_confidence >= 0.4` |
-| Active-cluster header chip | `app/page.tsx:399` | `row.label_confidence >= 0.4` |
-| Story-tab cluster list | `components/dashboard/dashboard-story-view.tsx:88` | `r.label_confidence >= 0.4` |
-| V3 prioritized-rails card | `components/dashboard/v3-view.tsx:78` | `cluster.label_confidence >= 0.4` |
-| Triage chip strip + detail panel + breadcrumb (3 sites) | `components/dashboard/classification-triage.tsx` | `hasTrustedLabel(...)` (constant `LABEL_CONFIDENCE_SHOW_THRESHOLD = 0.4`) |
-| Family-detail page `<h1>` | `app/families/[clusterId]/page.tsx:67` | `data.family.label_confidence >= 0.4` |
-| Issues-table active-cluster pill | `components/dashboard/issues-table.tsx:298` | inherits via `activeClusterLabel` prop |
+| Top Families card grid | `app/page.tsx` | `cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Active-cluster header chip | `app/page.tsx` | `row.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Story-tab cluster list | `components/dashboard/dashboard-story-view.tsx` | `r.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| V3 prioritized-rails card | `components/dashboard/v3-view.tsx` | `cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Triage chip strip + detail panel + breadcrumb (3 sites) | `components/dashboard/classification-triage.tsx` | `hasTrustedLabel(...)` (constant `LABEL_CONFIDENCE_SHOW_THRESHOLD = MIN_DISPLAYABLE_LABEL_CONFIDENCE`) |
+| Family-detail page `<h1>` | `app/families/[clusterId]/page.tsx` | `data.family.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Issues-table active-cluster pill | `components/dashboard/issues-table.tsx` | inherits via `activeClusterLabel` prop |
+
+The contract is pinned at three layers of test depth:
+- **Per-rung** — `tests/cluster-label-fallback.test.ts` asserts every
+  rung emits the canonical `LABEL_MODEL.*` value at confidence ≥
+  `MIN_DISPLAYABLE_LABEL_CONFIDENCE`.
+- **Producer/consumer** — `tests/label-confidence-contract.test.ts`
+  asserts the deterministic-rung emission set equals the
+  `LABEL_MODEL` deterministic taxonomy, and walks `app/` and
+  `components/dashboard/` to fail the build on any hardcoded `0.4`
+  literal next to `label_confidence`.
+- **Algorithm version** —
+  `tests/algorithm-version-manifest-contract.test.ts` asserts the
+  `semantic_cluster_label` value in `CURRENT_VERSIONS` equals the
+  one in `EXPECTED_MANIFEST`, so a future bump can't drift the
+  schema verifier into a false-positive "unapplied migration"
+  warning.
 
 ### 4.5 Fallback guarantees
 If any of the following occur:

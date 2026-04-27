@@ -44,6 +44,7 @@ import {
   useFingerprintSurges,
   useClusterRollup,
 } from "@/hooks/use-dashboard-data"
+import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import { formatDistanceToNow } from "date-fns"
 
 const UUID_RE =
@@ -413,12 +414,17 @@ const handleHeroLlmCategoryDrill = (
     const row = (clusterRollup?.clusters || []).find((c) => c.id === clusterIdFromUrl)
     // Display copy: clusters are surfaced to users as "Families"; the
     // labeller pipeline (LLM with a deterministic Topic+error fallback —
-    // lib/storage/cluster-label-fallback.ts) writes confidence ≥ 0.4 for
-    // every cluster, so the show-threshold is 0.4. The `Cluster #…`
-    // literal is defence-in-depth for the rare label-IS-NULL case.
+    // lib/storage/cluster-label-fallback.ts) writes confidence ≥
+    // MIN_DISPLAYABLE_LABEL_CONFIDENCE for every cluster, so the show-
+    // threshold matches that constant. The `Cluster #…` literal is
+    // defence-in-depth for the rare label-IS-NULL case.
     // See docs/ARCHITECTURE.md §6.0.
     if (!row) return `Cluster #${clusterIdFromUrl.slice(0, 8)}`
-    if (row.label && row.label_confidence != null && row.label_confidence >= 0.4) {
+    if (
+      row.label &&
+      row.label_confidence != null &&
+      row.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
+    ) {
       return row.label
     }
     return `Cluster #${clusterIdFromUrl.slice(0, 8)}`
@@ -837,7 +843,9 @@ const handleHeroLlmCategoryDrill = (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {(clusterRollup?.clusters || []).slice(0, 6).map((cluster) => {
                     const familyLabel =
-                      cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.4
+                      cluster.label &&
+                      cluster.label_confidence != null &&
+                      cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
                         ? cluster.label
                         : cluster.representative_title || `Cluster #${cluster.id.slice(0, 8)}`
                     return (

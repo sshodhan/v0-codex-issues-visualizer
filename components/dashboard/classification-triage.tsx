@@ -52,6 +52,7 @@ import type { ClassificationRecord, ClassificationStats, ClusterSummary } from "
 import { useClusters } from "@/hooks/use-dashboard-data"
 import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import { CATEGORY_ENUM } from "@/lib/classification/taxonomy"
+import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 
 // Two example LLM-category slugs interpolated into reviewer-facing copy
 // that explains why the global heuristic filter doesn't apply to the LLM
@@ -105,10 +106,10 @@ const SEVERITY_OPTIONS = ["critical", "high", "medium", "low"] as const
 // Topic+error fallback (lib/storage/cluster-label-fallback.ts), which writes
 // labels at confidence 0.4–0.55. Raw 2-decimal display (`0.82`) implies a
 // calibrated precision the number does not carry, so we still bucket at
-// display time. The show-threshold (0.4) matches the deterministic floor so
+// display time. The show-threshold matches the deterministic floor so
 // every cluster renders its label; the high-threshold (0.8) gates the
 // "High confidence" badge — only LLM-confident labels qualify.
-const LABEL_CONFIDENCE_SHOW_THRESHOLD = 0.4
+const LABEL_CONFIDENCE_SHOW_THRESHOLD = MIN_DISPLAYABLE_LABEL_CONFIDENCE
 const LABEL_CONFIDENCE_HIGH_THRESHOLD = 0.8
 
 function bucketConfidence(confidence: number): "High" | "Medium" {

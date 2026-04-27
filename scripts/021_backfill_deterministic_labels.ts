@@ -48,6 +48,7 @@ import { fileURLToPath } from "node:url"
 
 import { createAdminClient } from "../lib/supabase/admin.ts"
 import {
+  LABEL_MODEL,
   composeDeterministicLabel,
   type DeterministicLabel,
 } from "../lib/storage/cluster-label-fallback.ts"
@@ -113,7 +114,9 @@ async function run() {
     let q = admin
       .from("clusters")
       .select("id, cluster_key, label, label_confidence, label_model")
-      .or("label.is.null,label_confidence.lt.0.6,label_model.eq.fallback:title")
+      .or(
+        `label.is.null,label_confidence.lt.0.6,label_model.eq.${LABEL_MODEL.LEGACY_FALLBACK_TITLE}`,
+      )
       .order("id", { ascending: true })
     if (args.limit) q = q.limit(args.limit)
     const { data, error } = await q

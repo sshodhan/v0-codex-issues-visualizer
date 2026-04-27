@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { SignalTimelineStory } from "@/components/dashboard/signal-timeline-story"
 import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
+import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import { BookOpen, ArrowDown, ExternalLink, Layers3, TriangleAlert } from "lucide-react"
 import { StoryCategoryAtlas } from "@/components/dashboard/story-category-atlas"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
@@ -85,11 +86,17 @@ export function DashboardStoryView({
   const showClusterSection = (clusterRows?.length ?? 0) > 0
 
   const clusterDisplayLabel = (r: ClusterRollupRow) => {
-    if (r.label && r.label_confidence != null && r.label_confidence >= 0.4) return r.label
-    // The labeller writes a deterministic fallback at confidence ≥ 0.4 for
-    // every cluster (lib/storage/cluster-label-fallback.ts), so this branch
-    // only fires for the rare label-IS-NULL case. Clusters surface as
-    // Families in user copy. See docs/ARCHITECTURE.md §6.0.
+    if (
+      r.label &&
+      r.label_confidence != null &&
+      r.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
+    ) {
+      return r.label
+    }
+    // The labeller writes a deterministic fallback at the displayable
+    // floor for every cluster (lib/storage/cluster-label-fallback.ts), so
+    // this branch only fires for the rare label-IS-NULL case. Clusters
+    // surface as Families in user copy. See docs/ARCHITECTURE.md §6.0.
     return `Cluster #${r.id.slice(0, 8)}`
   }
 

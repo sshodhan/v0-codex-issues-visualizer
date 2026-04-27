@@ -57,6 +57,34 @@ export function mode<T extends string>(values: Array<T | null | undefined>): T |
   return best
 }
 
+// Canonical `clusters.label_model` values. Held in a frozen const-object
+// so (a) every emission site references the same string, (b) a typo at
+// a call site is a compile error rather than a silently wrong audit row,
+// and (c) `grep LABEL_MODEL` surfaces every reader/writer.
+//
+// `OPENAI_PREFIX` is the prefix the writer composes the LLM model tag
+// from at write time (e.g. `openai:gpt-5-mini`) — kept here so the prefix
+// is a typed reference rather than a stringly-typed literal.
+//
+// `LEGACY_FALLBACK_TITLE` is the v1 model tag persisted to rows written
+// before the v2 labeller existed. Kept as a constant so the backfill
+// migration in scripts/021_backfill_deterministic_labels.ts can target
+// pre-v2 rows without a magic string. New code MUST NOT emit this value.
+export const LABEL_MODEL = {
+  DETERMINISTIC_TOPIC_AND_ERROR: "deterministic:topic-and-error",
+  DETERMINISTIC_TOPIC: "deterministic:topic",
+  DETERMINISTIC_ERROR: "deterministic:error",
+  DETERMINISTIC_TITLE: "deterministic:title",
+  OPENAI_PREFIX: "openai:",
+  LEGACY_FALLBACK_TITLE: "fallback:title",
+} as const
+
+export type DeterministicLabelModel =
+  | typeof LABEL_MODEL.DETERMINISTIC_TOPIC_AND_ERROR
+  | typeof LABEL_MODEL.DETERMINISTIC_TOPIC
+  | typeof LABEL_MODEL.DETERMINISTIC_ERROR
+  | typeof LABEL_MODEL.DETERMINISTIC_TITLE
+
 export interface DeterministicLabel {
   label: string
   rationale: string
@@ -64,11 +92,7 @@ export interface DeterministicLabel {
   // Source tag persisted to `clusters.label_model` for audit. Always
   // prefixed `deterministic:` so analytics can split fallback rows from
   // LLM-confident ones (`openai:gpt-5-mini`, `openai:gpt-5`).
-  model:
-    | "deterministic:topic-and-error"
-    | "deterministic:topic"
-    | "deterministic:error"
-    | "deterministic:title"
+  model: DeterministicLabelModel
 }
 
 export interface ComposeDeterministicLabelArgs {
@@ -77,13 +101,25 @@ export interface ComposeDeterministicLabelArgs {
   titles: string[]
 }
 
-// Confidence values are >= 0.4 so the UI (threshold 0.4) always renders
-// the label. They are intentionally below 0.7 so an LLM-confident label
-// will out-rank a deterministic one if a re-run later produces one.
+// Producer/consumer contract: a cluster with `label_confidence >= this`
+// renders its label in the UI; below it, the UI falls back to a
+// `Cluster #<short-id>` placeholder. The deterministic ladder's lowest
+// rung (`deterministic:title`, below) lands exactly at this floor, so
+// every cluster always has a displayable name.
+//
+// Both the producer (the rung confidences below) and the consumer
+// (every render site under app/ and components/dashboard/) MUST
+// reference this constant. tests/label-confidence-contract.test.ts
+// fails if any of those drift.
+export const MIN_DISPLAYABLE_LABEL_CONFIDENCE = 0.4
+
+// Rung confidences. Always >= MIN_DISPLAYABLE_LABEL_CONFIDENCE so the
+// UI always renders the label, and < 0.7 so an LLM-confident label
+// out-ranks a deterministic one on re-run.
 const CONFIDENCE_TOPIC_AND_ERROR = 0.55
 const CONFIDENCE_TOPIC_ONLY = 0.45
 const CONFIDENCE_ERROR_ONLY = 0.45
-const CONFIDENCE_TITLE_ONLY = 0.4
+const CONFIDENCE_TITLE_ONLY = MIN_DISPLAYABLE_LABEL_CONFIDENCE
 
 export function composeDeterministicLabel(
   args: ComposeDeterministicLabelArgs,
@@ -97,7 +133,7 @@ export function composeDeterministicLabel(
       label: `${topicName} cluster · ${dominantErrorCode}`,
       rationale: `Derived from dominant Topic (${topicName}) and error code (${dominantErrorCode}) across cluster members.`,
       confidence: CONFIDENCE_TOPIC_AND_ERROR,
-      model: "deterministic:topic-and-error",
+      model: LABEL_MODEL.DETERMINISTIC_TOPIC_AND_ERROR,
     }
   }
   if (topicName) {
@@ -105,7 +141,7 @@ export function composeDeterministicLabel(
       label: `${topicName} cluster`,
       rationale: `Derived from dominant Topic (${topicName}) across cluster members; no consistent error code.`,
       confidence: CONFIDENCE_TOPIC_ONLY,
-      model: "deterministic:topic",
+      model: LABEL_MODEL.DETERMINISTIC_TOPIC,
     }
   }
   if (dominantErrorCode) {
@@ -113,7 +149,7 @@ export function composeDeterministicLabel(
       label: `${dominantErrorCode} cluster`,
       rationale: `Derived from dominant error code (${dominantErrorCode}) across cluster members; no consistent Topic.`,
       confidence: CONFIDENCE_ERROR_ONLY,
-      model: "deterministic:error",
+      model: LABEL_MODEL.DETERMINISTIC_ERROR,
     }
   }
 
@@ -129,6 +165,6 @@ export function composeDeterministicLabel(
     label: `Cluster · ${trimmed}`,
     rationale: "No consistent Topic or error code across members; derived from the canonical title.",
     confidence: CONFIDENCE_TITLE_ONLY,
-    model: "deterministic:title",
+    model: LABEL_MODEL.DETERMINISTIC_TITLE,
   }
 }

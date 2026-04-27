@@ -9,6 +9,7 @@ import type { ClusterRollupRow } from "@/hooks/use-dashboard-data"
 import type { PipelineStateSummary } from "@/lib/classification/pipeline-state"
 import { composeWhySurfaced } from "@/lib/classification/why-surfaced"
 import { SURGE_CHIP_THRESHOLD_PCT } from "@/lib/classification/rollup-constants"
+import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 
 type RailKey = "fix_next" | "breaking_now" | "review_now"
 
@@ -75,7 +76,13 @@ const RAILS: Array<{
 ]
 
 function getFamilyLabel(cluster: ClusterRollupRow) {
-  if (cluster.label && cluster.label_confidence != null && cluster.label_confidence >= 0.4) return cluster.label
+  if (
+    cluster.label &&
+    cluster.label_confidence != null &&
+    cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
+  ) {
+    return cluster.label
+  }
   return cluster.representative_title || `Cluster #${cluster.id.slice(0, 8)}`
 }
 

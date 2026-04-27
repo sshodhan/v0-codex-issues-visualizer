@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  LABEL_MODEL,
   composeDeterministicLabel,
   mode,
   topicNameForSlug,
@@ -40,7 +41,7 @@ test("composeDeterministicLabel uses topic + error code when both present", () =
     titles: ["a", "b"],
   })
   assert.equal(result.label, "Bug cluster · ENOENT")
-  assert.equal(result.model, "deterministic:topic-and-error")
+  assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TOPIC_AND_ERROR)
   assert.equal(result.confidence, 0.55)
   assert.match(result.rationale, /Bug.*ENOENT/)
 })
@@ -52,7 +53,7 @@ test("composeDeterministicLabel falls back to topic only when no error code", ()
     titles: ["x"],
   })
   assert.equal(result.label, "Performance cluster")
-  assert.equal(result.model, "deterministic:topic")
+  assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TOPIC)
   assert.equal(result.confidence, 0.45)
 })
 
@@ -63,7 +64,7 @@ test("composeDeterministicLabel falls back to error code only when no topic", ()
     titles: ["x"],
   })
   assert.equal(result.label, "EACCES cluster")
-  assert.equal(result.model, "deterministic:error")
+  assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_ERROR)
   assert.equal(result.confidence, 0.45)
 })
 
@@ -74,7 +75,7 @@ test("composeDeterministicLabel falls back to shortest title when no signals", (
     titles: ["A long incident title with many words", "Short crash"],
   })
   assert.equal(result.label, "Cluster · Short crash")
-  assert.equal(result.model, "deterministic:title")
+  assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TITLE)
   assert.equal(result.confidence, 0.4)
 })
 
@@ -85,7 +86,7 @@ test("composeDeterministicLabel truncates very long fallback titles", () => {
     errorCodes: [null],
     titles: [longTitle],
   })
-  assert.equal(result.model, "deterministic:title")
+  assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TITLE)
   assert.ok(result.label.startsWith("Cluster · "))
   assert.ok(result.label.endsWith("…"))
   assert.ok(result.label.length <= "Cluster · ".length + 60)
@@ -98,7 +99,7 @@ test("composeDeterministicLabel handles empty titles gracefully", () => {
     titles: ["", "   "],
   })
   assert.equal(result.label, "Cluster · Unnamed cluster")
-  assert.equal(result.model, "deterministic:title")
+  assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TITLE)
 })
 
 test("composeDeterministicLabel confidence always >= UI threshold (0.4)", () => {

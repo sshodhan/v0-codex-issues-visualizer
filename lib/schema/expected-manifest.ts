@@ -281,7 +281,13 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     classification: "v1",
     // 012 added these two registry kinds.
     observation_embedding: "v1",
-    semantic_cluster_label: "v1",
+    // Bumped v1 → v2 alongside the deterministic-fallback labeller in
+    // lib/storage/cluster-label-fallback.ts (Topic+error fallback,
+    // small→large LLM escalation). See lib/storage/algorithm-versions.ts
+    // and docs/CLUSTERING_DESIGN.md §4.4. A live registry still showing
+    // v1 means the algorithm_versions seed row hasn't been re-applied;
+    // re-run the seed migration that touches semantic_cluster_label.
+    semantic_cluster_label: "v2",
     // 013 added this one.
     bug_fingerprint: "v1",
   },

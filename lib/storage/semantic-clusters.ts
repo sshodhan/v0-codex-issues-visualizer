@@ -4,6 +4,7 @@ import { extractResponsesOutputText } from "@/lib/classification/openai-response
 import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import { attachToCluster } from "@/lib/storage/clusters"
 import {
+  LABEL_MODEL,
   composeDeterministicLabel,
   mode,
   topicNameForSlug,
@@ -332,7 +333,7 @@ export async function runSemanticClusteringForBatch(
       chosenLabel = llm.label
       chosenRationale = llm.rationale
       chosenConfidence = llm.confidence
-      chosenModel = `openai:${llm.model}`
+      chosenModel = `${LABEL_MODEL.OPENAI_PREFIX}${llm.model}`
     } else {
       const fallback = composeDeterministicLabel({
         topicSlugs,
