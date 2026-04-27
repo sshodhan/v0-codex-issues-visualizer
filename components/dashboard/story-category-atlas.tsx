@@ -3,24 +3,21 @@
 import { useId, useMemo } from "react"
 import {
   countBubbles,
-  formatLlmCategorySlug,
   heuristicNameToSlug,
-  llmColorForName,
   readableTextColor,
   type CountBubble,
 } from "@/lib/dashboard/story-category-atlas-layout"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { ChevronDown, MousePointer2, Sparkles, Tag } from "lucide-react"
+import { LlmCategoryBars } from "@/components/dashboard/llm-category-bars"
 
 const HEU_MAX = 12
-const LLM_MAX = 14
 
 type HeuRow = { name: string; count: number; color: string }
 type LlmRow = { name: string; count: number }
 
 type HeuBubble = CountBubble & { color?: string }
-type LlmBubble = CountBubble & { rawSlug: string }
 
 function prepHeuristic(rows: HeuRow[]): HeuBubble[] {
   const top = rows.slice(0, HEU_MAX)
@@ -44,28 +41,9 @@ function prepHeuristic(rows: HeuRow[]): HeuBubble[] {
   return out
 }
 
-function prepLlm(rows: LlmRow[]): LlmBubble[] {
-  const top = rows.slice(0, LLM_MAX)
-  const rest = rows.slice(LLM_MAX)
-  const other = rest.reduce((s, r) => s + r.count, 0)
-  const out: LlmBubble[] = top.map((r) => ({
-    id: `l:${r.name}`,
-    label: r.name.replace(/[-_]/g, " "),
-    count: r.count,
-    sublabel: "LLM",
-    rawSlug: r.name,
-  }))
-  if (other > 0) {
-    out.push({
-      id: "l:other",
-      label: "Other (combined)",
-      count: other,
-      sublabel: `${rest.length} smaller labels`,
-      rawSlug: "__other__",
-    })
-  }
-  return out
-}
+export type AtlasBubbleTarget =
+  | { kind: "heuristic"; slug: string; label: string; color?: string }
+  | { kind: "llm"; slug: string; label: string; color?: string }
 
 interface StoryCategoryAtlasProps {
   globalTimeLabel: string
@@ -78,6 +56,12 @@ interface StoryCategoryAtlasProps {
   onSelectHeuristicSlug: (slug: string) => void
   onOpenLlmInTriage: (llmCategorySlug: string) => void
   onOpenDashboard: () => void
+  /**
+   * Preferred click behavior: open a drawer to preview/explore a bubble.
+   * When supplied, bubble clicks call this instead of the legacy commit handlers.
+   * The drawer is responsible for committing via onSelectHeuristicSlug / onOpenLlmInTriage.
+   */
+  onExploreBubble?: (target: AtlasBubbleTarget) => void
   /** Global filter slug e.g. "bug" or "all" */
   selectedHeuristicSlug: string
   selectedLlmCategorySlug: string | null
@@ -107,14 +91,16 @@ function truncateCalloutLabel(label: string): string {
     : label
 }
 
+/**
+ * Renders the heuristic bubble cloud. (LLM categories now render as a horizontal
+ * bar list — see `LlmCategoryBars` — because long enum names don't fit inside circles.)
+ */
 function BubbleField({
-  kind,
   items,
   onPick,
   activeId,
 }: {
-  kind: "heuristic" | "llm"
-  items: (HeuBubble | LlmBubble)[]
+  items: HeuBubble[]
   onPick: (id: string) => void
   activeId: string | null
 }) {
@@ -140,7 +126,7 @@ function BubbleField({
         viewBox={`0 0 ${GW} ${GH}`}
         className="h-[min(42vh,320px)] w-full touch-manipulation"
         role="img"
-        aria-label={kind === "heuristic" ? "Topic sizes (heuristic)" : "LLM category sizes"}
+        aria-label="Topic sizes (heuristic)"
       >
         <defs>
           <filter id={`${baseId}-shadow`} x="-20%" y="-20%" width="140%" height="140%">
@@ -149,12 +135,7 @@ function BubbleField({
         </defs>
         {placed.map((b) => {
           const isActive = activeId === b.id
-          const isHeu = kind === "heuristic"
-          const heuColor = (b as HeuBubble).color
-          const llmSlug = (b as LlmBubble).rawSlug
-          const baseColor = isHeu
-            ? heuColor ?? HEU_FALLBACK
-            : llmColorForName(llmSlug || b.label)
+          const baseColor = b.color ?? HEU_FALLBACK
           const fillOpacity = isActive ? 1 : hasSelection ? 0.32 : 0.92
           const insideText = readableTextColor(baseColor)
           const labelInside = b.r >= CALLOUT_R
@@ -283,33 +264,31 @@ export function StoryCategoryAtlas({
   onSelectHeuristicSlug,
   onOpenLlmInTriage,
   onOpenDashboard,
+  onExploreBubble,
   selectedHeuristicSlug,
   selectedLlmCategorySlug,
 }: StoryCategoryAtlasProps) {
   const heuBubbles = useMemo(() => prepHeuristic(heuristicRows), [heuristicRows])
-  const llmBubbles = useMemo(() => prepLlm(llmRows), [llmRows])
 
   const heuActiveId = useMemo(() => {
     if (selectedHeuristicSlug === "all") return null
     return heuBubbles.find((b) => b.id === `h:${selectedHeuristicSlug}`)?.id ?? null
   }, [selectedHeuristicSlug, heuBubbles])
 
-  const llmActiveId = useMemo(() => {
-    if (!selectedLlmCategorySlug || selectedLlmCategorySlug === "all") return null
-    const s = formatLlmCategorySlug(selectedLlmCategorySlug)
-    return (llmBubbles as LlmBubble[]).find((b) => b.rawSlug === s)?.id ?? null
-  }, [selectedLlmCategorySlug, llmBubbles])
-
   const onHeuPick = (id: string) => {
-    if (id === "h:other") onSelectHeuristicSlug("all")
-    else onSelectHeuristicSlug(id.replace(/^h:/, ""))
-  }
-
-  const onLlmPick = (id: string) => {
-    const b = (llmBubbles as LlmBubble[]).find((x) => x.id === id)
+    if (id === "h:other") {
+      // "Other (combined)" has no single slug to drill into — keep legacy behaviour.
+      onSelectHeuristicSlug("all")
+      return
+    }
+    const slug = id.replace(/^h:/, "")
+    const b = heuBubbles.find((x) => x.id === id)
     if (!b) return
-    if (b.rawSlug === "__other__" || id === "l:other") onOpenLlmInTriage("all")
-    else onOpenLlmInTriage(formatLlmCategorySlug(b.rawSlug))
+    if (onExploreBubble) {
+      onExploreBubble({ kind: "heuristic", slug, label: b.label, color: b.color })
+    } else {
+      onSelectHeuristicSlug(slug)
+    }
   }
 
   return (
@@ -345,7 +324,6 @@ export function StoryCategoryAtlas({
           as the filter bar) — it updates the whole page, including the signal cloud and dashboard charts.
         </p>
         <BubbleField
-          kind="heuristic"
           items={heuBubbles}
           onPick={onHeuPick}
           activeId={heuActiveId}
@@ -364,15 +342,20 @@ export function StoryCategoryAtlas({
         <p className="text-sm text-muted-foreground">
           These are <strong>not</strong> the same names as the heuristic list — the classifier uses its own enum. Counts
           include only observations with <code className="rounded bg-muted px-1">llm_classified_at</code> on the
-          read model. Click a circle to open the Classifications tab scoped to that LLM category; use triage there for
-          subcategory and cluster drill-down.
+          read model. Click a row to open detail; use triage there for subcategory and cluster
+          drill-down.
         </p>
         {llmRows.length === 0 && llmClassifiedInWindow === 0 ? (
           <p className="text-sm border border-dashed rounded-lg p-4 text-muted-foreground">
             No LLM category breakdown in this window — classification may still be running, or the sample is empty.
           </p>
         ) : (
-          <BubbleField kind="llm" items={llmBubbles} onPick={onLlmPick} activeId={llmActiveId} />
+          <LlmCategoryBars
+            rows={llmRows}
+            selectedSlug={selectedLlmCategorySlug}
+            onExplore={onExploreBubble}
+            onOpenInTriage={onOpenLlmInTriage}
+          />
         )}
       </div>
 

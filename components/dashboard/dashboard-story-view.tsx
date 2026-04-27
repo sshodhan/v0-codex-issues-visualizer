@@ -1,10 +1,13 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { SignalTimelineStory } from "@/components/dashboard/signal-timeline-story"
+import {
+  SignalTimelineStory,
+  type TimelineHighlight,
+} from "@/components/dashboard/signal-timeline-story"
 import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
@@ -21,6 +24,9 @@ import {
 import { StoryCategoryAtlas } from "@/components/dashboard/story-category-atlas"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
+import { StoryDrawer } from "@/components/dashboard/story-drawer"
+import type { StoryDrawerTarget } from "@/components/dashboard/story-drawer/types"
+import { useDrawerHash } from "@/components/dashboard/story-drawer/use-drawer-hash"
 
 type CatOpt = { value: string; label: string; count: number }
 
@@ -179,6 +185,40 @@ export function DashboardStoryView({
     }
   }, [clusterRows])
 
+  // Drawer state — single source of truth for "what is the user exploring."
+  const [drawerTarget, setDrawerTarget] = useState<StoryDrawerTarget>(null)
+  useDrawerHash(drawerTarget, setDrawerTarget)
+
+  // Time extent of the loaded sample, used for the drawer sparklines.
+  const windowMs = useMemo(() => {
+    let min = Infinity
+    let max = -Infinity
+    for (const i of issues) {
+      if (!i.published_at) continue
+      const t = new Date(i.published_at).getTime()
+      if (Number.isNaN(t)) continue
+      if (t < min) min = t
+      if (t > max) max = t
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      const now = Date.now()
+      return { startMs: now - timeDays * 86_400_000, endMs: now }
+    }
+    return { startMs: min, endMs: max }
+  }, [issues, timeDays])
+
+  // Translate drawer state → timeline highlight.
+  const timelineHighlight = useMemo<TimelineHighlight>(() => {
+    if (!drawerTarget) return null
+    if (drawerTarget.kind === "heuristic")
+      return { kind: "heuristic", slug: drawerTarget.slug }
+    if (drawerTarget.kind === "cluster")
+      return { kind: "cluster", clusterId: drawerTarget.clusterId }
+    if (drawerTarget.kind === "issue")
+      return { kind: "issue", issueId: drawerTarget.issueId }
+    return null
+  }, [drawerTarget])
+
   return (
     <div className="max-w-3xl mx-auto space-y-16 pb-24">
       <header className="pt-2 space-y-3">
@@ -227,6 +267,7 @@ export function DashboardStoryView({
         onSelectHeuristicSlug={onStoryHeuristicFromAtlas}
         onOpenLlmInTriage={onStoryLlmTriage}
         onOpenDashboard={onOpenDashboardFromAtlas}
+        onExploreBubble={(t) => setDrawerTarget(t)}
         selectedHeuristicSlug={categoryValue}
         selectedLlmCategorySlug={selectedLlmCategorySlug}
       />
@@ -251,7 +292,12 @@ export function DashboardStoryView({
         </p>
         <Card className="border-border/60 bg-gradient-to-b from-card to-muted/20 overflow-hidden">
           <CardContent className="p-4 sm:p-6">
-            <SignalTimelineStory points={points} timeLabel={globalTimeLabel} />
+            <SignalTimelineStory
+              points={points}
+              timeLabel={globalTimeLabel}
+              highlight={timelineHighlight}
+              onSelectIssue={(id) => setDrawerTarget({ kind: "issue", issueId: id })}
+            />
           </CardContent>
         </Card>
         {topCats.length > 0 && (
@@ -288,8 +334,11 @@ export function DashboardStoryView({
                 <ClusterStoryRow
                   key={r.id}
                   cluster={r}
-                  isActive={activeClusterId === r.id}
-                  onExplore={() => onOpenClusterInTable(r.id)}
+                  isActive={
+                    activeClusterId === r.id ||
+                    (drawerTarget?.kind === "cluster" && drawerTarget.clusterId === r.id)
+                  }
+                  onExplore={() => setDrawerTarget({ kind: "cluster", clusterId: r.id })}
                   onTriage={() => onOpenClusterInTriage(r.id)}
                 />
               ))}
@@ -337,8 +386,11 @@ export function DashboardStoryView({
                     <ClusterStoryRow
                       key={r.id}
                       cluster={r}
-                      isActive={activeClusterId === r.id}
-                      onExplore={() => onOpenClusterInTable(r.id)}
+                      isActive={
+                        activeClusterId === r.id ||
+                        (drawerTarget?.kind === "cluster" && drawerTarget.clusterId === r.id)
+                      }
+                      onExplore={() => setDrawerTarget({ kind: "cluster", clusterId: r.id })}
                       onTriage={() => onOpenClusterInTriage(r.id)}
                       compact
                     />
@@ -410,6 +462,23 @@ export function DashboardStoryView({
           <ExternalLink className="h-4 w-4" />
         </Button>
       </section>
+
+      <StoryDrawer
+        target={drawerTarget}
+        onClose={() => setDrawerTarget(null)}
+        onChangeTarget={setDrawerTarget}
+        issues={issues}
+        clusterRows={clusterRows}
+        windowMs={windowMs}
+        selectedHeuristicSlug={categoryValue}
+        selectedLlmCategorySlug={selectedLlmCategorySlug}
+        onSelectHeuristicSlug={onStoryHeuristicFromAtlas}
+        onOpenLlmInTriage={onStoryLlmTriage}
+        onOpenIssuesTable={onOpenIssuesTable}
+        onOpenClusterInTable={onOpenClusterInTable}
+        onOpenClusterInTriage={onOpenClusterInTriage}
+        onDrillErrorCode={onDrillErrorCode}
+      />
     </div>
   )
 }
