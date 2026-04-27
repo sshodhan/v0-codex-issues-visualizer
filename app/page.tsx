@@ -279,12 +279,15 @@ function DashboardContentInner() {
     setActiveTab("v3")
     setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
-      requestAnimationFrame(() => {
-        document.getElementById("issues-table-anchor")?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
+      // Use setTimeout to allow the tab to render before scrolling
+      setTimeout(() => {
+        requestAnimationFrame(() => {
+          document.getElementById("issues-table-anchor")?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
         })
-      })
+      }, 100)
     }
   }
 
