@@ -54,6 +54,7 @@ import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/pr
 import { CATEGORY_ENUM } from "@/lib/classification/taxonomy"
 import {
   formatSubcategoryLabel,
+  formatTriageGroupSlug,
   llmCategoryLabel,
   triageGroupParts,
 } from "@/lib/classification/llm-category-display"
@@ -220,14 +221,23 @@ export function ClassificationTriage({
   }, [records, effectiveCategoryFilter, timeDays])
 
   const groups = useMemo(() => {
-    const grouped = new Map<string, { total: number; highRisk: number; label: string }>()
+    const grouped = new Map<
+      string,
+      { total: number; highRisk: number; label: string; rawCategory: string; rawSubcategory: string }
+    >()
     for (const record of globallyFilteredRecords) {
       const group = triageGroupParts({
         category: record.effective_category,
         subcategory: record.effective_subcategory,
       })
       const key = group.raw
-      const current = grouped.get(key) || { total: 0, highRisk: 0, label: group.label }
+      const current = grouped.get(key) || {
+        total: 0,
+        highRisk: 0,
+        label: group.label,
+        rawCategory: group.rawCategory,
+        rawSubcategory: group.rawSubcategory,
+      }
       current.total += 1
       if (record.effective_severity === "critical" || record.effective_severity === "high") current.highRisk += 1
       grouped.set(key, current)
@@ -514,7 +524,7 @@ export function ClassificationTriage({
                 variant={groupFilter === group.name ? "default" : "outline"}
                 onClick={() => setGroupFilter(group.name)}
                 className="gap-2"
-                title={`Slug: ${group.name}`}
+                title={`Slug: ${formatTriageGroupSlug(group.rawCategory, group.rawSubcategory)}`}
               >
                 <span className="truncate max-w-[220px]">{group.label || group.name}</span>
                 <Badge variant="secondary">{group.total}</Badge>
@@ -1336,7 +1346,12 @@ function LayerBreadcrumb({
       <ChevronRight className={sepClass} />
       <span className={segmentClass}>
         <Badge variant="outline" className="px-1 py-0 text-[9px] font-mono">B</Badge>
-        <span className="truncate" title={`Slug: ${group.raw}`}>{group.label}</span>
+        <span
+          className="truncate"
+          title={`Slug: ${formatTriageGroupSlug(group.rawCategory, group.rawSubcategory)}`}
+        >
+          {group.label}
+        </span>
       </span>
       {!compact && (
         <>

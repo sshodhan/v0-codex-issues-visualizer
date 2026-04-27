@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 
 import {
   formatSubcategoryLabel,
+  formatTriageGroupSlug,
   llmCategoryLabel,
   triageGroupParts,
 } from "../lib/classification/llm-category-display.ts"
@@ -89,4 +90,44 @@ test("triageGroupParts humanizes unknown category slugs end-to-end", () => {
   })
   assert.equal(parts.label, "Output content safety › Pii Or Secret In Output")
   assert.equal(parts.raw, "output_content_safety › pii_or_secret_in_output")
+})
+
+test("formatTriageGroupSlug joins both slugs when both are real", () => {
+  assert.equal(
+    formatTriageGroupSlug("code_generation_bug", "syntax_error"),
+    "code_generation_bug › syntax_error",
+  )
+})
+
+test("formatTriageGroupSlug drops the General sentinel so the tooltip never claims a placeholder is a slug", () => {
+  // This is the contract that keeps the chip + breadcrumb tooltips
+  // honest. The row-cell tooltip already special-cases null
+  // subcategory; this helper does the equivalent for composite group
+  // tooltips that come from `triageGroupParts`.
+  assert.equal(
+    formatTriageGroupSlug("tool_invocation_error", "General"),
+    "tool_invocation_error (no subcategory)",
+  )
+})
+
+test("formatTriageGroupSlug round-trips with triageGroupParts", () => {
+  const realPair = triageGroupParts({
+    category: "code_generation_bug",
+    subcategory: "syntax_error",
+  })
+  assert.equal(
+    formatTriageGroupSlug(realPair.rawCategory, realPair.rawSubcategory),
+    realPair.raw,
+  )
+  // Missing subcategory: parts.raw still embeds "General" (filter key
+  // stability), but the tooltip helper drops it.
+  const missingSubcategory = triageGroupParts({
+    category: "tool_invocation_error",
+    subcategory: null,
+  })
+  assert.equal(missingSubcategory.raw, "tool_invocation_error › General")
+  assert.equal(
+    formatTriageGroupSlug(missingSubcategory.rawCategory, missingSubcategory.rawSubcategory),
+    "tool_invocation_error (no subcategory)",
+  )
 })

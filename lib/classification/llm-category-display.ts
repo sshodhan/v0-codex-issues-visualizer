@@ -188,3 +188,21 @@ export function triageGroupParts(input: {
     rawSubcategory,
   }
 }
+
+/**
+ * Truth-faithful slug rendering for a triage group's "Slug:" tooltip:
+ * drops the "General" sentinel when the record has no real subcategory
+ * slug, so the tooltip never claims a placeholder is a slug. Pair with
+ * a "Slug: " prefix at the call site.
+ *
+ *   formatTriageGroupSlug("code_generation_bug", "syntax_error")
+ *     // "code_generation_bug › syntax_error"
+ *   formatTriageGroupSlug("tool_invocation_error", "General")
+ *     // "tool_invocation_error (no subcategory)"
+ */
+export function formatTriageGroupSlug(rawCategory: string, rawSubcategory: string): string {
+  if (rawSubcategory === "General") {
+    return `${rawCategory} (no subcategory)`
+  }
+  return `${rawCategory} › ${rawSubcategory}`
+}
