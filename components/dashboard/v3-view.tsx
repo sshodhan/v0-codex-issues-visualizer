@@ -23,8 +23,8 @@ const RAILS: Array<{
 }> = [
   {
     key: "fix_next",
-    title: "Fix next",
-    description: "Highest actionability and concentrated technical signal.",
+    title: "Highest priority",
+    description: "Issues to tackle first based on impact and urgency.",
     score: (cluster) => cluster.rail_scoring?.actionability_input ?? 0,
     tag: "actionability",
     metric: (cluster) => {
@@ -34,8 +34,8 @@ const RAILS: Array<{
   },
   {
     key: "breaking_now",
-    title: "Breaking now",
-    description: "Largest current-window surge by family volume.",
+    title: "Spiking now",
+    description: "Issue groups growing fastest in the most recent window.",
     score: (cluster) => cluster.rail_scoring?.surge_input ?? cluster.count,
     tag: "surge",
     metric: (cluster) => {
@@ -64,8 +64,8 @@ const RAILS: Array<{
   },
   {
     key: "review_now",
-    title: "Review now",
-    description: "Most immediate human-review pressure in triage.",
+    title: "Needs review",
+    description: "Issue groups with the biggest backlog waiting on review.",
     score: (cluster) => cluster.rail_scoring?.review_pressure_input ?? Math.max(0, cluster.count - cluster.reviewed_count),
     tag: "review_pressure",
     metric: (cluster) => ({
