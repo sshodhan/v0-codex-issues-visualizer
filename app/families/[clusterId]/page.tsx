@@ -1,13 +1,14 @@
 "use client"
 
 import Link from "next/link"
-import { useParams, useSearchParams } from "next/navigation"
+import { useParams, useSearchParams, useRouter } from "next/navigation"
 import useSWR from "swr"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
+import { ChevronLeft } from "lucide-react"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -52,6 +53,7 @@ type FamilyResponse = {
 }
 
 export default function FamilyDetailPage() {
+  const router = useRouter()
   const { clusterId } = useParams<{ clusterId: string }>()
   const searchParams = useSearchParams()
   const daysParam = searchParams.get("days") || "30"
@@ -73,6 +75,15 @@ export default function FamilyDetailPage() {
 
   return (
     <main className="container mx-auto px-4 py-8 space-y-6">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => router.push("/?tab=v3")}
+        className="mb-4 -ml-2"
+      >
+        <ChevronLeft className="w-4 h-4 mr-1" />
+        Back to Triage
+      </Button>
       <div className="flex items-center justify-between gap-4">
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Family detail</p>
