@@ -13,9 +13,11 @@ import {
 } from "@/lib/scrapers/relevance"
 
 // Algolia treats the `query` as AND-by-default. The required phrase + a
-// scoped `optionalWords` list gives us OR semantics over the shared
-// CODEX_CORE_PHRASES in relevance.ts — a single source of truth with
-// Reddit.
+// scoped `optionalWords` list gives us OR semantics over CODEX_CORE_PHRASES
+// in relevance.ts. Reddit no longer derives from that list — its query is
+// a single broad "codex" term that relies on subreddit scoping plus the
+// strict evaluateCodexRelevance filter (see lib/scrapers/providers/reddit.ts
+// and the comment above REDDIT_SCOPED_QUERY_TERMS in relevance.ts).
 const RELEVANCE_DEBUG = process.env.RELEVANCE_DEBUG === "1"
 
 export async function scrapeHackerNews(

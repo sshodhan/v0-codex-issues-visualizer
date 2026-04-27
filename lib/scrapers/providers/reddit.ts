@@ -15,11 +15,16 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 const COMPONENT = "reddit-scraper"
 
+// Topical subreddits only. r/programming and r/learnprogramming were
+// dropped because the broad single-term "codex" query (see
+// REDDIT_SCOPED_QUERY_TERMS in lib/scrapers/relevance.ts) returns mostly
+// off-topic posts there (project names, jargon, unrelated tools), which
+// wastes the per-subreddit limit=25 budget. The subreddits below are
+// either Codex/OpenAI-specific or AI-adjacent enough that the bare
+// "codex" query plus the strict evaluator is high-signal.
 const SUBREDDITS = [
   "OpenAI",
   "MachineLearning",
-  "programming",
-  "learnprogramming",
   "ChatGPTCoding",
   "OpenaiCodex",
   "ArtificialIntelligence",
@@ -53,7 +58,7 @@ export async function scrapeReddit(
       found: 0,
       relevanceRejected: 0,
       lowValueRejected: 0,
-      error: 0,
+      errors: 0,
     }
     let responseStatus: number | null = null
 
@@ -62,7 +67,7 @@ export async function scrapeReddit(
       responseStatus = response.status
 
       if (!response.ok) {
-        summary.error += 1
+        summary.errors += 1
         logServer({
           component: COMPONENT,
           event: "request_failed",
@@ -124,7 +129,7 @@ export async function scrapeReddit(
         summary.found += 1
       }
     } catch (error) {
-      summary.error += 1
+      summary.errors += 1
       logServerError(COMPONENT, "scrape_threw", error, {
         source: source.slug,
         subreddit,
