@@ -262,19 +262,6 @@ function DashboardContentInner() {
     }
   }
 
-  const handleNavigateToCategory = (slug: string) => {
-    // Stay on Dashboard tab and scroll to issues table with category filter
-    setGlobalCategory(slug)
-    if (typeof window !== "undefined") {
-      requestAnimationFrame(() => {
-        document.getElementById("dashboard-issues-table-anchor")?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        })
-      })
-    }
-  }
-
   const handleHeroExploreIssues = (categorySlug: string) => {
     setActiveTab("v3")
     setGlobalCategory(categorySlug)
@@ -397,14 +384,17 @@ const handleHeroLlmCategoryDrill = (
   categorySlug: string,
   llmCategorySlug: string,
   ) => {
-  // Stay on Dashboard tab and scroll to issues table with LLM category filter
+  // Navigate to triage tab with LLM category filter
+  setActiveTab("classifications")
   setGlobalCategory(categorySlug)
   applyIssueSearchParams({ llmCategory: llmCategorySlug })
   if (typeof window !== "undefined") {
-  requestAnimationFrame(() => {
-  const el = document.getElementById("dashboard-issues-table-anchor")
-  el?.scrollIntoView({ behavior: "smooth", block: "start" })
-  })
+    requestAnimationFrame(() => {
+      document.getElementById("triage-semantic-clusters")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      })
+    })
   }
   }
 
@@ -850,22 +840,6 @@ const handleHeroLlmCategoryDrill = (
                 <TrendChart data={stats.trendData} />
               )}
 
-{/* Issues Table - Deep dive zone */}
-<div id="dashboard-issues-table-anchor" className="scroll-mt-20">
-<IssuesTable
-  issues={issues}
-  isLoading={issuesLoading}
-  globalTimeLabel={globalTimeLabel}
-  globalCategoryLabel={globalCategoryLabel}
-  observationCount={issues.length}
-  canonicalCount={stats?.totalIssues || issues.length}
-  onFilterChange={handleFilterChange}
-  activeCompoundKey={compoundKeyFromUrl}
-  activeClusterId={clusterIdFromUrl ?? undefined}
-  activeClusterLabel={activeClusterLabel ?? undefined}
-  activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
-  />
-</div>
 </TabsContent>
 
             {/* V3 Tab - Simplified Priority Rails Focus */}
