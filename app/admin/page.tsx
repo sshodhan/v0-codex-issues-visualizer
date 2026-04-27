@@ -756,9 +756,10 @@ function BackfillPanel({ secret }: { secret: string }) {
           <div>
             <CardTitle>Backfill derivations (Option C)</CardTitle>
             <CardDescription>
-              Walks every observation and writes v2 sentiment / category /
-              impact / competitor-mention rows alongside existing v1 rows.
-              Append-only and idempotent — safe to re-run.
+              Walks every observation and writes sentiment / category /
+              impact / competitor-mention rows under the current registry
+              versions (shown below) alongside existing rows. Append-only
+              and idempotent — safe to re-run.
             </CardDescription>
           </div>
           <Button
