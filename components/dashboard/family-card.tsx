@@ -30,6 +30,7 @@ export function FamilyCard({ cluster, days, isLoudest, isFixFirst }: FamilyCardP
 
   const actionability = cluster.rail_scoring?.actionability_input ?? 0
   const actionabilityPct = Math.round(actionability * 100)
+  const avgImpact = cluster.avg_impact
 
   return (
     <Link href={`/families/${cluster.id}?days=${days}`} className="block">
@@ -71,6 +72,11 @@ export function FamilyCard({ cluster, days, isLoudest, isFixFirst }: FamilyCardP
               className="h-1.5"
               indicatorClassName={getActionabilityColor(actionability)}
             />
+            {avgImpact != null && (
+              <p className="text-[10px] text-muted-foreground">
+                Avg impact: <span className="font-medium text-foreground/80">{avgImpact.toFixed(1)}</span>
+              </p>
+            )}
           </div>
 
           {/* Trust ribbon */}
