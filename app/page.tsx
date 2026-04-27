@@ -318,11 +318,11 @@ function DashboardContentInner() {
   }
 
   const handleCategoryViewFullListInTriage = (categorySlug: string) => {
-    setActiveTab("classifications")
-    applyIssueSearchParams({ llmCategory: categorySlug })
+    setActiveTab("v3")
+    setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => {
-        document.getElementById("triage-semantic-clusters")?.scrollIntoView({
+        document.getElementById("issues-table-anchor")?.scrollIntoView({
           behavior: "smooth",
           block: "start",
         })
