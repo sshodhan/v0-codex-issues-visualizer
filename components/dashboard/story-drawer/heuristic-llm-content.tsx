@@ -4,13 +4,12 @@ import { useMemo } from "react"
 import {
   bucketByDay,
   filterByHeuristic,
-  filterByLlm,
   sentimentSplit,
   topByImpact,
   topErrorCodes,
   topSources,
 } from "@/lib/dashboard/story-drawer-data"
-import type { Issue } from "@/hooks/use-dashboard-data"
+import { useIssues, type Issue } from "@/hooks/use-dashboard-data"
 import { Button } from "@/components/ui/button"
 import { ArrowRight, Filter } from "lucide-react"
 import { DrawerSection } from "./section"
@@ -25,6 +24,9 @@ const SENTIMENT_SEGMENTS = [
   { key: "neutral", label: "Neutral", className: "bg-muted-foreground/40" },
   { key: "negative", label: "Negative", className: "bg-red-500" },
 ]
+
+/** Cap on rows fetched from /api/issues for an LLM drawer. */
+const LLM_FETCH_LIMIT = 240
 
 interface Props {
   target: Extract<StoryDrawerTarget, { kind: "heuristic" | "llm" }>
@@ -47,13 +49,37 @@ export function HeuristicLlmDrawerContent({
   onDrillErrorCode,
   onSelectIssue,
 }: Props) {
-  const matched = useMemo(
-    () =>
-      target.kind === "heuristic"
-        ? filterByHeuristic(issues, target.slug)
-        : filterByLlm(issues, target.slug),
-    [issues, target],
+  // Heuristic side: client-side filter over already-loaded issues. The category
+  // slug on each Issue matches the breakdown's source 1:1.
+  //
+  // LLM side: fetch via /api/issues?llm_category=X. The bar count comes from
+  // /api/stats which reads `mv_observation_current.llm_category` — but Issue's
+  // `llm_primary_tag` is a *different* field that is not always populated. A
+  // client-side filter on `llm_primary_tag` was returning empty even for
+  // categories with high bar counts (the "0 reports for tool_invocation_error"
+  // bug). The /api/issues endpoint filters on the same `llm_category` source
+  // as /api/stats, so the count and the issues returned will always match.
+  const isLlm = target.kind === "llm"
+  const llmFetch = useIssues({
+    enabled: isLlm,
+    llm_category: isLlm ? target.slug : undefined,
+    sortBy: "impact_score",
+    order: "desc",
+    limit: LLM_FETCH_LIMIT,
+  })
+
+  const heuristicMatched = useMemo(
+    () => (isLlm ? [] : filterByHeuristic(issues, target.slug)),
+    [isLlm, issues, target.slug],
   )
+
+  // Unified data source: either the heuristic filter (instant, client-side) or
+  // the LLM fetch (network, cached by SWR per slug).
+  const matched: Issue[] = isLlm ? llmFetch.issues : heuristicMatched
+  // For LLM, prefer the API-reported total (uncapped, matches the bar). For
+  // heuristic, the matched array IS the full set in the loaded sample.
+  const totalCount = isLlm ? llmFetch.count : heuristicMatched.length
+  const isLoading = isLlm && llmFetch.isLoading && matched.length === 0
 
   const sparkline = useMemo(
     () => bucketByDay(matched, windowMs.startMs, windowMs.endMs),
@@ -91,10 +117,18 @@ export function HeuristicLlmDrawerContent({
           {target.label}
         </h3>
         <p className="text-sm text-muted-foreground tabular-nums">
-          {matched.length}{" "}
-          {matched.length === 1 ? "report" : "reports"}
-          {" · "}
-          {sources.length} {sources.length === 1 ? "source" : "sources"}
+          {isLoading ? (
+            "Loading…"
+          ) : (
+            <>
+              {totalCount} {totalCount === 1 ? "report" : "reports"}
+              {isLlm && totalCount > matched.length
+                ? ` · showing latest ${matched.length}`
+                : ""}
+              {" · "}
+              {sources.length} {sources.length === 1 ? "source" : "sources"}
+            </>
+          )}
         </p>
       </header>
 
@@ -144,7 +178,11 @@ export function HeuristicLlmDrawerContent({
           <IssueList
             issues={top}
             onSelect={(i) => onSelectIssue(i.id)}
-            emptyHint="No high-impact reports in this slice."
+            emptyHint={
+              isLoading
+                ? "Loading…"
+                : "No high-impact reports in this slice."
+            }
           />
         </DrawerSection>
       </div>
@@ -165,7 +203,7 @@ export function HeuristicLlmDrawerContent({
           onClick={onOpenAllInTable}
           className="w-full justify-center gap-2"
         >
-          Open {matched.length} in table
+          Open {totalCount} in table
           <ArrowRight className="h-4 w-4" />
         </Button>
       </footer>

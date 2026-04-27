@@ -112,7 +112,15 @@ export function filterByHeuristic(issues: Issue[], slug: string): Issue[] {
   return issues.filter((i) => i.category?.slug === slug)
 }
 
-/** Issues that match an LLM category slug (lowercase, hyphen-or-underscore tolerant). */
+/**
+ * Issues that match an LLM `primary_tag` slug (lowercase, hyphen-or-underscore tolerant).
+ *
+ * NOTE: this matches on `llm_primary_tag`, which is *not* the field /api/stats counts
+ * for the LLM category breakdown (that uses `llm_category`). For drawers that need to
+ * agree with the breakdown's count, fetch via `useIssues({ llm_category: slug })`
+ * instead — the server-side filter uses the same source as the breakdown. This helper
+ * is preserved for callers that genuinely want a `primary_tag` match.
+ */
 export function filterByLlm(issues: Issue[], slug: string): Issue[] {
   const target = slug.trim().toLowerCase()
   return issues.filter((i) => {
