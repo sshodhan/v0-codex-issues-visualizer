@@ -90,6 +90,7 @@ INSERT INTO categories (name, slug, color) VALUES
   ('Documentation', 'documentation', '#06b6d4'),
   ('Integration', 'integration', '#10b981'),
   ('Pricing', 'pricing', '#f59e0b'),
+  ('Model Quality', 'model-quality', '#a855f7'),
   ('Security', 'security', '#dc2626'),
   ('UX/UI', 'ux-ui', '#ec4899'),
   ('API', 'api', '#3b82f6'),

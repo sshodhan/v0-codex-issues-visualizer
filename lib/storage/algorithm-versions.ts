@@ -8,7 +8,11 @@
 
 export const CURRENT_VERSIONS = {
   sentiment: "v2",
-  category: "v2",
+  // v3 (2026-04): adds the `model-quality` Topic slot and tightens Pricing
+  // (drops bare `plan`, adds multi-word tier phrases). See
+  // scripts/023_add_model_quality_category.sql and
+  // lib/scrapers/shared.ts → CATEGORY_PATTERNS.
+  category: "v3",
   impact: "v2",
   // competitor_mention shares the canonical lexicon (sentiment-lexicon.ts).
   // The sentiment v2 bump added words that are ALSO in NEGATORS (e.g.

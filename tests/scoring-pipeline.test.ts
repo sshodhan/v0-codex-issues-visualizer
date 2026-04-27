@@ -17,6 +17,7 @@ const CATEGORIES: Category[] = [
   { id: "cat-int", slug: "integration", name: "Integration", color: "#06b6d4", created_at: "" },
   { id: "cat-api", slug: "api", name: "API", color: "#14b8a6", created_at: "" },
   { id: "cat-price", slug: "pricing", name: "Pricing", color: "#eab308", created_at: "" },
+  { id: "cat-mq", slug: "model-quality", name: "Model Quality", color: "#a855f7", created_at: "" },
   { id: "cat-sec", slug: "security", name: "Security", color: "#dc2626", created_at: "" },
   { id: "cat-other", slug: "other", name: "Other", color: "#6b7280", created_at: "" },
 ]
@@ -140,6 +141,53 @@ test("categorizeIssue v2: a lone weight-1 phrase does NOT win over Other (thresh
     CATEGORIES,
   )
   assert.equal(categoryId, "cat-other")
+})
+
+test("categorizeIssue v3: 'distracted by excessive Frontend guidance in system prompt' is Model Quality, not Pricing", () => {
+  // v2 mislabeled this Pricing — bodies mentioning "plan" (weight 1, wholeWord)
+  // could clear the threshold of 2 alongside any other weight-1 hit, even
+  // when the post was clearly about model behavior. v3 drops bare `plan`
+  // from Pricing and introduces a model-quality slot that locks onto
+  // `distracted` (2) + `system prompt` (2) = 4, well above threshold.
+  const categoryId = categorizeIssue(
+    'make gpt-5.5 not get distracted by excessive "frontend guidance" in system prompt',
+    CATEGORIES,
+  )
+  assert.equal(categoryId, "cat-mq")
+})
+
+test("categorizeIssue v3: legitimate pricing posts still classify as Pricing", () => {
+  // Tightening Pricing must not regress true positives. "Pro plan" + "expensive"
+  // (3 + 3) and a bare "pricing" mention (3) both still clear the threshold.
+  assert.equal(
+    categorizeIssue("the pro plan is too expensive for individual devs", CATEGORIES),
+    "cat-price",
+  )
+  assert.equal(
+    categorizeIssue("question about codex cli pricing for teams", CATEGORIES),
+    "cat-price",
+  )
+})
+
+test("categorizeIssue v3: bare 'plan' no longer pulls posts into Pricing", () => {
+  // v2 regression we're fixing: a single mention of "plan" in a non-pricing
+  // context shouldn't drag a post into Pricing. This title has "plan" + a
+  // weight-1 hit (`connect`) — under v2 that summed to 2 and won Pricing
+  // outright. Under v3 there's no `plan` entry, so neither category clears
+  // the threshold and we fall back to Other.
+  const categoryId = categorizeIssue(
+    "i plan to connect codex with my own setup",
+    CATEGORIES,
+  )
+  assert.notEqual(categoryId, "cat-price", "must not classify as Pricing")
+})
+
+test("categorizeIssue v3: hallucination complaints land in Model Quality", () => {
+  const categoryId = categorizeIssue(
+    "codex hallucinates imports that don't exist",
+    CATEGORIES,
+  )
+  assert.equal(categoryId, "cat-mq")
 })
 
 test("categorizeIssue v2: empty phrase-match still falls back to Other", () => {
