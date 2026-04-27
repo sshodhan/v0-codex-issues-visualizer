@@ -330,6 +330,19 @@ function DashboardContentInner() {
     }
   }
 
+  const handleCategoryViewFullListInTriage = (categorySlug: string) => {
+    setActiveTab("classifications")
+    applyIssueSearchParams({ llmCategory: categorySlug })
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => {
+        document.getElementById("triage-semantic-clusters")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        })
+      })
+    }
+  }
+
   const applyTriageContextParams = useCallback(
     (patch: { llm?: string | null; group?: string | null }) => {
       const next = new URLSearchParams(searchParams.toString())
@@ -825,11 +838,11 @@ const handleHeroLlmCategoryDrill = (
               {/* [V1 - DEPRECATED] variant="v1" - simpler matrix without V2 enhancements */}
 
               {/* V2: Skip hero category since it's already featured above */}
-              <CategoryIssuesGrid
-                insights={stats.realtimeInsights}
-                skipFirstCategorySlug={heroInsight?.categorySlug}
-                onViewFullList={handleHeroExploreIssues}
-              />
+  <CategoryIssuesGrid
+  insights={stats.realtimeInsights}
+  skipFirstCategorySlug={heroInsight?.categorySlug}
+  onViewFullList={handleCategoryViewFullListInTriage}
+  />
               {/* [V1 - DEPRECATED] skipFirstCategorySlug={undefined} - shows all categories including hero */}
 
               {/* Trend Chart - Historical context */}
