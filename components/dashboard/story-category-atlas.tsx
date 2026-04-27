@@ -1,10 +1,12 @@
 "use client"
 
-import { useId, useMemo, useState } from "react"
+import { useId, useMemo } from "react"
 import {
   countBubbles,
   formatLlmCategorySlug,
   heuristicNameToSlug,
+  llmColorForName,
+  readableTextColor,
   type CountBubble,
 } from "@/lib/dashboard/story-category-atlas-layout"
 import { Button } from "@/components/ui/button"
@@ -81,8 +83,16 @@ interface StoryCategoryAtlasProps {
   selectedLlmCategorySlug: string | null
 }
 
-const GW = 520
-const GH = 300
+const GW = 600
+const GH = 280
+const HEU_FALLBACK = "#64748b" // slate-500 — used for "Other (combined)" when no DB color
+const CALLOUT_R = 22
+
+function truncateForRadius(label: string, r: number): string {
+  // ~1.6 chars per radius unit at the chosen font size
+  const max = Math.max(6, Math.floor(r * 0.55))
+  return label.length > max ? `${label.slice(0, Math.max(3, max - 1))}…` : label
+}
 
 function BubbleField({
   kind,
@@ -97,44 +107,56 @@ function BubbleField({
 }) {
   const baseId = useId()
   const placed = useMemo(
-    () => countBubbles(items, { minR: 16, maxR: 50, width: GW, height: GH }),
+    () => countBubbles(items, { minR: 14, maxR: 46, width: GW, height: GH }),
     [items],
   )
+  const cx0 = GW / 2
+  const cy0 = GH / 2
+  const hasSelection = activeId !== null
+
   return (
-    <div className="relative w-full overflow-hidden rounded-lg border border-border/50 bg-gradient-to-b from-secondary/15 to-card/80">
+    <div className="relative w-full overflow-hidden rounded-lg border border-border/60 bg-gradient-to-b from-muted/10 to-card">
       <svg
         viewBox={`0 0 ${GW} ${GH}`}
-        className="h-[min(38vh,280px)] w-full touch-manipulation"
+        className="h-[min(42vh,320px)] w-full touch-manipulation"
         role="img"
         aria-label={kind === "heuristic" ? "Topic sizes (heuristic)" : "LLM category sizes"}
       >
         <defs>
-          <filter id={`${baseId}-g`} x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="1.5" result="b" />
-            <feMerge>
-              <feMergeNode in="b" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
+          <filter id={`${baseId}-shadow`} x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="0.6" stdDeviation="0.8" floodOpacity="0.18" />
           </filter>
         </defs>
         {placed.map((b) => {
           const isActive = activeId === b.id
           const isHeu = kind === "heuristic"
-          const heu = b as HeuBubble & { x: number; y: number; r: number }
-          const fill =
-            isHeu && heu.color
-              ? heu.color
-              : isHeu
-                ? isActive
-                  ? "hsl(var(--primary))"
-                  : "hsl(var(--primary) / 0.4)"
-                : isActive
-                  ? "hsl(var(--chart-2))"
-                  : "hsl(var(--chart-2) / 0.45)"
+          const heuColor = (b as HeuBubble).color
+          const llmSlug = (b as LlmBubble).rawSlug
+          const baseColor = isHeu
+            ? heuColor ?? HEU_FALLBACK
+            : llmColorForName(llmSlug || b.label)
+          const fillOpacity = isActive ? 1 : hasSelection ? 0.32 : 0.92
+          const insideText = readableTextColor(baseColor)
+          const useCallout = b.r < CALLOUT_R
+          // Direction of leader line for small bubbles: outward from canvas center.
+          const dx = b.x - cx0
+          const dy = b.y - cy0
+          const dist = Math.max(1, Math.hypot(dx, dy))
+          const ux = dx / dist
+          const uy = dy / dist
+          const leadStartX = b.x + ux * b.r
+          const leadStartY = b.y + uy * b.r
+          const leadEndX = b.x + ux * (b.r + 14)
+          const leadEndY = b.y + uy * (b.r + 14)
+          const labelAnchor: "start" | "end" | "middle" =
+            ux > 0.25 ? "start" : ux < -0.25 ? "end" : "middle"
+          const labelX = leadEndX + (labelAnchor === "start" ? 3 : labelAnchor === "end" ? -3 : 0)
+          const labelY = leadEndY + (uy < -0.4 ? -1 : uy > 0.4 ? 9 : 3)
+
           return (
             <g
               key={b.id}
-              className="cursor-pointer"
+              className="cursor-pointer outline-none focus-visible:[&_circle]:stroke-foreground"
               onClick={() => onPick(b.id)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
@@ -142,45 +164,83 @@ function BubbleField({
                   onPick(b.id)
                 }
               }}
-              style={{ filter: isActive ? `url(#${baseId}-g)` : undefined }}
               role="button"
               tabIndex={0}
+              aria-label={`${b.label}: ${b.count}${isActive ? " (selected)" : ""}`}
             >
               <circle
                 cx={b.x}
                 cy={b.y}
                 r={b.r}
-                fill={fill}
-                stroke="hsl(var(--border))"
-                strokeWidth={isActive ? 2 : 1}
-                className="transition-opacity hover:opacity-90"
+                fill={baseColor}
+                fillOpacity={fillOpacity}
+                strokeWidth={isActive ? 2.25 : 1}
+                style={{
+                  stroke: `color-mix(in oklab, ${baseColor} 55%, #0b0b0b)`,
+                  filter: !hasSelection || isActive ? `url(#${baseId}-shadow)` : undefined,
+                  transition: "fill-opacity 160ms ease, stroke-width 160ms ease",
+                }}
               />
-              <text
-                x={b.x}
-                y={b.y - 5}
-                textAnchor="middle"
-                className="pointer-events-none"
-                fill="white"
-                stroke="rgba(0,0,0,0.5)"
-                strokeWidth={0.35}
-                paintOrder="stroke fill"
-                style={{ fontSize: Math.max(7, Math.min(12, b.r / 2.1)) }}
-              >
-                {b.label.length > 16 ? `${b.label.slice(0, 14)}…` : b.label}
-              </text>
-              <text
-                x={b.x}
-                y={b.y + 8}
-                textAnchor="middle"
-                className="pointer-events-none"
-                fill="white"
-                stroke="rgba(0,0,0,0.5)"
-                strokeWidth={0.35}
-                paintOrder="stroke fill"
-                style={{ fontSize: Math.max(7, Math.min(11, b.r / 2.4)) }}
-              >
-                {b.count}
-              </text>
+              {useCallout ? (
+                <>
+                  <line
+                    x1={leadStartX}
+                    y1={leadStartY}
+                    x2={leadEndX}
+                    y2={leadEndY}
+                    stroke="hsl(var(--muted-foreground))"
+                    strokeWidth={0.75}
+                    strokeOpacity={isActive || !hasSelection ? 0.7 : 0.3}
+                  />
+                  <text
+                    x={labelX}
+                    y={labelY}
+                    textAnchor={labelAnchor}
+                    className="pointer-events-none fill-foreground"
+                    style={{ fontSize: 10.5, fontWeight: 600 }}
+                  >
+                    {b.label}
+                    <tspan
+                      className="fill-muted-foreground"
+                      dx={4}
+                      style={{ fontWeight: 500 }}
+                    >
+                      {b.count}
+                    </tspan>
+                  </text>
+                </>
+              ) : (
+                <>
+                  <text
+                    x={b.x}
+                    y={b.y - 1}
+                    textAnchor="middle"
+                    className="pointer-events-none"
+                    fill={insideText}
+                    fillOpacity={isActive || !hasSelection ? 1 : 0.85}
+                    style={{
+                      fontSize: Math.min(13, Math.max(10.5, b.r / 3.1)),
+                      fontWeight: 600,
+                    }}
+                  >
+                    {truncateForRadius(b.label, b.r)}
+                  </text>
+                  <text
+                    x={b.x}
+                    y={b.y + Math.max(11, b.r / 3.4)}
+                    textAnchor="middle"
+                    className="pointer-events-none"
+                    fill={insideText}
+                    fillOpacity={isActive || !hasSelection ? 0.92 : 0.78}
+                    style={{
+                      fontSize: Math.min(11, Math.max(9.5, b.r / 3.8)),
+                      fontWeight: 500,
+                    }}
+                  >
+                    {b.count}
+                  </text>
+                </>
+              )}
             </g>
           )
         })}
