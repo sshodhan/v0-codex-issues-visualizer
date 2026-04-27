@@ -279,15 +279,19 @@ function DashboardContentInner() {
     setActiveTab("v3")
     setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
-      // Use setTimeout to allow the tab to render before scrolling
-      setTimeout(() => {
-        requestAnimationFrame(() => {
-          document.getElementById("issues-table-anchor")?.scrollIntoView({
+      // Retry mechanism to wait for the element to appear in the DOM after tab switch
+      const scrollToElement = (retries = 10) => {
+        const element = document.getElementById("issues-table-anchor")
+        if (element) {
+          element.scrollIntoView({
             behavior: "smooth",
             block: "start",
           })
-        })
-      }, 100)
+        } else if (retries > 0) {
+          setTimeout(() => scrollToElement(retries - 1), 50)
+        }
+      }
+      setTimeout(() => scrollToElement(), 50)
     }
   }
 
