@@ -440,7 +440,8 @@ const handleHeroLlmCategoryDrill = (
 
   const categoryOptions = useMemo(() => {
     const dynamic = (stats?.categoryBreakdown || []).map((category) => ({
-      value: category.name.toLowerCase().replace(/\s+/g, "-"),
+      // Use the actual database slug to match realtimeInsights category.slug
+      value: category.slug || category.name.toLowerCase().replace(/\s+/g, "-"),
       label: category.name,
       count: category.count,
     }))
@@ -456,7 +457,7 @@ const handleHeroLlmCategoryDrill = (
     if (!stats) return 0
     if (globalCategory === "all") return stats.totalIssues
     const found = (stats.categoryBreakdown || []).find(
-      (c) => c.name.toLowerCase().replace(/\s+/g, "-") === globalCategory,
+      (c) => (c.slug || c.name.toLowerCase().replace(/\s+/g, "-")) === globalCategory,
     )
     return found?.count ?? 0
   }, [stats, globalCategory])
