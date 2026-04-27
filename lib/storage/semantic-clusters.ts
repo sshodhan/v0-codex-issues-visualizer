@@ -347,6 +347,7 @@ export async function runSemanticClusteringForBatch(
       usedFallback = true
     }
 
+    let wroteLabel = false
     if (clusterIdResult?.id) {
       const updateRes = await supabase.rpc("set_cluster_label", {
         cluster_uuid: clusterIdResult.id,
@@ -357,6 +358,7 @@ export async function runSemanticClusteringForBatch(
         lbl_alg_ver: CURRENT_VERSIONS.semantic_cluster_label,
       })
       if (updateRes.error) labelingFailures++
+      else wroteLabel = true
     } else {
       labelingFailures++
     }
@@ -364,8 +366,10 @@ export async function runSemanticClusteringForBatch(
     // Structured log so we can watch the fallback rate post-deploy and
     // catch regressions in LLM-label quality without scraping the DB.
     // `clusters.label_model` is the durable per-row audit trail; this
-    // event is the time-series view.
-    if (usedFallback) {
+    // event is the time-series view, so it must only fire when the row
+    // was actually written — otherwise the rate dashboard counts
+    // would-be fallbacks the DB never saw.
+    if (usedFallback && wroteLabel) {
       logServer({
         component: "cluster-labeling",
         event: "deterministic_fallback_used",
