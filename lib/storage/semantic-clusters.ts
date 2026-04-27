@@ -10,7 +10,7 @@ import {
   topicNameForSlug,
 } from "@/lib/storage/cluster-label-fallback"
 import { recordProcessingEvent } from "@/lib/storage/processing-events"
-import { logServer } from "@/lib/error-tracking/server-logger"
+import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 import {
   buildEmbeddingInputText,
@@ -42,27 +42,156 @@ const LABEL_ACCEPT_BELOW = 0.6
 const LABEL_PROMPT_TITLE_LIMIT = 8
 const LABEL_PROMPT_ERROR_CODE_LIMIT = 3
 
+// OpenAI returns a request id on every response in the `x-request-id`
+// header (matching the openai-node SDK's `_request_id` / `APIError.request_id`
+// surface). Capturing it on both success and failure lets us cross-reference
+// a specific call with the OpenAI dashboard / support trace.
+function readOpenAiRequestId(response: Response): string | null {
+  return response.headers.get("x-request-id") ?? response.headers.get("openai-request-id")
+}
+
+interface OpenAiErrorEnvelope {
+  type: string | null
+  code: string | null
+  message: string | null
+  param: string | null
+}
+
+// OpenAI's documented error shape is `{ error: { message, type, code, param } }`.
+// Parse defensively so a non-JSON 5xx (e.g. an HTML edge-page) still surfaces
+// useful breadcrumbs in the log.
+async function readOpenAiErrorBody(response: Response): Promise<{
+  envelope: OpenAiErrorEnvelope
+  raw: string
+}> {
+  const raw = await response.text().catch(() => "")
+  let envelope: OpenAiErrorEnvelope = { type: null, code: null, message: null, param: null }
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { error?: Partial<OpenAiErrorEnvelope> }
+      const err = parsed.error
+      if (err && typeof err === "object") {
+        envelope = {
+          type: typeof err.type === "string" ? err.type : null,
+          code: typeof err.code === "string" ? err.code : null,
+          message: typeof err.message === "string" ? err.message : null,
+          param: typeof err.param === "string" ? err.param : null,
+        }
+      }
+    } catch {
+      // non-JSON body — keep envelope empty, raw preserved below
+    }
+  }
+  return { envelope, raw: raw.slice(0, 500) }
+}
+
 async function createEmbedding(input: string): Promise<number[] | null> {
   const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) return null
+  if (!apiKey) {
+    logServer({
+      component: "cluster-embedding",
+      event: "openai_request_skipped",
+      level: "warn",
+      data: { reason: "missing_api_key", model: DEFAULT_EMBEDDING_MODEL },
+    })
+    return null
+  }
 
-  const response = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
+  const startedAt = Date.now()
+  let response: Response
+  try {
+    response = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: DEFAULT_EMBEDDING_MODEL,
+        input,
+      }),
+    })
+  } catch (error) {
+    logServerError("cluster-embedding", "openai_request_failed", error, {
+      endpoint: "embeddings",
       model: DEFAULT_EMBEDDING_MODEL,
-      input,
-    }),
-  })
+      latency_ms: Date.now() - startedAt,
+    })
+    return null
+  }
 
-  if (!response.ok) return null
+  const requestId = readOpenAiRequestId(response)
+  const latencyMs = Date.now() - startedAt
 
-  const payload = (await response.json()) as { data?: Array<{ embedding?: number[] }> }
+  if (!response.ok) {
+    const { envelope, raw } = await readOpenAiErrorBody(response)
+    logServer({
+      component: "cluster-embedding",
+      event: "openai_response_non_ok",
+      level: "error",
+      data: {
+        endpoint: "embeddings",
+        model: DEFAULT_EMBEDDING_MODEL,
+        status: response.status,
+        status_text: response.statusText,
+        request_id: requestId,
+        latency_ms: latencyMs,
+        error_type: envelope.type,
+        error_code: envelope.code,
+        error_message: envelope.message,
+        error_param: envelope.param,
+        body_preview: envelope.message ? null : raw,
+      },
+    })
+    return null
+  }
+
+  let payload: { data?: Array<{ embedding?: number[] }> }
+  try {
+    payload = (await response.json()) as { data?: Array<{ embedding?: number[] }> }
+  } catch (error) {
+    logServerError("cluster-embedding", "openai_response_unparseable", error, {
+      endpoint: "embeddings",
+      model: DEFAULT_EMBEDDING_MODEL,
+      status: response.status,
+      request_id: requestId,
+      latency_ms: latencyMs,
+    })
+    return null
+  }
+
   const vector = payload.data?.[0]?.embedding
-  return Array.isArray(vector) ? vector : null
+  if (!Array.isArray(vector)) {
+    logServer({
+      component: "cluster-embedding",
+      event: "openai_response_unparseable",
+      level: "error",
+      data: {
+        endpoint: "embeddings",
+        model: DEFAULT_EMBEDDING_MODEL,
+        status: response.status,
+        request_id: requestId,
+        latency_ms: latencyMs,
+        reason: "missing_embedding_vector",
+      },
+    })
+    return null
+  }
+
+  logServer({
+    component: "cluster-embedding",
+    event: "openai_request_succeeded",
+    level: "info",
+    data: {
+      endpoint: "embeddings",
+      model: DEFAULT_EMBEDDING_MODEL,
+      status: response.status,
+      request_id: requestId,
+      latency_ms: latencyMs,
+      vector_dim: vector.length,
+    },
+  })
+  return vector
 }
 
 async function ensureEmbedding(
@@ -151,7 +280,15 @@ async function callLabelModel(
   input: LabelInput,
 ): Promise<LlmLabelResult | null> {
   const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) return null
+  if (!apiKey) {
+    logServer({
+      component: "cluster-labeling",
+      event: "openai_request_skipped",
+      level: "warn",
+      data: { reason: "missing_api_key", model: modelName },
+    })
+    return null
+  }
 
   const topicName = topicNameForSlug(input.topicSlug)
   const contextLines: string[] = []
@@ -178,54 +315,165 @@ async function callLabelModel(
     `Issue titles (${input.titles.length} total, showing up to ${LABEL_PROMPT_TITLE_LIMIT}):\n` +
     titlesBlock
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: modelName,
-      input: [{ role: "user", content: userPrompt }],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "cluster_label",
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              label: { type: "string" },
-              rationale: { type: "string" },
-              confidence: { type: "number" },
+  const startedAt = Date.now()
+  let response: Response
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: modelName,
+        input: [{ role: "user", content: userPrompt }],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "cluster_label",
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                label: { type: "string" },
+                rationale: { type: "string" },
+                confidence: { type: "number" },
+              },
+              required: ["label", "rationale", "confidence"],
             },
-            required: ["label", "rationale", "confidence"],
           },
         },
+      }),
+    })
+  } catch (error) {
+    logServerError("cluster-labeling", "openai_request_failed", error, {
+      endpoint: "responses",
+      model: modelName,
+      title_count: input.titles.length,
+      latency_ms: Date.now() - startedAt,
+    })
+    return null
+  }
+
+  const requestId = readOpenAiRequestId(response)
+  const latencyMs = Date.now() - startedAt
+
+  if (!response.ok) {
+    const { envelope, raw } = await readOpenAiErrorBody(response)
+    logServer({
+      component: "cluster-labeling",
+      event: "openai_response_non_ok",
+      level: "error",
+      data: {
+        endpoint: "responses",
+        model: modelName,
+        status: response.status,
+        status_text: response.statusText,
+        request_id: requestId,
+        latency_ms: latencyMs,
+        title_count: input.titles.length,
+        error_type: envelope.type,
+        error_code: envelope.code,
+        error_message: envelope.message,
+        error_param: envelope.param,
+        body_preview: envelope.message ? null : raw,
       },
-    }),
-  })
+    })
+    return null
+  }
 
-  if (!response.ok) return null
-  const payload = (await response.json()) as unknown
-  const outputText = extractResponsesOutputText(payload)
-  if (typeof outputText !== "string") return null
-
+  let payload: unknown
   try {
-    const parsed = JSON.parse(outputText) as {
+    payload = await response.json()
+  } catch (error) {
+    logServerError("cluster-labeling", "openai_response_unparseable", error, {
+      endpoint: "responses",
+      model: modelName,
+      status: response.status,
+      request_id: requestId,
+      latency_ms: latencyMs,
+      reason: "json_parse_failed",
+    })
+    return null
+  }
+
+  const outputText = extractResponsesOutputText(payload)
+  if (typeof outputText !== "string") {
+    logServer({
+      component: "cluster-labeling",
+      event: "openai_response_unparseable",
+      level: "error",
+      data: {
+        endpoint: "responses",
+        model: modelName,
+        status: response.status,
+        request_id: requestId,
+        latency_ms: latencyMs,
+        reason: "missing_output_text",
+      },
+    })
+    return null
+  }
+
+  let parsed: { label?: string; rationale?: string; confidence?: number }
+  try {
+    parsed = JSON.parse(outputText) as {
       label?: string
       rationale?: string
       confidence?: number
     }
-    if (!parsed.label || !parsed.rationale || typeof parsed.confidence !== "number") return null
-    return {
-      label: parsed.label.trim(),
-      rationale: parsed.rationale.trim(),
-      confidence: Math.max(0, Math.min(parsed.confidence, 1)),
+  } catch (error) {
+    logServerError("cluster-labeling", "openai_response_unparseable", error, {
+      endpoint: "responses",
       model: modelName,
-    }
-  } catch {
+      status: response.status,
+      request_id: requestId,
+      latency_ms: latencyMs,
+      reason: "structured_output_not_json",
+    })
     return null
+  }
+
+  if (!parsed.label || !parsed.rationale || typeof parsed.confidence !== "number") {
+    logServer({
+      component: "cluster-labeling",
+      event: "openai_response_unparseable",
+      level: "error",
+      data: {
+        endpoint: "responses",
+        model: modelName,
+        status: response.status,
+        request_id: requestId,
+        latency_ms: latencyMs,
+        reason: "missing_required_fields",
+        has_label: Boolean(parsed.label),
+        has_rationale: Boolean(parsed.rationale),
+        confidence_type: typeof parsed.confidence,
+      },
+    })
+    return null
+  }
+
+  const confidence = Math.max(0, Math.min(parsed.confidence, 1))
+  logServer({
+    component: "cluster-labeling",
+    event: "openai_request_succeeded",
+    level: "info",
+    data: {
+      endpoint: "responses",
+      model: modelName,
+      status: response.status,
+      request_id: requestId,
+      latency_ms: latencyMs,
+      title_count: input.titles.length,
+      confidence,
+    },
+  })
+  return {
+    label: parsed.label.trim(),
+    rationale: parsed.rationale.trim(),
+    confidence,
+    model: modelName,
   }
 }
 
