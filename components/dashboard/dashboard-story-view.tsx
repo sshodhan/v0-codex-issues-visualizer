@@ -94,6 +94,23 @@ function SurgeDelta({ pct, windowHours }: { pct: number; windowHours?: number })
   )
 }
 
+/**
+ * Editorial eyebrow shown above each section's H3 — turns "The lede" into
+ * "02 — The lede". Numbers are deliberately quiet (muted) so they read as
+ * scaffolding, not decoration.
+ */
+function SectionEyebrow({ index, label }: { index: string; label: string }) {
+  return (
+    <p className="text-[11px] font-semibold uppercase tracking-widest text-primary">
+      <span className="text-muted-foreground">{index}</span>
+      <span aria-hidden className="mx-2 text-muted-foreground/60">
+        —
+      </span>
+      {label}
+    </p>
+  )
+}
+
 function clusterPrimaryTitle(r: ClusterRollupRow): {
   title: string
   source: "representative" | "label" | "fallback"
@@ -292,14 +309,25 @@ export function DashboardStoryView({
         onExploreBubble={(t) => setDrawerTarget(t)}
         selectedHeuristicSlug={categoryValue}
         selectedLlmCategorySlug={selectedLlmCategorySlug}
+        exploringTarget={
+          drawerTarget?.kind === "heuristic" || drawerTarget?.kind === "llm"
+            ? {
+                kind: drawerTarget.kind,
+                slug: drawerTarget.slug,
+                label: drawerTarget.label,
+              }
+            : null
+        }
+        onClearExploring={() => setDrawerTarget(null)}
       />
 
-      <section className="space-y-4">
+      <section className="space-y-3">
+        <SectionEyebrow index="02" label="The lede" />
         <div className="flex items-center gap-2 text-primary">
           <BookOpen className="h-5 w-5" />
           <h3 className="text-2xl font-serif font-semibold">The lede</h3>
         </div>
-        <p className="text-xl sm:text-2xl font-serif leading-relaxed text-foreground text-balance">
+        <p className="text-xl sm:text-2xl font-serif leading-relaxed text-foreground text-balance first-letter:float-left first-letter:mr-2 first-letter:mt-1 first-letter:text-5xl first-letter:font-bold first-letter:leading-[0.85]">
           {lede.headline}
         </p>
         {lede.subhead && (
@@ -307,7 +335,8 @@ export function DashboardStoryView({
         )}
       </section>
 
-      <section className="space-y-6">
+      <section className="space-y-4">
+        <SectionEyebrow index="03" label="Signals over time" />
         <h3 className="text-2xl font-serif font-semibold">Signal cloud in time</h3>
         <p className="text-muted-foreground leading-relaxed">
           Public reports in your current filter, placed along a clock. Bigger circles carry higher impact scores; color
@@ -342,6 +371,7 @@ export function DashboardStoryView({
 
       {showClusterSection && (
         <section className="space-y-4">
+          <SectionEyebrow index="04" label="Where reports cluster" />
           <div className="flex items-center gap-2 text-primary">
             <Layers3 className="h-5 w-5" />
             <h3 className="text-2xl font-serif font-semibold">Where reports cluster</h3>
@@ -427,18 +457,18 @@ export function DashboardStoryView({
       )}
 
       <section className="space-y-4">
+        <SectionEyebrow index="05" label="What's breaking" />
         <div className="flex items-center gap-2 text-destructive">
           <TriangleAlert className="h-5 w-5" />
           <h3 className="text-2xl font-serif font-semibold">Error-code gravity</h3>
         </div>
         <p className="text-muted-foreground leading-relaxed">
-          Regex fingerprints (not the LLM layer) that are surging in <span className="whitespace-nowrap">{windowLabel}</span>.
-          Drilling applies the same <code className="text-xs bg-muted px-1 rounded">compound_key</code> filter as the dashboard
-          issues table.
+          Specific error patterns rising in <span className="whitespace-nowrap">{windowLabel}</span>.
+          Click <em>Drill in</em> on any code to see the underlying reports.
         </p>
         {surges.length === 0 && newCodes.length === 0 ? (
           <p className="text-sm text-muted-foreground border border-dashed rounded-lg p-4">
-            No surges in this window — healthy fingerprint landscape.
+            No surges in this window — no rising error patterns.
           </p>
         ) : (
           <ul className="space-y-2">
@@ -486,6 +516,43 @@ export function DashboardStoryView({
           <ExternalLink className="h-4 w-4" />
         </Button>
       </section>
+
+      <Collapsible className="rounded-lg border border-border/50 bg-card/40">
+        <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 rounded-lg px-4 py-3 text-left hover:bg-muted/30">
+          <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+            About these charts
+          </span>
+          <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform data-[state=open]:rotate-180" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-3 px-4 pb-4 text-sm text-muted-foreground leading-relaxed">
+          <p>
+            <span className="font-medium text-foreground">Two views of the same window.</span>{" "}
+            The atlas at the top shows two passes over the data. The first uses fast,
+            keyword-based topics (the colors used everywhere else in the app). The second uses
+            the structured classifier&rsquo;s own categories — a separate enum applied only after
+            classification has run.
+          </p>
+          <p>
+            <span className="font-medium text-foreground">Counts vs the classifier.</span> The
+            classifier view only counts reports it has labelled — pending rows are called out as
+            a number, never imputed. The page&rsquo;s overall total may exceed the classifier
+            count when a backlog is processing.
+          </p>
+          <p>
+            <span className="font-medium text-foreground">Cluster grouping.</span> A cluster is
+            a set of reports the embedding model groups by similar text. Clusters tagged{" "}
+            <em>grouped by title only</em> use a simpler title-match fallback when the embedding
+            pass hasn&rsquo;t covered them yet — that&rsquo;s why a few clusters carry a
+            single report.
+          </p>
+          <p>
+            <span className="font-medium text-foreground">Lede framing.</span> The opening
+            sentence picks the most newsworthy frame from the loaded sample (peak day, surge,
+            or a quiet window) and writes one or two sentences in editorial voice. It never
+            invents — empty windows say so.
+          </p>
+        </CollapsibleContent>
+      </Collapsible>
 
       <StoryDrawer
         target={drawerTarget}
@@ -565,7 +632,7 @@ function ClusterStoryRow({
           </div>
           <p className="font-mono text-[10px] tracking-tight text-muted-foreground/70">
             cluster {r.id.slice(0, 8)}
-            {r.cluster_path === "fallback" ? " · title fallback" : ""}
+            {r.cluster_path === "fallback" ? " · grouped by title only" : ""}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">

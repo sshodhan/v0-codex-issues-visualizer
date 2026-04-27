@@ -1,15 +1,16 @@
 "use client"
 
-import { useId, useMemo } from "react"
+import { useId, useMemo, useState } from "react"
 import {
   countBubbles,
   heuristicNameToSlug,
   readableTextColor,
   type CountBubble,
 } from "@/lib/dashboard/story-category-atlas-layout"
+import { pickAtlasAnnotation } from "@/lib/dashboard/atlas-annotation"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { ChevronDown, MousePointer2, Sparkles, Tag } from "lucide-react"
+import { ChevronDown, MousePointer2, Sparkles, Tag, X } from "lucide-react"
 import { LlmCategoryBars } from "@/components/dashboard/llm-category-bars"
 
 const HEU_MAX = 12
@@ -65,6 +66,13 @@ interface StoryCategoryAtlasProps {
   /** Global filter slug e.g. "bug" or "all" */
   selectedHeuristicSlug: string
   selectedLlmCategorySlug: string | null
+  /**
+   * What the user is currently exploring (drawer-open). When supplied, the matching
+   * cloud renders a "Showing: X — Clear ×" strip above it so the unabbreviated label
+   * is visible regardless of how the bubble is rendered.
+   */
+  exploringTarget?: { kind: "heuristic" | "llm"; slug: string; label: string } | null
+  onClearExploring?: () => void
 }
 
 const GW = 600
@@ -99,10 +107,17 @@ function BubbleField({
   items,
   onPick,
   activeId,
+  totalForAnnotation,
 }: {
   items: HeuBubble[]
   onPick: (id: string) => void
   activeId: string | null
+  /**
+   * Total count across the *original* row set (not just `items`, which may have
+   * been combined into "Other"). Used to compute the share-of-total for the
+   * editorial annotation. When undefined, the annotation reuses the items' sum.
+   */
+  totalForAnnotation?: number
 }) {
   const baseId = useId()
   const placed = useMemo(
@@ -119,6 +134,26 @@ function BubbleField({
   const cx0 = GW / 2
   const cy0 = GH / 2
   const hasSelection = activeId !== null
+
+  // Editorial annotation: pick the bubble worthy of a callout. Suppressed during
+  // active selection so the user's exploration isn't fighting an automatic label.
+  const annotation = useMemo(() => {
+    if (hasSelection) return null
+    return pickAtlasAnnotation(
+      items
+        .filter((b) => !b.id.endsWith(":other"))
+        .map((b) => ({ name: b.label, count: b.count, color: b.color })),
+    )
+  }, [items, hasSelection])
+  const annotationBubble = useMemo(() => {
+    if (!annotation) return null
+    return placed.find((p) => p.label === annotation.label) ?? null
+  }, [annotation, placed])
+
+  // Hover preview state. Debounced via a single state slot — rapid mouse movement
+  // simply re-targets the float card rather than flashing it.
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const hovered = hoveredId ? placed.find((p) => p.id === hoveredId) : null
 
   return (
     <div className="relative w-full overflow-hidden rounded-lg border border-border/60 bg-gradient-to-b from-muted/10 to-card">
@@ -176,6 +211,14 @@ function BubbleField({
               role="button"
               tabIndex={0}
               aria-label={`${b.label}: ${b.count}${isActive ? " (selected)" : ""}`}
+              onMouseEnter={() => setHoveredId(b.id)}
+              onMouseLeave={() =>
+                setHoveredId((cur) => (cur === b.id ? null : cur))
+              }
+              onFocus={() => setHoveredId(b.id)}
+              onBlur={() =>
+                setHoveredId((cur) => (cur === b.id ? null : cur))
+              }
             >
               <title>{`${b.label} — ${b.count}`}</title>
               <circle
@@ -248,7 +291,116 @@ function BubbleField({
             </g>
           )
         })}
+
+        {/* Editorial annotation: leader-line + serif callout pointing at the dominant
+            bubble. Same idea as the timeline's peak-day annotation. */}
+        {annotationBubble && annotation && (() => {
+          const dx = annotationBubble.x - cx0
+          const dy = annotationBubble.y - cy0
+          const dist = Math.max(1, Math.hypot(dx, dy))
+          const ux = dx / dist
+          const uy = dy / dist
+          // Push the callout 28px past the bubble edge in the outward direction so
+          // it doesn't overlap any neighbours.
+          const sx = annotationBubble.x + ux * (annotationBubble.r + 4)
+          const sy = annotationBubble.y + uy * (annotationBubble.r + 4)
+          const ex = annotationBubble.x + ux * (annotationBubble.r + 28)
+          const ey = annotationBubble.y + uy * (annotationBubble.r + 28)
+          const anchor: "start" | "end" =
+            ex >= GW / 2 ? "start" : "end"
+          const labelX = ex + (anchor === "start" ? 4 : -4)
+          const sharePct = Math.round(annotation.share * 100)
+          return (
+            <g aria-hidden>
+              <line
+                x1={sx}
+                y1={sy}
+                x2={ex}
+                y2={ey}
+                stroke="hsl(var(--foreground))"
+                strokeOpacity={0.5}
+                strokeWidth={1}
+              />
+              <text
+                x={labelX}
+                y={ey + 3}
+                textAnchor={anchor}
+                className="fill-foreground"
+                style={{
+                  fontSize: 11,
+                  fontStyle: "italic",
+                  fontFamily: "var(--font-serif, serif)",
+                }}
+              >
+                ↳ {annotation.label} — {sharePct}%
+              </text>
+            </g>
+          )
+        })()}
       </svg>
+
+      {/* Hover preview card — positioned in viewBox-percent space so it tracks the
+          bubble even as the SVG resizes. pointer-events-none so it never intercepts. */}
+      {hovered && (
+        <div
+          role="presentation"
+          className="pointer-events-none absolute z-10 rounded-md border border-border bg-popover/95 px-3 py-2 text-xs shadow-lg backdrop-blur-sm"
+          style={{
+            left: `${(hovered.x / GW) * 100}%`,
+            top: `${(hovered.y / GH) * 100}%`,
+            transform: "translate(-50%, calc(-100% - 10px))",
+            minWidth: 140,
+          }}
+        >
+          <div className="font-medium text-foreground">{hovered.label}</div>
+          <div className="tabular-nums text-muted-foreground">
+            {hovered.count} {hovered.count === 1 ? "report" : "reports"}
+            {totalForAnnotation && totalForAnnotation > 0
+              ? ` · ${Math.round((hovered.count / totalForAnnotation) * 100)}% of total`
+              : null}
+          </div>
+          <div className="mt-1 italic text-muted-foreground">Click to explore</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SelectionStrip({
+  kind,
+  label,
+  onClear,
+}: {
+  kind: "heuristic" | "llm"
+  label: string
+  onClear?: () => void
+}) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center justify-between gap-2 rounded-md border border-foreground/15 bg-muted/40 px-3 py-1.5 text-sm"
+    >
+      <span className="min-w-0 truncate">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Showing
+        </span>
+        <span className="ml-2 font-medium text-foreground">{label}</span>
+        <span className="ml-1.5 text-xs text-muted-foreground">
+          ({kind === "heuristic" ? "heuristic" : "classifier"} category)
+        </span>
+      </span>
+      {onClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs text-muted-foreground hover:bg-background hover:text-foreground"
+          aria-label="Clear exploration"
+        >
+          Clear
+          <X className="h-3 w-3" />
+        </button>
+      )}
     </div>
   )
 }
@@ -267,7 +419,13 @@ export function StoryCategoryAtlas({
   onExploreBubble,
   selectedHeuristicSlug,
   selectedLlmCategorySlug,
+  exploringTarget,
+  onClearExploring,
 }: StoryCategoryAtlasProps) {
+  const heuristicTotal = useMemo(
+    () => heuristicRows.reduce((s, r) => s + r.count, 0),
+    [heuristicRows],
+  )
   const heuBubbles = useMemo(() => prepHeuristic(heuristicRows), [heuristicRows])
 
   const heuActiveId = useMemo(() => {
@@ -294,7 +452,11 @@ export function StoryCategoryAtlas({
   return (
     <section className="space-y-6 scroll-mt-8" id="story-category-atlas">
       <div className="space-y-2 border-b border-border/50 pb-4">
-        <p className="text-xs font-semibold uppercase tracking-widest text-primary">The atlas</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-primary">
+          <span className="text-muted-foreground">01</span>
+          <span aria-hidden className="mx-2 text-muted-foreground/60">—</span>
+          The atlas
+        </p>
         <h3 className="text-2xl sm:text-3xl font-serif font-semibold text-foreground text-balance">
           Where the volume lives — two honest lenses
         </h3>
@@ -320,17 +482,25 @@ export function StoryCategoryAtlas({
           <h4 className="font-serif text-lg font-semibold">Topics (heuristic)</h4>
         </div>
         <p className="text-sm text-muted-foreground">
-          Bigger circles = more observations in the selected scope. Click a circle to set the global topic focus (same
-          as the filter bar) — it updates the whole page, including the signal cloud and dashboard charts.
+          Bigger circles = more observations in the selected scope. Click a circle to explore — the
+          drawer opens with the breakdown and lets you commit it as the page filter.
         </p>
+        {exploringTarget?.kind === "heuristic" && (
+          <SelectionStrip
+            kind="heuristic"
+            label={exploringTarget.label}
+            onClear={onClearExploring}
+          />
+        )}
         <BubbleField
           items={heuBubbles}
           onPick={onHeuPick}
           activeId={heuActiveId}
+          totalForAnnotation={heuristicTotal}
         />
         <p className="text-xs text-muted-foreground">
-          Drag the <strong>Topic focus</strong> slider above, or use a bubble here, to match the main dashboard&rsquo;s
-          heuristic filter.
+          The page filter at the top can also be set from a bubble — open the drawer first, then
+          choose <em>Use as page filter</em>.
         </p>
       </div>
 
@@ -340,14 +510,20 @@ export function StoryCategoryAtlas({
           <h4 className="font-serif text-lg font-semibold">LLM categories (classifier)</h4>
         </div>
         <p className="text-sm text-muted-foreground">
-          These are <strong>not</strong> the same names as the heuristic list — the classifier uses its own enum. Counts
-          include only observations with <code className="rounded bg-muted px-1">llm_classified_at</code> on the
-          read model. Click a row to open detail; use triage there for subcategory and cluster
-          drill-down.
+          A different lens on the same window: the classifier&rsquo;s own categories. Counts include
+          only reports the classifier has labelled. Click a row to open the detail drawer.
         </p>
+        {exploringTarget?.kind === "llm" && (
+          <SelectionStrip
+            kind="llm"
+            label={exploringTarget.label}
+            onClear={onClearExploring}
+          />
+        )}
         {llmRows.length === 0 && llmClassifiedInWindow === 0 ? (
           <p className="text-sm border border-dashed rounded-lg p-4 text-muted-foreground">
-            No LLM category breakdown in this window — classification may still be running, or the sample is empty.
+            No classifier breakdown in this window — classification may still be running, or the
+            sample is empty.
           </p>
         ) : (
           <LlmCategoryBars
