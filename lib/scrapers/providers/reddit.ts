@@ -18,7 +18,8 @@ const SUBREDDITS = [
   "programming",
   "learnprogramming",
   "ChatGPTCoding",
-  "ArtificialInteligence",
+  "OpenaiCodex",
+  "ArtificialIntelligence",
 ]
 
 const RELEVANCE_DEBUG = process.env.RELEVANCE_DEBUG === "1"
