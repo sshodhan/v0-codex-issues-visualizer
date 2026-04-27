@@ -11,7 +11,7 @@ import { composeWhySurfaced } from "@/lib/classification/why-surfaced"
 import { llmCategoryLabel } from "@/lib/classification/llm-category-display"
 import { SURGE_CHIP_THRESHOLD_PCT } from "@/lib/classification/rollup-constants"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
-import { TrustSummaryState } from "@/components/dashboard/trust-completeness"
+import { ClusterTrustSummary } from "@/components/dashboard/cluster-trust-summary"
 
 type RailKey = "fix_next" | "breaking_now" | "review_now"
 
@@ -211,9 +211,6 @@ function ClusterCard({
   metric: { value: string; caption: string }
   days: number
 }) {
-  const classified = cluster.classified_share ?? (cluster.count > 0 ? cluster.classified_count / cluster.count : 0)
-  const reviewed = cluster.human_reviewed_share ?? (cluster.count > 0 ? cluster.reviewed_count / cluster.count : 0)
-  const regexCoverage = cluster.fingerprint_hit_rate
   const resolvedLabel = getFamilyLabel(cluster)
   const displayTitle = toFriendlyDisplayTitle(resolvedLabel)
 
@@ -259,11 +256,7 @@ function ClusterCard({
 
       {/* Three-panel body */}
       <div className="border-t pt-2 space-y-3">
-        <TrustSummaryState
-          classifiedShare={classified}
-          reviewedShare={reviewed}
-          fingerprintHitRate={regexCoverage}
-        />
+        <ClusterTrustSummary cluster={cluster} showGroupingLabel={false} />
 
         {/* Panel 2: Regex Variants */}
         {cluster.regex_variants !== undefined ? (

@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
+import { ClusterTrustSummary } from "@/components/dashboard/cluster-trust-summary"
 import { TrustCompletenessBars } from "@/components/dashboard/trust-completeness"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import { ChevronLeft } from "lucide-react"
@@ -96,7 +97,7 @@ export default function FamilyDetailPage() {
           <p className="text-sm text-muted-foreground">
             This page groups similar reports, shows how much has been reviewed, and highlights the most common patterns.
           </p>
-          <ClusterTrustRibbon cluster={data.family} showTechnicalChips={false} />
+          <ClusterTrustSummary cluster={data.family} />
           <details className="max-w-3xl rounded-md border bg-muted/20 px-3 py-2 text-sm">
             <summary className="cursor-pointer text-muted-foreground">Show technical details</summary>
             <div className="mt-2 space-y-2 text-muted-foreground">
