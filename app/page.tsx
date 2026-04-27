@@ -330,6 +330,28 @@ function DashboardContentInner() {
     }
   }
 
+  const handleCategoryViewFullListInTriage = (categorySlug: string) => {
+    setActiveTab("v3")
+    setGlobalCategory(categorySlug)
+    // Clear any existing llmCategory filter to show all issues in the category
+    applyIssueSearchParams({ llmCategory: null, clusterId: null, compoundKey: null })
+    if (typeof window !== "undefined") {
+      // Retry mechanism to wait for the element to appear in the DOM after tab switch
+      const scrollToElement = (retries = 10) => {
+        const element = document.getElementById("issues-table-anchor")
+        if (element) {
+          element.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
+        } else if (retries > 0) {
+          setTimeout(() => scrollToElement(retries - 1), 50)
+        }
+      }
+      setTimeout(() => scrollToElement(), 50)
+    }
+  }
+
   const applyTriageContextParams = useCallback(
     (patch: { llm?: string | null; group?: string | null }) => {
       const next = new URLSearchParams(searchParams.toString())
@@ -765,7 +787,7 @@ const handleHeroLlmCategoryDrill = (
               <HeroInsight
                 topInsight={heroInsight}
                 onExploreIssues={handleHeroExploreIssues}
-                onNavigateToCategory={handleNavigateToCategory}
+                onNavigateToCategory={handleCategoryViewFullListInTriage}
                 onLlmCategoryDrill={handleHeroLlmCategoryDrill}
                 issueTableTimeLabel={globalTimeLabel}
                 variant="v2"
@@ -825,11 +847,11 @@ const handleHeroLlmCategoryDrill = (
               {/* [V1 - DEPRECATED] variant="v1" - simpler matrix without V2 enhancements */}
 
               {/* V2: Skip hero category since it's already featured above */}
-              <CategoryIssuesGrid
-                insights={stats.realtimeInsights}
-                skipFirstCategorySlug={heroInsight?.categorySlug}
-                onViewFullList={handleHeroExploreIssues}
-              />
+  <CategoryIssuesGrid
+  insights={stats.realtimeInsights}
+  skipFirstCategorySlug={heroInsight?.categorySlug}
+  onViewFullList={handleCategoryViewFullListInTriage}
+  />
               {/* [V1 - DEPRECATED] skipFirstCategorySlug={undefined} - shows all categories including hero */}
 
               {/* Trend Chart - Historical context */}
@@ -851,6 +873,7 @@ const handleHeroLlmCategoryDrill = (
   activeClusterId={clusterIdFromUrl ?? undefined}
   activeClusterLabel={activeClusterLabel ?? undefined}
   activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
+  onClearGlobalCategory={() => setGlobalCategory("all")}
   />
 </div>
 </TabsContent>
@@ -908,6 +931,7 @@ const handleHeroLlmCategoryDrill = (
                   activeCompoundKey={compoundKeyFromUrl}
                   activeClusterId={clusterIdFromUrl ?? undefined}
                   activeClusterLabel={activeClusterLabel ?? undefined}
+                  onClearGlobalCategory={() => setGlobalCategory("all")}
                 />
               </div>
             </TabsContent>

@@ -297,30 +297,6 @@ export function HeroInsight({
 
               {cloud}
 
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                <div className="w-full sm:w-auto">
-                  <Button
-                    onClick={() => onExploreIssues(categorySlug)}
-                    className="gap-2 w-full sm:w-auto"
-                    size="lg"
-                  >
-                    View {category} in issues
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                  <p className="mt-1.5 text-xs text-muted-foreground max-w-sm">
-                    Issues list uses the global time filter: {issueTableTimeLabel} (lead metrics above: last 72h).
-                  </p>
-                </div>
-                <Button
-                  onClick={() => onNavigateToCategory?.(categorySlug)}
-                  variant="outline"
-                  size="lg"
-                  className="gap-2 w-full sm:w-auto"
-                >
-                  Review in AI classifications
-                </Button>
-              </div>
-
               <p className="mt-4 text-xs text-muted-foreground leading-relaxed max-w-2xl">
                 Urgency ranks categories using recent volume, momentum, impact, and
                 source diversity in a 72h window — not raw post count alone.{" "}
@@ -383,13 +359,30 @@ export function HeroInsight({
                   ))
                 )}
               </div>
-              <button
-                onClick={() => onExploreIssues(categorySlug)}
-                className="mt-4 text-sm font-medium text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
-              >
-                View all {category} issues
-                <ArrowRight className="h-3 w-3" />
-              </button>
+
+              <div className="flex flex-col gap-3 mt-6">
+                <div className="w-full">
+                  <Button
+                    onClick={() => onExploreIssues(categorySlug)}
+                    className="gap-2 w-full"
+                    size="lg"
+                  >
+                    View {category} in issues
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+                  <p className="mt-1.5 text-xs text-muted-foreground max-w-sm">
+                    Issues list uses the global time filter: {issueTableTimeLabel} (lead metrics above: last 72h).
+                  </p>
+                </div>
+                <Button
+                  onClick={() => onNavigateToCategory?.(categorySlug)}
+                  variant="outline"
+                  size="lg"
+                  className="gap-2 w-full"
+                >
+                  Review in AI classifications
+                </Button>
+              </div>
             </div>
           </div>
         </CardContent>
