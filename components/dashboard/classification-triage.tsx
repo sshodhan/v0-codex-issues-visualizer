@@ -52,6 +52,7 @@ import type { ClassificationRecord, ClassificationStats, ClusterSummary } from "
 import { useClusters } from "@/hooks/use-dashboard-data"
 import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import { CATEGORY_ENUM } from "@/lib/classification/taxonomy"
+import { llmCategoryLabel } from "@/lib/classification/llm-category-display"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 
 // Two example LLM-category slugs interpolated into reviewer-facing copy
@@ -121,6 +122,33 @@ function hasTrustedLabel(
   confidence: number | null,
 ): boolean {
   return label !== null && confidence !== null && confidence >= LABEL_CONFIDENCE_SHOW_THRESHOLD
+}
+
+function formatSubcategoryLabel(subcategory: string | null | undefined): string {
+  if (!subcategory) return "General"
+  return subcategory
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+}
+
+function triageGroupParts(record: Pick<ClassificationRecord, "effective_category" | "effective_subcategory">): {
+  raw: string
+  label: string
+  rawCategory: string
+  rawSubcategory: string
+} {
+  const rawCategory = record.effective_category
+  const rawSubcategory = record.effective_subcategory || "General"
+  const formattedCategory = llmCategoryLabel(rawCategory)
+  const formattedSubcategory = formatSubcategoryLabel(record.effective_subcategory)
+  return {
+    raw: `${rawCategory} › ${rawSubcategory}`,
+    label: `${formattedCategory} › ${formattedSubcategory}`,
+    rawCategory,
+    rawSubcategory,
+  }
 }
 
 // `pickPrimaryCta` + PrerequisiteStatus shape live in
@@ -215,10 +243,11 @@ export function ClassificationTriage({
   }, [records, effectiveCategoryFilter, timeDays])
 
   const groups = useMemo(() => {
-    const grouped = new Map<string, { total: number; highRisk: number }>()
+    const grouped = new Map<string, { total: number; highRisk: number; label: string }>()
     for (const record of globallyFilteredRecords) {
-      const key = `${record.effective_category} › ${record.effective_subcategory || "General"}`
-      const current = grouped.get(key) || { total: 0, highRisk: 0 }
+      const group = triageGroupParts(record)
+      const key = group.raw
+      const current = grouped.get(key) || { total: 0, highRisk: 0, label: group.label }
       current.total += 1
       if (record.effective_severity === "critical" || record.effective_severity === "high") current.highRisk += 1
       grouped.set(key, current)
@@ -249,7 +278,7 @@ export function ClassificationTriage({
     return globallyFilteredRecords.filter((record) => {
       const groupMatch =
         groupFilter === "all" ||
-        `${record.effective_category} › ${record.effective_subcategory || "General"}` === groupFilter
+        triageGroupParts(record).raw === groupFilter
       const semanticMatch =
         semanticClusterFilter === "all" || record.cluster_id === semanticClusterFilter
       return groupMatch && semanticMatch
@@ -502,8 +531,9 @@ export function ClassificationTriage({
                 variant={groupFilter === group.name ? "default" : "outline"}
                 onClick={() => setGroupFilter(group.name)}
                 className="gap-2"
+                title={`Slug: ${group.name}`}
               >
-                <span className="truncate max-w-[220px]">{group.name}</span>
+                <span className="truncate max-w-[220px]">{group.label || group.name}</span>
                 <Badge variant="secondary">{group.total}</Badge>
                 {group.highRisk > 0 && <Badge variant="destructive">{group.highRisk} high</Badge>}
               </Button>
@@ -607,9 +637,13 @@ export function ClassificationTriage({
         ) : isScopedEmpty ? (
           <p className="text-sm text-muted-foreground">
             {groupFilter !== "all" && semanticClusterFilter !== "all"
-              ? `No records match both the "${groupFilter}" triage group and the selected semantic cluster. Clear one filter to widen the view.`
+              ? `No records match both the "${
+                  groups.find((group) => group.name === groupFilter)?.label || groupFilter
+                }" triage group and the selected semantic cluster. Clear one filter to widen the view.`
               : groupFilter !== "all"
-                ? `No records match the "${groupFilter}" triage group. Clear it or widen the global sliders.`
+                ? `No records match the "${
+                    groups.find((group) => group.name === groupFilter)?.label || groupFilter
+                  }" triage group. Clear it or widen the global sliders.`
                 : semanticClusterFilter !== "all"
                   ? "No records match the selected semantic cluster. Clear it or widen the global sliders."
                   : "No classifier records in this scope. Adjust global sliders, the triage-group filter, or the semantic-cluster filter."}
@@ -650,11 +684,18 @@ export function ClassificationTriage({
                     className="cursor-pointer"
                   >
                     <TableCell>
-                      <div className="flex items-center gap-2">
-                        {record.effective_needs_human_review && <AlertTriangle className="h-4 w-4 text-amber-500" />}
-                        <span>{record.effective_category}</span>
+                        <div className="flex items-center gap-2">
+                          {record.effective_needs_human_review && <AlertTriangle className="h-4 w-4 text-amber-500" />}
+                        <span title={`Slug: ${record.effective_category}`}>
+                          {llmCategoryLabel(record.effective_category)}
+                        </span>
                       </div>
-                      <p className="text-xs text-muted-foreground">{record.effective_subcategory}</p>
+                      <p
+                        className="text-xs text-muted-foreground"
+                        title={`Slug: ${record.effective_subcategory || "General"}`}
+                      >
+                        {formatSubcategoryLabel(record.effective_subcategory)}
+                      </p>
                       <LayerBreadcrumb record={record} compact />
                     </TableCell>
                     <TableCell><Badge variant="outline">{record.effective_severity}</Badge></TableCell>
@@ -784,7 +825,9 @@ export function ClassificationTriage({
                   <div className="rounded-md border bg-background p-2">
                     <p className="text-xs font-medium text-muted-foreground mb-1">Current effective state</p>
                     <div className="flex flex-wrap gap-2">
-                      <Badge variant="outline">{selected.effective_category}</Badge>
+                      <Badge variant="outline" title={`Slug: ${selected.effective_category}`}>
+                        {llmCategoryLabel(selected.effective_category)}
+                      </Badge>
                       <Badge variant="outline">{selected.effective_severity}</Badge>
                       <Badge variant="outline">{selected.effective_status}</Badge>
                     </div>
@@ -820,7 +863,9 @@ export function ClassificationTriage({
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2 mt-1">
-                      <Badge variant="outline" className="text-xs">{selected.category}</Badge>
+                      <Badge variant="outline" className="text-xs" title={`Slug: ${selected.category}`}>
+                        {llmCategoryLabel(selected.category)}
+                      </Badge>
                       <Badge variant="outline" className="text-xs">{selected.severity}</Badge>
                       <Badge variant="outline" className="text-xs">{selected.status}</Badge>
                     </div>
@@ -1280,7 +1325,7 @@ function LayerBreadcrumb({
       ? record.cluster_label
       : `Cluster #${record.cluster_id.slice(0, 8)}`
     : null
-  const groupLabel = `${record.effective_category} › ${record.effective_subcategory || "General"}`
+  const group = triageGroupParts(record)
 
   const baseClass = compact
     ? "mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"
@@ -1301,7 +1346,7 @@ function LayerBreadcrumb({
       <ChevronRight className={sepClass} />
       <span className={segmentClass}>
         <Badge variant="outline" className="px-1 py-0 text-[9px] font-mono">B</Badge>
-        <span className="truncate">{groupLabel}</span>
+        <span className="truncate" title={`Slug: ${group.raw}`}>{group.label}</span>
       </span>
       {!compact && (
         <>
