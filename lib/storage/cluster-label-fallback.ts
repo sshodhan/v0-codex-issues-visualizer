@@ -162,7 +162,7 @@ export function composeDeterministicLabel(
       .sort((a, b) => a.length - b.length)[0] ?? "Unnamed cluster"
   const trimmed = seed.length > 60 ? `${seed.slice(0, 57).trimEnd()}…` : seed
   return {
-    label: `Cluster · ${trimmed}`,
+    label: `Issue family · ${trimmed}`,
     rationale: "No consistent Topic or error code across members; derived from the canonical title.",
     confidence: CONFIDENCE_TITLE_ONLY,
     model: LABEL_MODEL.DETERMINISTIC_TITLE,

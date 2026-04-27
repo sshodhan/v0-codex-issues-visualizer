@@ -122,14 +122,17 @@ test("LABEL_MODEL.OPENAI_PREFIX matches the prefix the writer composes", () => {
   assert.equal(LABEL_MODEL.OPENAI_PREFIX, "openai:")
 })
 
-// Static guard: no consumer file may regress to a hardcoded `0.4`
-// literal next to `label_confidence`. This catches the easy-to-miss
-// "I just inlined the number again" review failure that the
+// Static guard: no consumer file may compare `label_confidence` to a
+// hardcoded numeric literal. This catches the easy-to-miss "I just
+// inlined the number again" review failure that the
 // MIN_DISPLAYABLE_LABEL_CONFIDENCE refactor was meant to prevent.
-test("no UI consumer hardcodes 0.4 next to label_confidence", () => {
+test("no UI consumer hardcodes numeric literals next to label_confidence", () => {
   const dirs = ["app", "components/dashboard"]
   const offenders: Array<{ file: string; line: number; text: string }> = []
-  const literalRegex = /label_confidence[^\n]*?>=\s*0\.4\b/
+  const literalRegexes = [
+    /label_confidence[^\n]*?(?:>=|<=|>|<|===|!==|==|!=)\s*-?\d*\.?\d+\b/,
+    /-?\d*\.?\d+\b[^\n]*?(?:>=|<=|>|<|===|!==|==|!=)[^\n]*?label_confidence/,
+  ]
 
   function walk(dir: string): string[] {
     const out: string[] = []
@@ -149,7 +152,7 @@ test("no UI consumer hardcodes 0.4 next to label_confidence", () => {
       const text = readFileSync(path.join(REPO_ROOT, rel), "utf8")
       const lines = text.split("\n")
       lines.forEach((line, idx) => {
-        if (literalRegex.test(line)) {
+        if (literalRegexes.some((regex) => regex.test(line))) {
           offenders.push({ file: rel, line: idx + 1, text: line.trim() })
         }
       })
@@ -159,7 +162,7 @@ test("no UI consumer hardcodes 0.4 next to label_confidence", () => {
   assert.equal(
     offenders.length,
     0,
-    `Hardcoded label_confidence >= 0.4 literals found:\n${offenders
+    `Hardcoded numeric label_confidence comparisons found:\n${offenders
       .map((o) => `  ${o.file}:${o.line}  ${o.text}`)
       .join("\n")}\n` +
       `Import MIN_DISPLAYABLE_LABEL_CONFIDENCE from @/lib/storage/cluster-label-fallback instead.`,

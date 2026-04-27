@@ -74,7 +74,7 @@ test("composeDeterministicLabel falls back to shortest title when no signals", (
     errorCodes: [null, null],
     titles: ["A long incident title with many words", "Short crash"],
   })
-  assert.equal(result.label, "Cluster · Short crash")
+  assert.equal(result.label, "Issue family · Short crash")
   assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TITLE)
   assert.equal(result.confidence, 0.4)
 })
@@ -87,9 +87,9 @@ test("composeDeterministicLabel truncates very long fallback titles", () => {
     titles: [longTitle],
   })
   assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TITLE)
-  assert.ok(result.label.startsWith("Cluster · "))
+  assert.ok(result.label.startsWith("Issue family · "))
   assert.ok(result.label.endsWith("…"))
-  assert.ok(result.label.length <= "Cluster · ".length + 60)
+  assert.ok(result.label.length <= "Issue family · ".length + 60)
 })
 
 test("composeDeterministicLabel handles empty titles gracefully", () => {
@@ -98,7 +98,7 @@ test("composeDeterministicLabel handles empty titles gracefully", () => {
     errorCodes: [null],
     titles: ["", "   "],
   })
-  assert.equal(result.label, "Cluster · Unnamed cluster")
+  assert.equal(result.label, "Issue family · Unnamed cluster")
   assert.equal(result.model, LABEL_MODEL.DETERMINISTIC_TITLE)
 })
 
