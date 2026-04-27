@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import type { ClusterRollupRow } from "@/hooks/use-dashboard-data"
 import type { PipelineStateSummary } from "@/lib/classification/pipeline-state"
 import { composeWhySurfaced } from "@/lib/classification/why-surfaced"
+import { llmCategoryLabel } from "@/lib/classification/llm-category-display"
 import { SURGE_CHIP_THRESHOLD_PCT } from "@/lib/classification/rollup-constants"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 
@@ -84,6 +85,17 @@ function getFamilyLabel(cluster: ClusterRollupRow) {
     return cluster.label
   }
   return cluster.representative_title || `Cluster #${cluster.id.slice(0, 8)}`
+}
+
+function toFriendlyDisplayTitle(rawLabel: string): string {
+  const llmLabel = llmCategoryLabel(rawLabel)
+  if (llmLabel !== rawLabel) return llmLabel
+  if (!/[\-_]/.test(rawLabel)) return rawLabel
+  return rawLabel
+    .replace(/[\-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase())
 }
 
 function getTopClusters(clusters: ClusterRollupRow[], railTag: "actionability" | "surge" | "review_pressure", score: (cluster: ClusterRollupRow) => number) {
@@ -217,21 +229,23 @@ function ClusterCard({
   const classified = cluster.classified_share ?? (cluster.count > 0 ? cluster.classified_count / cluster.count : 0)
   const reviewed = cluster.human_reviewed_share ?? (cluster.count > 0 ? cluster.reviewed_count / cluster.count : 0)
   const regexCoverage = cluster.fingerprint_hit_rate
+  const resolvedLabel = getFamilyLabel(cluster)
+  const displayTitle = toFriendlyDisplayTitle(resolvedLabel)
 
   return (
     <div className="rounded-md border border-border p-3 space-y-3">
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 space-y-1">
-          <p className="text-sm font-semibold line-clamp-2">{idx + 1}. {getFamilyLabel(cluster)}</p>
+          <p className="text-sm font-semibold line-clamp-2">{idx + 1}. {displayTitle}</p>
           <div className="flex flex-wrap items-center gap-1">
             <OriginChip path={cluster.cluster_path} />
             <StateChips cluster={cluster} />
           </div>
         </div>
         <div className="flex flex-col items-end shrink-0 text-right">
-          <span className="text-lg font-bold tabular-nums leading-none">{metric.value}</span>
-          <span className="text-[10px] text-muted-foreground leading-tight">{metric.caption}</span>
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground leading-tight">{metric.caption}</span>
+          <span className="text-sm font-medium text-foreground/90 leading-none">{metric.value}</span>
         </div>
       </div>
 
@@ -251,7 +265,7 @@ function ClusterCard({
         const text = composed ?? cluster.why_surfaced
         if (!text) return null
         return (
-          <p className="flex items-start gap-1 text-xs text-muted-foreground">
+          <p className="flex items-start gap-1 text-xs text-muted-foreground line-clamp-1">
             <Sparkles className="size-3 mt-0.5 shrink-0" />
             {text}
           </p>
