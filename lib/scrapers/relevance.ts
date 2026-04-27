@@ -7,6 +7,8 @@ export type RelevanceDecision = {
 const SCOPED_INCLUDE_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bopenai\s+codex\b/i, reason: "matched:openai codex" },
   { pattern: /\bchatgpt\s+codex\b/i, reason: "matched:chatgpt codex" },
+  { pattern: /\bcodex\s+agent\b/i, reason: "matched:codex agent" },
+  { pattern: /\bcodex\s+vscode\b|\bvscode\s+codex\b/i, reason: "matched:codex vscode" },
   { pattern: /\bcodex\s+cli\b/i, reason: "matched:codex cli" },
   { pattern: /\bopenai\/codex\b/i, reason: "matched:openai/codex repo alias" },
   {
@@ -66,20 +68,29 @@ export function evaluateCodexRelevance(text: string): RelevanceDecision {
   return { passed: false, relevanceReason: null, decision: "no-match" }
 }
 
-// Canonical scope list. Everything below is derived from this — Reddit's
-// OR-of-quoted-phrases, Hacker News's required+optional split — so the
-// two providers can't drift.
+// Canonical scope list used by Hacker News's required+optional query split.
+// Reddit no longer derives from this list (see REDDIT_SCOPED_QUERY_TERMS
+// below) because Reddit's per-subreddit topical filter + the strict
+// evaluator above lets us trade upstream precision for recall.
 export const CODEX_CORE_PHRASES: readonly string[] = [
   "openai codex",
   "chatgpt codex",
+  "codex agent",
+  "codex vscode",
   "codex cli",
   "openai/codex",
   "codex terminal",
 ]
 
-export const REDDIT_SCOPED_QUERY_TERMS = CODEX_CORE_PHRASES.map((p) => `"${p}"`)
+// Reddit query: a single broad term. The subreddits in
+// lib/scrapers/providers/reddit.ts already provide topical scoping
+// (r/OpenaiCodex, r/OpenAI, r/ChatGPTCoding) and evaluateCodexRelevance
+// above is the precision filter. Adding scoped phrases here would be
+// redundant within the limit=25 OR-clause budget — every post matching
+// "openai codex" already matches "codex".
+export const REDDIT_SCOPED_QUERY_TERMS: readonly string[] = ["codex"]
 
 export const HACKERNEWS_QUERY_PARAMS = {
-  query: CODEX_CORE_PHRASES[0],
-  optional: CODEX_CORE_PHRASES.slice(1),
+  query: "openai codex",
+  optional: CODEX_CORE_PHRASES.filter((phrase) => phrase !== "openai codex"),
 }
