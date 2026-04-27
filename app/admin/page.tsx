@@ -49,7 +49,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { LabelBackfillRunbookPanel } from "@/components/admin/label-backfill-runbook"
+import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
   CheckResult,
@@ -337,7 +337,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <SchemaVerificationPanel secret={secret} />
           </TabsContent>
           <TabsContent value="cluster-labels">
-            <LabelBackfillRunbookPanel />
+            <ClusterLabelBackfillPanel secret={secret} />
           </TabsContent>
         </Tabs>
       </main>
