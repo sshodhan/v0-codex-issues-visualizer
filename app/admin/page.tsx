@@ -49,6 +49,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { LabelBackfillRunbookPanel } from "@/components/admin/label-backfill-runbook"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
   CheckResult,
@@ -240,7 +241,7 @@ interface ProcessingEventItem {
   created_at: string
 }
 
-const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema"] as const
+const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema", "cluster-labels"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
 // `useSearchParams()` bails out of static prerender in Next.js 15 and
@@ -318,6 +319,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="clustering">Clustering</TabsTrigger>
             <TabsTrigger value="trace">Observation trace</TabsTrigger>
             <TabsTrigger value="schema">Schema verification</TabsTrigger>
+            <TabsTrigger value="cluster-labels">Cluster-label backfill</TabsTrigger>
           </TabsList>
           <TabsContent value="backfill">
             <BackfillPanel secret={secret} />
@@ -333,6 +335,9 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           </TabsContent>
           <TabsContent value="schema">
             <SchemaVerificationPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="cluster-labels">
+            <LabelBackfillRunbookPanel />
           </TabsContent>
         </Tabs>
       </main>
