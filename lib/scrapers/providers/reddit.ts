@@ -29,7 +29,7 @@ export async function scrapeReddit(
   categories: Category[]
 ): Promise<Partial<Issue>[]> {
   const issues: Partial<Issue>[] = []
-  const query = encodeURIComponent(`(${REDDIT_SCOPED_QUERY_TERMS.join(" OR ")})`)
+  const query = encodeURIComponent(REDDIT_SCOPED_QUERY_TERMS.join(" OR "))
 
   for (const subreddit of SUBREDDITS) {
     try {

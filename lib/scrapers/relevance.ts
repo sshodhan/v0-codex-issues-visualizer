@@ -7,6 +7,9 @@ export type RelevanceDecision = {
 const SCOPED_INCLUDE_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bopenai\s+codex\b/i, reason: "matched:openai codex" },
   { pattern: /\bchatgpt\s+codex\b/i, reason: "matched:chatgpt codex" },
+  { pattern: /\bcodex\s+agent\b/i, reason: "matched:codex agent" },
+  { pattern: /\bopenai\s+agent\b/i, reason: "matched:openai agent" },
+  { pattern: /\bcodex\s+vscode\b|\bvscode\s+codex\b/i, reason: "matched:codex vscode" },
   { pattern: /\bcodex\s+cli\b/i, reason: "matched:codex cli" },
   { pattern: /\bopenai\/codex\b/i, reason: "matched:openai/codex repo alias" },
   {
@@ -70,14 +73,29 @@ export function evaluateCodexRelevance(text: string): RelevanceDecision {
 // OR-of-quoted-phrases, Hacker News's required+optional split — so the
 // two providers can't drift.
 export const CODEX_CORE_PHRASES: readonly string[] = [
+  "codex",
   "openai codex",
   "chatgpt codex",
+  "codex agent",
+  "openai agent",
+  "codex vscode",
   "codex cli",
   "openai/codex",
   "codex terminal",
 ]
 
-export const REDDIT_SCOPED_QUERY_TERMS = CODEX_CORE_PHRASES.map((p) => `"${p}"`)
+export const REDDIT_SCOPED_QUERY_TERMS: readonly string[] = [
+  "codex",
+  "openai",
+  "openai codex",
+  "chatgpt codex",
+  "codex agent",
+  "openai agent",
+  "codex vscode",
+  "codex cli",
+  "openai/codex",
+  "codex terminal",
+]
 
 export const HACKERNEWS_QUERY_PARAMS = {
   query: CODEX_CORE_PHRASES[0],
