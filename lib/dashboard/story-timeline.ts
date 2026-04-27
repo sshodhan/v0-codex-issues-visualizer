@@ -9,9 +9,12 @@ export interface StoryTimelinePoint {
   /** 0..1 vertical position in range (top = start of window) */
   tNorm: number
   categoryName: string
+  categorySlug: string
   categoryColor: string
   sourceSlug: string
   errorCode: string | null
+  /** Layer-A cluster id (when joined) — used for cross-filter highlight */
+  clusterId: string | null
   /** 0..1 radius scale for drawing */
   rScale: number
 }
@@ -50,9 +53,11 @@ export function buildStoryTimeline(issues: Issue[]): StoryTimelinePoint[] {
       impact,
       tNorm,
       categoryName: i.category?.name ?? "Uncategorized",
+      categorySlug: i.category?.slug ?? "uncategorized",
       categoryColor: i.category?.color ?? "#6b7280",
       sourceSlug: i.source?.slug ?? "unknown",
       errorCode: i.error_code ?? null,
+      clusterId: i.cluster_id ?? null,
       rScale,
     }
   })

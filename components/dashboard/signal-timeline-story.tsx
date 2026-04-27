@@ -102,12 +102,35 @@ function buildWeekendBands(startMs: number, endMs: number): Array<{ f0: number; 
   return out
 }
 
+/**
+ * What to visually emphasize. Non-matching dots are drawn at low opacity so the
+ * reader's eye locks onto the active selection while keeping spatial context.
+ */
+export type TimelineHighlight =
+  | { kind: "heuristic"; slug: string }
+  | { kind: "cluster"; clusterId: string }
+  | { kind: "issue"; issueId: string }
+  | null
+
+function isMatch(p: StoryTimelinePoint, h: TimelineHighlight): boolean {
+  if (!h) return true
+  if (h.kind === "heuristic") return p.categorySlug === h.slug
+  if (h.kind === "cluster") return p.clusterId === h.clusterId
+  if (h.kind === "issue") return p.id === h.issueId
+  return true
+}
+
 export function SignalTimelineStory({
   points,
   timeLabel,
+  highlight = null,
+  onSelectIssue,
 }: {
   points: StoryTimelinePoint[]
   timeLabel: string
+  highlight?: TimelineHighlight
+  /** When provided, dots become buttons instead of external links. */
+  onSelectIssue?: (issueId: string) => void
 }) {
   const placed = useMemo(() => placePoints(points), [points])
   const extent = useMemo(() => {
@@ -235,41 +258,76 @@ export function SignalTimelineStory({
           {/* Halos for high-impact points (rendered behind the dots) */}
           {placed
             .filter((p) => p.impact >= 7)
-            .map((p) => (
-              <circle
-                key={`halo-${p.id}`}
-                cx={p.cx}
-                cy={p.cy}
-                r={p.r + 4}
-                fill="none"
-                stroke={p.categoryColor}
-                strokeOpacity={0.25}
-                strokeWidth={2}
-              />
-            ))}
+            .map((p) => {
+              const dim = highlight && !isMatch(p, highlight)
+              return (
+                <circle
+                  key={`halo-${p.id}`}
+                  cx={p.cx}
+                  cy={p.cy}
+                  r={p.r + 4}
+                  fill="none"
+                  stroke={p.categoryColor}
+                  strokeOpacity={dim ? 0.06 : 0.25}
+                  strokeWidth={2}
+                  style={{ transition: "stroke-opacity 200ms ease" }}
+                />
+              )
+            })}
 
           {/* Dots */}
-          {placed.map((p) => (
-            <a key={p.id} href={p.url} target="_blank" rel="noreferrer">
+          {placed.map((p) => {
+            const dim = highlight && !isMatch(p, highlight)
+            const fillOpacity = dim ? 0.14 : 0.85
+            const titleEl = (
+              <title>
+                {p.title}
+                {`\n`}
+                {format(parseISO(p.publishedAt), "MMM d, yyyy")} · Impact {p.impact.toFixed(1)} ·{" "}
+                {p.sourceSlug}
+                {p.errorCode ? `\nError: ${p.errorCode}` : ""}
+              </title>
+            )
+            const circle = (
               <circle
                 cx={p.cx}
                 cy={p.cy}
                 r={p.r}
                 fill={p.categoryColor}
-                fillOpacity={0.85}
+                fillOpacity={fillOpacity}
                 stroke="hsl(var(--background))"
                 strokeWidth={1.2}
+                style={{ transition: "fill-opacity 200ms ease" }}
               >
-                <title>
-                  {p.title}
-                  {`\n`}
-                  {format(parseISO(p.publishedAt), "MMM d, yyyy")} · Impact {p.impact.toFixed(1)} ·{" "}
-                  {p.sourceSlug}
-                  {p.errorCode ? `\nError: ${p.errorCode}` : ""}
-                </title>
+                {titleEl}
               </circle>
-            </a>
-          ))}
+            )
+            if (onSelectIssue) {
+              return (
+                <g
+                  key={p.id}
+                  className="cursor-pointer outline-none"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${p.title} — open detail`}
+                  onClick={() => onSelectIssue(p.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault()
+                      onSelectIssue(p.id)
+                    }
+                  }}
+                >
+                  {circle}
+                </g>
+              )
+            }
+            return (
+              <a key={p.id} href={p.url} target="_blank" rel="noreferrer">
+                {circle}
+              </a>
+            )
+          })}
         </svg>
 
         <figcaption className="mt-3 space-y-2 text-xs text-muted-foreground max-w-2xl mx-auto">
