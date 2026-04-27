@@ -276,11 +276,10 @@ function DashboardContentInner() {
   }
 
   const handleHeroExploreIssues = (categorySlug: string) => {
-    setActiveTab("v3")
     setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => {
-        document.getElementById("issues-table-anchor")?.scrollIntoView({
+        document.getElementById("dashboard-issues-table-anchor")?.scrollIntoView({
           behavior: "smooth",
           block: "start",
         })
