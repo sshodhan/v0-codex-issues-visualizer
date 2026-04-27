@@ -873,6 +873,7 @@ const handleHeroLlmCategoryDrill = (
   activeClusterId={clusterIdFromUrl ?? undefined}
   activeClusterLabel={activeClusterLabel ?? undefined}
   activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
+  onClearGlobalCategory={() => setGlobalCategory("all")}
   />
 </div>
 </TabsContent>
@@ -930,6 +931,7 @@ const handleHeroLlmCategoryDrill = (
                   activeCompoundKey={compoundKeyFromUrl}
                   activeClusterId={clusterIdFromUrl ?? undefined}
                   activeClusterLabel={activeClusterLabel ?? undefined}
+                  onClearGlobalCategory={() => setGlobalCategory("all")}
                 />
               </div>
             </TabsContent>

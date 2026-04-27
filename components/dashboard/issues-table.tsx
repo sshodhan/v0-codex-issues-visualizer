@@ -49,6 +49,8 @@ interface IssuesTableProps {
   activeClusterLabel?: string
   /** LLM category drill-down (12-value enum: bug, feature-request, etc.) */
   activeLlmCategory?: string
+  /** Callback to clear the global category (heuristic topic) filter */
+  onClearGlobalCategory?: () => void
 }
 
 // Issues table with filters and clickable links
@@ -64,6 +66,7 @@ export function IssuesTable({
   activeClusterId,
   activeClusterLabel,
   activeLlmCategory,
+  onClearGlobalCategory,
 }: IssuesTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState("impact_score")
@@ -267,13 +270,26 @@ export function IssuesTable({
             {/*
               `globalCategoryLabel` is the heuristic topic label (Bug,
               Feature Request, …). The label noun is "Topic" per
-              docs/ARCHITECTURE.md §6.0. This is informational only —
-              the topic filter is set/cleared via the GlobalFilterBar
-              slider above. The cluster drill-down has its own
-              dedicated chip below (rendered when `activeClusterId`
-              is set).
+              docs/ARCHITECTURE.md §6.0. When a specific topic is selected
+              (not "All topics"), show a clearable chip so users can
+              reset to the full list without scrolling back up.
             */}
-            <Badge variant="secondary">Topic: {globalCategoryLabel}</Badge>
+            {globalCategoryLabel && globalCategoryLabel !== "All topics" && onClearGlobalCategory ? (
+              <button
+                type="button"
+                onClick={onClearGlobalCategory}
+                className="inline-flex items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Clear topic filter: ${globalCategoryLabel}`}
+                title="Clear topic filter"
+              >
+                <Badge variant="outline" className="border-primary/60 text-foreground">
+                  Topic: {globalCategoryLabel}
+                  <span className="ml-1" aria-hidden>×</span>
+                </Badge>
+              </button>
+            ) : (
+              <Badge variant="secondary">Topic: {globalCategoryLabel}</Badge>
+            )}
             {activeCompoundKey && (
               <button
                 type="button"
