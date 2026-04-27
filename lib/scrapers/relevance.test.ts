@@ -1,7 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { CODEX_CORE_PHRASES, evaluateCodexRelevance } from "./relevance.ts"
+import {
+  CODEX_CORE_PHRASES,
+  REDDIT_SCOPED_QUERY_TERMS,
+  evaluateCodexRelevance,
+} from "./relevance.ts"
 
 test("true positives: scoped codex matches pass with a matched: decision", () => {
   const samples = [
@@ -9,7 +13,6 @@ test("true positives: scoped codex matches pass with a matched: decision", () =>
     "Anyone using ChatGPT Codex for TypeScript refactors?",
     "Issue with openai/codex install script",
     "Codex agent keeps selecting the wrong file to edit",
-    "OpenAI agent paired with Codex fixed my repo migration",
     "Codex VSCode extension sign-in loop",
   ]
 
@@ -50,7 +53,8 @@ test("query seed list includes broad codex terms for upstream recall", () => {
   assert.ok(CODEX_CORE_PHRASES.includes("codex"))
   assert.ok(CODEX_CORE_PHRASES.includes("codex agent"))
   assert.ok(CODEX_CORE_PHRASES.includes("codex vscode"))
-  assert.ok(CODEX_CORE_PHRASES.includes("openai agent"))
+  assert.ok(!REDDIT_SCOPED_QUERY_TERMS.includes("openai"))
+  assert.ok(!REDDIT_SCOPED_QUERY_TERMS.includes("openai agent"))
 })
 
 test("mixed signal: a scoped include beats a co-mentioned Copilot exclusion", () => {

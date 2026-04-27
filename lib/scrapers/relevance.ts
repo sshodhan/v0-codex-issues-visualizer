@@ -8,7 +8,6 @@ const SCOPED_INCLUDE_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bopenai\s+codex\b/i, reason: "matched:openai codex" },
   { pattern: /\bchatgpt\s+codex\b/i, reason: "matched:chatgpt codex" },
   { pattern: /\bcodex\s+agent\b/i, reason: "matched:codex agent" },
-  { pattern: /\bopenai\s+agent\b/i, reason: "matched:openai agent" },
   { pattern: /\bcodex\s+vscode\b|\bvscode\s+codex\b/i, reason: "matched:codex vscode" },
   { pattern: /\bcodex\s+cli\b/i, reason: "matched:codex cli" },
   { pattern: /\bopenai\/codex\b/i, reason: "matched:openai/codex repo alias" },
@@ -77,7 +76,6 @@ export const CODEX_CORE_PHRASES: readonly string[] = [
   "openai codex",
   "chatgpt codex",
   "codex agent",
-  "openai agent",
   "codex vscode",
   "codex cli",
   "openai/codex",
@@ -86,11 +84,9 @@ export const CODEX_CORE_PHRASES: readonly string[] = [
 
 export const REDDIT_SCOPED_QUERY_TERMS: readonly string[] = [
   "codex",
-  "openai",
   "openai codex",
   "chatgpt codex",
   "codex agent",
-  "openai agent",
   "codex vscode",
   "codex cli",
   "openai/codex",
@@ -98,6 +94,6 @@ export const REDDIT_SCOPED_QUERY_TERMS: readonly string[] = [
 ]
 
 export const HACKERNEWS_QUERY_PARAMS = {
-  query: CODEX_CORE_PHRASES[0],
-  optional: CODEX_CORE_PHRASES.slice(1),
+  query: "openai codex",
+  optional: CODEX_CORE_PHRASES.filter((phrase) => phrase !== "openai codex"),
 }
