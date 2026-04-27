@@ -10,6 +10,7 @@ import type { PipelineStateSummary } from "@/lib/classification/pipeline-state"
 import { composeWhySurfaced } from "@/lib/classification/why-surfaced"
 import { llmCategoryLabel } from "@/lib/classification/llm-category-display"
 import { SURGE_CHIP_THRESHOLD_PCT } from "@/lib/classification/rollup-constants"
+import { deriveClusterSignalState } from "@/lib/classification/cluster-signal-state"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import { ClusterTrustSummary } from "@/components/dashboard/cluster-trust-summary"
 
@@ -213,6 +214,16 @@ function ClusterCard({
 }) {
   const resolvedLabel = getFamilyLabel(cluster)
   const displayTitle = toFriendlyDisplayTitle(resolvedLabel)
+  const state = deriveClusterSignalState({
+    count: cluster.count,
+    source_count: cluster.source_count,
+    regex_variants: cluster.regex_variants,
+    surge_delta_pct: cluster.surge_delta_pct,
+    fingerprint_hit_rate: cluster.fingerprint_hit_rate,
+    cluster_path: cluster.cluster_path,
+    classified_share: cluster.classified_share,
+    human_reviewed_share: cluster.human_reviewed_share,
+  })
 
   return (
     <div className="rounded-md border border-border p-3 space-y-3">
@@ -222,6 +233,7 @@ function ClusterCard({
           <p className="text-sm font-semibold line-clamp-2">{idx + 1}. {displayTitle}</p>
           <div className="flex flex-wrap items-center gap-1">
             <OriginChip path={cluster.cluster_path} />
+            <Badge variant="outline" className={state.badgeClassName}>{state.badgeLabel}</Badge>
             <StateChips cluster={cluster} />
           </div>
         </div>
@@ -236,6 +248,15 @@ function ClusterCard({
           string when no clause passes its gating threshold, so we never
           regress on what the card shows. */}
       {(() => {
+        if (state.suppressConfidentNarrative) {
+          return (
+            <p className="flex items-start gap-1 text-xs text-muted-foreground">
+              <Sparkles className="size-3 mt-0.5 shrink-0" />
+              {state.explanation}
+            </p>
+          )
+        }
+
         const composed = composeWhySurfaced({
           avg_impact: cluster.avg_impact,
           dominant_severity: cluster.dominant_severity,
@@ -244,10 +265,10 @@ function ClusterCard({
           surge_window_hours: cluster.surge_window_hours,
           review_pressure_input: cluster.rail_scoring?.review_pressure_input,
         })
-        const text = composed ?? cluster.why_surfaced
+        const text = composed ?? cluster.why_surfaced ?? state.explanation
         if (!text) return null
         return (
-          <p className="flex items-start gap-1 text-xs text-muted-foreground line-clamp-1">
+          <p className="flex items-start gap-1 text-xs text-muted-foreground">
             <Sparkles className="size-3 mt-0.5 shrink-0" />
             {text}
           </p>
@@ -277,7 +298,12 @@ function ClusterCard({
 
       {/* Actions */}
       <div className="flex flex-wrap gap-1.5">
-        <Button asChild size="sm" variant="outline">
+        <Button asChild size="sm" variant={state.ctaHref === "family" ? "default" : "outline"}>
+          <Link href={state.ctaHref === "family" ? `/families/${cluster.id}?days=${days}` : `/?tab=classifications&cluster=${cluster.id}&ux=v3`}>
+            {state.ctaLabel}
+          </Link>
+        </Button>
+        <Button asChild size="sm" variant="ghost">
           <Link href={`/families/${cluster.id}?days=${days}`}>Open family</Link>
         </Button>
         <Button asChild size="sm" variant="ghost">
