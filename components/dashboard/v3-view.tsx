@@ -116,9 +116,25 @@ function TrustBar({ label, value }: { label: string; value: number }) {
 
 function OriginChip({ path }: { path: "semantic" | "fallback" }) {
   if (path === "semantic") {
-    return <Badge variant="outline" className="border-teal-500/40 text-teal-600 text-[10px] font-medium px-1.5 py-0">SEMANTIC</Badge>
+    return (
+      <Badge
+        variant="outline"
+        title="semantic"
+        className="border-teal-500/40 text-teal-600 text-[10px] font-medium px-1.5 py-0"
+      >
+        Grouped by meaning
+      </Badge>
+    )
   }
-  return <Badge variant="outline" className="text-[10px] font-medium px-1.5 py-0 text-muted-foreground">TITLE FALLBACK</Badge>
+  return (
+    <Badge
+      variant="outline"
+      title="fallback"
+      className="text-[10px] font-medium px-1.5 py-0 text-muted-foreground"
+    >
+      Grouped by title
+    </Badge>
+  )
 }
 
 function StateChips({ cluster }: { cluster: ClusterRollupRow }) {
