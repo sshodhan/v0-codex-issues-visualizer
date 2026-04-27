@@ -21,6 +21,21 @@ top-20-by-impact eye test):
   `support for`/`when will`) and the Other-fallback threshold lowered from 2
   to 1 so a single phrase hit wins.
 
+**What changed in v3** (`scripts/023_add_model_quality_category.sql`, driven by
+the eye-test row "Make gpt-5.5 not get distracted by excessive Frontend
+guidance in system prompt" mis-bucketing into Pricing):
+
+- **category v3** — adds a `model-quality` slot disjoint from `bug` for posts
+  about model behavior (hallucinations, instruction-following, system-prompt
+  distractions, output quality). Patterns include `hallucinat*`,
+  `model quality`, `instruction following`, `ignores instructions`,
+  `output quality`, `wrong answer`, `system prompt`, `distracted`,
+  `off-topic`, `context window`. Also tightens Pricing: drops bare `plan`
+  (weight 1, wholeWord) which kept dragging non-pricing posts in on a
+  single match, and adds multi-word tier phrases (`free plan`, `pro plan`,
+  `team plan`, `paid plan`, `enterprise plan`, `monthly fee`, `per token`,
+  `per month`) so paid-tier discussion still classifies cleanly.
+
 v1 derivation rows remain in `sentiment_scores` / `category_assignments` /
 `impact_scores` for replay comparison; the MV picks the newest per-observation
 row via `distinct on (observation_id) order by computed_at desc`.

@@ -205,8 +205,36 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "cost", weight: 2, wholeWord: true },
     { phrase: "expensive", weight: 3, wholeWord: true },
     { phrase: "subscription", weight: 2, wholeWord: true },
-    { phrase: "plan", weight: 1, wholeWord: true },
     { phrase: "billing", weight: 2, wholeWord: true },
+    // `plan` alone (v2) was too noisy: it matched "I plan to", "system
+    // plan", "execution plan" — pulling model-quality / planning posts
+    // into Pricing on a single weight-1 hit. Replaced with multi-word
+    // tier phrases that are unambiguously about paid plans.
+    { phrase: "free plan", weight: 3 },
+    { phrase: "pro plan", weight: 3 },
+    { phrase: "team plan", weight: 3 },
+    { phrase: "paid plan", weight: 3 },
+    { phrase: "enterprise plan", weight: 3 },
+    { phrase: "monthly fee", weight: 3 },
+    { phrase: "per token", weight: 2 },
+    { phrase: "per month", weight: 2 },
+  ],
+  "model-quality": [
+    { phrase: "hallucination", weight: 3, wholeWord: true },
+    { phrase: "hallucinated", weight: 3, wholeWord: true },
+    { phrase: "hallucinates", weight: 3, wholeWord: true },
+    { phrase: "hallucinate", weight: 3, wholeWord: true },
+    { phrase: "model quality", weight: 4 },
+    { phrase: "instruction following", weight: 4 },
+    { phrase: "ignores instructions", weight: 4 },
+    { phrase: "output quality", weight: 4 },
+    { phrase: "wrong answer", weight: 3 },
+    { phrase: "incorrect output", weight: 3 },
+    { phrase: "system prompt", weight: 2 },
+    { phrase: "distracted", weight: 2, wholeWord: true },
+    { phrase: "off-topic", weight: 2 },
+    { phrase: "off topic", weight: 2 },
+    { phrase: "context window", weight: 2 },
   ],
   security: [
     { phrase: "security", weight: 3, wholeWord: true },
