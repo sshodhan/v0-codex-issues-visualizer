@@ -14,9 +14,11 @@ function mkPoint(overrides: Partial<StoryTimelinePoint>): StoryTimelinePoint {
     impact: overrides.impact ?? 1,
     tNorm: overrides.tNorm ?? 0.5,
     categoryName: overrides.categoryName ?? "Bug",
+    categorySlug: overrides.categorySlug ?? "bug",
     categoryColor: overrides.categoryColor ?? "#ef4444",
     sourceSlug: overrides.sourceSlug ?? "github",
     errorCode: overrides.errorCode ?? null,
+    clusterId: overrides.clusterId ?? null,
     rScale: overrides.rScale ?? 0.5,
   }
 }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import {
   groupCategoriesByCount,
   type StoryTimelinePoint,
@@ -120,18 +120,38 @@ function isMatch(p: StoryTimelinePoint, h: TimelineHighlight): boolean {
   return true
 }
 
+/**
+ * Optional editorial annotation. When supplied, the timeline renders a hairline
+ * + serif italic label at the peak day's y-coordinate. Computed by computeStoryLede.
+ */
+export interface TimelineAnnotation {
+  /** 0..1 fraction within the time extent (1 = newest = top). */
+  peakDayFrac: number
+  /** Editorial label to render alongside the band. */
+  peakLabel: string
+}
+
 export function SignalTimelineStory({
   points,
   timeLabel,
   highlight = null,
+  annotation = null,
   onSelectIssue,
 }: {
   points: StoryTimelinePoint[]
   timeLabel: string
+  /** External highlight (e.g. driven by an open drawer). Composes with the chart-internal legend filter. */
   highlight?: TimelineHighlight
+  /** Editorial annotation (peak-day band + label). Computed by the lede helper. */
+  annotation?: TimelineAnnotation | null
   /** When provided, dots become buttons instead of external links. */
   onSelectIssue?: (issueId: string) => void
 }) {
+  // Local legend filter — clicking a chip in the figcaption dims non-matching dots.
+  // Composes with the external `highlight` prop: a dot is dimmed when EITHER the
+  // external highlight is active and this dot doesn't match, OR the local legend
+  // filter is set and this dot's category doesn't match.
+  const [legendFilter, setLegendFilter] = useState<string | null>(null)
   const placed = useMemo(() => placePoints(points), [points])
   const extent = useMemo(() => {
     if (points.length === 0) return null
@@ -255,11 +275,54 @@ export function SignalTimelineStory({
             Older ↓
           </text>
 
+          {/* Peak-day annotation: hairline band + label. Drawn behind dots so they
+              stay readable on top. */}
+          {annotation && (() => {
+            const peakY = yForFrac(annotation.peakDayFrac)
+            return (
+              <g aria-hidden>
+                <rect
+                  x={PAD_L}
+                  y={peakY - 11}
+                  width={INNER_W}
+                  height={22}
+                  fill="hsl(var(--primary))"
+                  fillOpacity={0.05}
+                />
+                <line
+                  x1={PAD_L}
+                  y1={peakY}
+                  x2={W - PAD_R}
+                  y2={peakY}
+                  stroke="hsl(var(--primary))"
+                  strokeOpacity={0.5}
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                />
+                <text
+                  x={W - PAD_R - 6}
+                  y={peakY - 4}
+                  textAnchor="end"
+                  className="fill-foreground"
+                  style={{
+                    fontSize: 11,
+                    fontStyle: "italic",
+                    fontFamily: "var(--font-serif, serif)",
+                  }}
+                >
+                  ↳ {annotation.peakLabel}
+                </text>
+              </g>
+            )
+          })()}
+
           {/* Halos for high-impact points (rendered behind the dots) */}
           {placed
             .filter((p) => p.impact >= 7)
             .map((p) => {
-              const dim = highlight && !isMatch(p, highlight)
+              const dimByHighlight = !!highlight && !isMatch(p, highlight)
+              const dimByLegend = legendFilter !== null && p.categoryName !== legendFilter
+              const dim = dimByHighlight || dimByLegend
               return (
                 <circle
                   key={`halo-${p.id}`}
@@ -277,7 +340,9 @@ export function SignalTimelineStory({
 
           {/* Dots */}
           {placed.map((p) => {
-            const dim = highlight && !isMatch(p, highlight)
+            const dimByHighlight = !!highlight && !isMatch(p, highlight)
+            const dimByLegend = legendFilter !== null && p.categoryName !== legendFilter
+            const dim = dimByHighlight || dimByLegend
             const fillOpacity = dim ? 0.14 : 0.85
             const titleEl = (
               <title>
@@ -336,20 +401,55 @@ export function SignalTimelineStory({
             high-impact dots (≥7) carry a halo
             {highImpactCount > 0 ? ` — ${highImpactCount} in this window` : ""}. Color = heuristic
             category. Weekend days are shaded faintly.
+            {legendFilter !== null && (
+              <>
+                {" "}
+                Showing <span className="font-medium text-foreground">{legendFilter}</span> only.
+              </>
+            )}
           </p>
           {legend.length > 0 && (
-            <ul className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-              {legend.map((c) => (
-                <li key={c.name} className="inline-flex items-center gap-1.5">
-                  <span
-                    aria-hidden
-                    className="inline-block h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: c.color }}
-                  />
-                  <span className="text-foreground/80">{c.name}</span>
-                  <span className="tabular-nums text-muted-foreground">{c.count}</span>
+            <ul className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5">
+              {legend.map((c) => {
+                const isActive = legendFilter === c.name
+                return (
+                  <li key={c.name}>
+                    <button
+                      type="button"
+                      aria-pressed={isActive}
+                      aria-label={`${c.name}: ${c.count} reports${isActive ? " (filtered)" : ""}`}
+                      onClick={() =>
+                        setLegendFilter((cur) => (cur === c.name ? null : c.name))
+                      }
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        isActive
+                          ? "border-foreground/40 bg-muted/60 text-foreground"
+                          : "border-transparent hover:border-border hover:bg-muted/30"
+                      }`}
+                    >
+                      <span
+                        aria-hidden
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: c.color }}
+                      />
+                      <span className="text-foreground/80">{c.name}</span>
+                      <span className="tabular-nums text-muted-foreground">{c.count}</span>
+                    </button>
+                  </li>
+                )
+              })}
+              {legendFilter !== null && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setLegendFilter(null)}
+                    className="inline-flex items-center rounded-full px-2 py-0.5 text-muted-foreground hover:text-foreground"
+                    aria-label="Clear category filter"
+                  >
+                    Clear ×
+                  </button>
                 </li>
-              ))}
+              )}
             </ul>
           )}
         </figcaption>

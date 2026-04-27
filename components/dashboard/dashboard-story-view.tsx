@@ -1,14 +1,17 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import { format } from "date-fns"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   SignalTimelineStory,
+  type TimelineAnnotation,
   type TimelineHighlight,
 } from "@/components/dashboard/signal-timeline-story"
 import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
+import { computeStoryLede } from "@/lib/dashboard/story-lede"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import {
@@ -189,13 +192,13 @@ export function DashboardStoryView({
   const [drawerTarget, setDrawerTarget] = useState<StoryDrawerTarget>(null)
   useDrawerHash(drawerTarget, setDrawerTarget)
 
-  // Time extent of the loaded sample, used for the drawer sparklines.
+  // Time extent of the loaded sample. One computation that feeds both the
+  // drawer sparklines and the editorial lede.
   const windowMs = useMemo(() => {
     let min = Infinity
     let max = -Infinity
-    for (const i of issues) {
-      if (!i.published_at) continue
-      const t = new Date(i.published_at).getTime()
+    for (const p of points) {
+      const t = new Date(p.publishedAt).getTime()
       if (Number.isNaN(t)) continue
       if (t < min) min = t
       if (t > max) max = t
@@ -205,9 +208,9 @@ export function DashboardStoryView({
       return { startMs: now - timeDays * 86_400_000, endMs: now }
     }
     return { startMs: min, endMs: max }
-  }, [issues, timeDays])
+  }, [points, timeDays])
 
-  // Translate drawer state → timeline highlight.
+  // Translate drawer state → timeline highlight (drives cross-filter dim).
   const timelineHighlight = useMemo<TimelineHighlight>(() => {
     if (!drawerTarget) return null
     if (drawerTarget.kind === "heuristic")
@@ -218,6 +221,25 @@ export function DashboardStoryView({
       return { kind: "issue", issueId: drawerTarget.issueId }
     return null
   }, [drawerTarget])
+
+  // Editorial lede: pick the most newsworthy framing of the window (peak day /
+  // surge / quiet / empty) and produce a one-or-two-sentence headline. The
+  // peak-day fraction drives the chart annotation band.
+  const lede = useMemo(() => computeStoryLede(points, windowMs), [points, windowMs])
+
+  const timelineAnnotation = useMemo<TimelineAnnotation | null>(() => {
+    if (!lede.peakDayMs || lede.peakDayFrac == null || !lede.peakCount) return null
+    // Don't annotate when the "peak" carries no real information
+    // (e.g. a single quiet day with one report).
+    if (lede.kind === "empty") return null
+    if (lede.kind === "quiet" && lede.peakCount < 2) return null
+    return {
+      peakDayFrac: lede.peakDayFrac,
+      peakLabel: `${format(new Date(lede.peakDayMs), "MMM d")} — ${lede.peakCount} ${
+        lede.peakCount === 1 ? "report" : "reports"
+      }`,
+    }
+  }, [lede])
 
   return (
     <div className="max-w-3xl mx-auto space-y-16 pb-24">
@@ -277,11 +299,12 @@ export function DashboardStoryView({
           <BookOpen className="h-5 w-5" />
           <h3 className="text-2xl font-serif font-semibold">The lede</h3>
         </div>
-        <p className="text-xl sm:text-2xl font-serif leading-relaxed text-foreground">
-          {heroCategoryName
-            ? `The loudest theme in the last 72 hours is ${heroCategoryName}. ${heroUrgencyLine ?? ""}`
-            : "No single category is dominating the short window — scan the cloud below for where volume piles up."}
+        <p className="text-xl sm:text-2xl font-serif leading-relaxed text-foreground text-balance">
+          {lede.headline}
         </p>
+        {lede.subhead && (
+          <p className="text-base text-muted-foreground leading-relaxed">{lede.subhead}</p>
+        )}
       </section>
 
       <section className="space-y-6">
@@ -296,6 +319,7 @@ export function DashboardStoryView({
               points={points}
               timeLabel={globalTimeLabel}
               highlight={timelineHighlight}
+              annotation={timelineAnnotation}
               onSelectIssue={(id) => setDrawerTarget({ kind: "issue", issueId: id })}
             />
           </CardContent>
