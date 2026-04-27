@@ -97,7 +97,7 @@ export interface PipelineFreshnessInputs {
   freshnessSlaMinutes?: number
 }
 
-const DEFAULT_FRESHNESS_SLA_MINUTES = 120
+const DEFAULT_FRESHNESS_SLA_MINUTES = 1440
 
 export function derivePipelineFreshness(
   inputs: PipelineFreshnessInputs,
