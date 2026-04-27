@@ -127,12 +127,34 @@ export function normalizeError(error: unknown): {
   if (typeof error === "object" && error !== null) {
     const obj = error as Record<string, unknown>
     const messageField = typeof obj.message === "string" ? obj.message : null
-    let message = messageField
+    let message = messageField && messageField.length > 0 ? messageField : null
     if (!message) {
+      // Some PostgREST/fetch failures bubble up as `{ message: "" }` with
+      // no other fields populated — JSON-stringifying that yields the
+      // useless literal `{"message":""}`. Detect this empty-shape case
+      // and emit "(no message)" plus the list of populated keys so the
+      // log line is at least a breadcrumb pointing at "look at the
+      // surrounding context, the upstream gave us nothing".
+      let serialized: string | null = null
       try {
-        message = JSON.stringify(obj).slice(0, 500)
+        serialized = JSON.stringify(obj)
       } catch {
-        message = "(unserializable error object)"
+        serialized = null
+      }
+      const populatedKeys = Object.keys(obj).filter((key) => {
+        const value = obj[key]
+        if (value === null || value === undefined) return false
+        if (typeof value === "string") return value.length > 0
+        return true
+      })
+      if (
+        serialized === null ||
+        serialized === "{}" ||
+        populatedKeys.length === 0
+      ) {
+        message = "(no message)"
+      } else {
+        message = serialized.slice(0, 500)
       }
     }
     const extras: Record<string, string | undefined> = {}
