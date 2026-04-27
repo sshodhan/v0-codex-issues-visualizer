@@ -40,7 +40,7 @@ export function FamilyCard({ cluster, days, isLoudest, isFixFirst }: FamilyCardP
             <div className="flex items-center gap-1.5">
               {isLoudest && (
                 <Badge className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] px-1.5 py-0">
-                  LOUDEST
+                  FREQUENT
                 </Badge>
               )}
               {isFixFirst && (
@@ -87,17 +87,24 @@ interface TopFamiliesSectionProps {
   onScrollToIssuesTable?: () => void
 }
 
+const MIN_FREQUENT_THRESHOLD = 5
+
 /**
  * Computes badge assignments for top families:
- * - LOUDEST: Top 3 by observation count
+ * - FREQUENT: Top 3 by observation count (only if count >= 5)
  * - FIX FIRST: Top 3 by actionability_input
  */
 function computeBadgeAssignments(clusters: ClusterRollupRow[]) {
   const top6 = clusters.slice(0, 6)
   
-  // Top 3 by count (LOUDEST)
+  // Top 3 by count (FREQUENT) - only if they meet the minimum threshold
   const byCount = [...top6].sort((a, b) => b.count - a.count)
-  const loudestIds = new Set(byCount.slice(0, 3).map((c) => c.id))
+  const frequentIds = new Set(
+    byCount
+      .slice(0, 3)
+      .filter((c) => c.count >= MIN_FREQUENT_THRESHOLD)
+      .map((c) => c.id)
+  )
 
   // Top 3 by actionability (FIX FIRST)
   const byActionability = [...top6].sort((a, b) => {
@@ -107,12 +114,12 @@ function computeBadgeAssignments(clusters: ClusterRollupRow[]) {
   })
   const fixFirstIds = new Set(byActionability.slice(0, 3).map((c) => c.id))
 
-  return { loudestIds, fixFirstIds }
+  return { frequentIds, fixFirstIds }
 }
 
 export function TopFamiliesSection({ clusters, days, onScrollToIssuesTable }: TopFamiliesSectionProps) {
   const top6 = clusters.slice(0, 6)
-  const { loudestIds, fixFirstIds } = computeBadgeAssignments(clusters)
+  const { frequentIds, fixFirstIds } = computeBadgeAssignments(clusters)
 
   if (top6.length === 0) return null
 
@@ -122,7 +129,7 @@ export function TopFamiliesSection({ clusters, days, onScrollToIssuesTable }: To
         <div>
           <h3 className="text-xl font-semibold">Top Families</h3>
           <p className="text-sm text-muted-foreground">
-            Semantic clusters ranked by volume. LOUDEST = most observations. FIX FIRST = highest actionability.
+            Semantic clusters ranked by volume. FREQUENT = 5+ observations. FIX FIRST = highest actionability.
           </p>
         </div>
         {onScrollToIssuesTable && (
@@ -141,7 +148,7 @@ export function TopFamiliesSection({ clusters, days, onScrollToIssuesTable }: To
             key={cluster.id}
             cluster={cluster}
             days={days}
-            isLoudest={loudestIds.has(cluster.id)}
+            isLoudest={frequentIds.has(cluster.id)}
             isFixFirst={fixFirstIds.has(cluster.id)}
           />
         ))}
