@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
+import { TrustCompletenessBars } from "@/components/dashboard/trust-completeness"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import { ChevronLeft } from "lucide-react"
 
@@ -72,6 +73,10 @@ export default function FamilyDetailPage() {
       ? data.family.label
       : data.family.fallback_title || `Cluster #${clusterId.slice(0, 8)}`
   const representativeObservationId = data.family.representative_observations[0]?.observation_id ?? null
+  const classifiedShare =
+    data.family.total_observations > 0 ? data.family.classified_count / data.family.total_observations : 0
+  const reviewedShare =
+    data.family.total_observations > 0 ? data.family.reviewed_count / data.family.total_observations : 0
 
   return (
     <main className="container mx-auto px-4 py-8 space-y-6">
@@ -115,6 +120,17 @@ export default function FamilyDetailPage() {
         <Card><CardHeader><CardTitle className="text-sm">Triage coverage</CardTitle></CardHeader><CardContent className="text-2xl font-semibold">{(data.family.triage_coverage_ratio * 100).toFixed(0)}%</CardContent></Card>
         <Card><CardHeader><CardTitle className="text-sm">Variants</CardTitle></CardHeader><CardContent className="text-2xl font-semibold">{data.variants.length}</CardContent></Card>
       </div>
+
+      <Card>
+        <CardHeader><CardTitle>Trust & completeness details</CardTitle></CardHeader>
+        <CardContent>
+          <TrustCompletenessBars
+            classifiedShare={classifiedShare}
+            reviewedShare={reviewedShare}
+            fingerprintHitRate={data.family.fingerprint_hit_rate}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader><CardTitle>Within-family Variant strip</CardTitle></CardHeader>
