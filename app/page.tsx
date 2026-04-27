@@ -546,10 +546,10 @@ const handleHeroLlmCategoryDrill = (
     }
   }, [stats])
 
-  // Compute hero insight from realtime data
+  // Compute hero insight from realtime data (filtered by selected category)
   const heroInsight = useMemo(() => {
-    return computeHeroInsight(stats?.realtimeInsights || [])
-  }, [stats?.realtimeInsights])
+  return computeHeroInsight(stats?.realtimeInsights || [], globalCategory)
+  }, [stats?.realtimeInsights, globalCategory])
 
   const nowNextCrosswalk = useMemo(() => {
     if (!stats || !heroInsight) return null
