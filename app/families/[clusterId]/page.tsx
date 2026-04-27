@@ -94,9 +94,27 @@ export default function FamilyDetailPage() {
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Family detail</p>
           <h1 className="text-3xl font-bold">{familyName}</h1>
           <p className="text-sm text-muted-foreground">
-            Family = semantic/title fallback. Variant = regex fingerprint. Triage = LLM + review judgment.
+            This page groups similar reports, shows how much has been reviewed, and highlights the most common patterns.
           </p>
-          <ClusterTrustRibbon cluster={data.family} />
+          <ClusterTrustRibbon cluster={data.family} showTechnicalChips={false} />
+          <details className="max-w-3xl rounded-md border bg-muted/20 px-3 py-2 text-sm">
+            <summary className="cursor-pointer text-muted-foreground">Show technical details</summary>
+            <div className="mt-2 space-y-2 text-muted-foreground">
+              <p>
+                <span className="font-medium text-foreground">Semantic fallback:</span> families are grouped by
+                semantic similarity first, then fall back to title-based grouping if needed.
+              </p>
+              <p>
+                <span className="font-medium text-foreground">Fingerprint:</span> variants are fingerprinted from
+                repeatable patterns such as error code and stack-frame signals.
+              </p>
+              <p>
+                <span className="font-medium text-foreground">Triage judgment internals:</span> reviewed counts are
+                sourced from classifier output plus human review state.
+              </p>
+              <ClusterTrustRibbon cluster={data.family} showCoreChips={false} showTechnicalChips />
+            </div>
+          </details>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button asChild>
