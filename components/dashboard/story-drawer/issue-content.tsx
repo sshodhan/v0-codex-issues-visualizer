@@ -19,9 +19,15 @@ interface Props {
 
 export function IssueDrawerContent({ issue, onOpenCluster, onSelectIssue }: Props) {
   const clusterId = issue?.cluster_id ?? null
-  const { issues: similar, isLoading } = useIssues(
-    clusterId ? { cluster_id: clusterId, sortBy: "impact_score", order: "desc" } : undefined,
-  )
+  // We only need ~4 similar reports; ask the API to cap rather than pull the full
+  // cluster. `enabled: false` skips the fetch entirely when there's no cluster.
+  const { issues: similar, isLoading } = useIssues({
+    enabled: clusterId != null,
+    cluster_id: clusterId ?? undefined,
+    sortBy: "impact_score",
+    order: "desc",
+    limit: 5,
+  })
   const similarTrimmed = useMemo(
     () => similar.filter((s) => s.id !== issue?.id).slice(0, 4),
     [similar, issue?.id],

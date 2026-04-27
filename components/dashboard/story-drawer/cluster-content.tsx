@@ -45,6 +45,10 @@ export function ClusterDrawerContent({
     cluster_id: clusterId,
     sortBy: "impact_score",
     order: "desc",
+    // We only render the top 5; the server already orders by impact_score desc,
+    // so this avoids pulling the whole cluster (potentially hundreds of rows)
+    // for what is effectively a preview.
+    limit: 5,
   })
   const top = useMemo(() => topByImpact(clusterIssues, 5), [clusterIssues])
 
