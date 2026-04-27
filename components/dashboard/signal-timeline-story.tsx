@@ -64,6 +64,18 @@ function buildAxisTicks(startMs: number, endMs: number): Array<{ frac: number; d
 }
 
 /**
+ * Pick a date-fns format string sized to the time range so tick labels stay distinct.
+ * Short windows (≤ 1.5 days) use clock time; multi-day windows use date+time; otherwise just date.
+ */
+function pickTickFormat(startMs: number, endMs: number): string {
+  const span = Math.max(endMs - startMs, 1)
+  const days = span / DAY_MS
+  if (days <= 1.5) return "HH:mm"
+  if (days <= 3.5) return "MMM d HH:mm"
+  return "MMM d"
+}
+
+/**
  * Compute weekend bands within [startMs, endMs] as fraction ranges (0..1) of the time extent.
  * Each Saturday and Sunday becomes one band; bands are merged with neighbors implicitly because
  * they're rendered with low opacity.
@@ -112,6 +124,10 @@ export function SignalTimelineStory({
   }, [points])
   const ticks = useMemo(
     () => (extent ? buildAxisTicks(extent.startMs, extent.endMs) : []),
+    [extent],
+  )
+  const tickFormat = useMemo(
+    () => (extent ? pickTickFormat(extent.startMs, extent.endMs) : "MMM d"),
     [extent],
   )
   const weekendBands = useMemo(
@@ -180,7 +196,7 @@ export function SignalTimelineStory({
                   className="fill-muted-foreground"
                   style={{ fontSize: 10, fontVariantNumeric: "tabular-nums" }}
                 >
-                  {format(t.date, "MMM d")}
+                  {format(t.date, tickFormat)}
                 </text>
               </g>
             )

@@ -85,13 +85,26 @@ interface StoryCategoryAtlasProps {
 
 const GW = 600
 const GH = 280
+// Reserve margins around the bubble pack so leader-line callouts and their text
+// stay inside the SVG viewBox (the wrapper has overflow-hidden).
+const INNER_PAD_X = 70
+const INNER_PAD_Y = 18
+const INNER_W = GW - INNER_PAD_X * 2
+const INNER_H = GH - INNER_PAD_Y * 2
 const HEU_FALLBACK = "#64748b" // slate-500 — used for "Other (combined)" when no DB color
 const CALLOUT_R = 22
+const CALLOUT_LABEL_MAX = 16 // chars; full label is preserved in the <title> tooltip
 
 function truncateForRadius(label: string, r: number): string {
   // ~1.6 chars per radius unit at the chosen font size
   const max = Math.max(6, Math.floor(r * 0.55))
   return label.length > max ? `${label.slice(0, Math.max(3, max - 1))}…` : label
+}
+
+function truncateCalloutLabel(label: string): string {
+  return label.length > CALLOUT_LABEL_MAX
+    ? `${label.slice(0, CALLOUT_LABEL_MAX - 1)}…`
+    : label
 }
 
 function BubbleField({
@@ -107,9 +120,16 @@ function BubbleField({
 }) {
   const baseId = useId()
   const placed = useMemo(
-    () => countBubbles(items, { minR: 14, maxR: 46, width: GW, height: GH }),
+    () =>
+      countBubbles(items, {
+        minR: 14,
+        maxR: 46,
+        width: INNER_W,
+        height: INNER_H,
+      }).map((b) => ({ ...b, x: b.x + INNER_PAD_X, y: b.y + INNER_PAD_Y })),
     [items],
   )
+  // Center of the inner bubble area — used as the origin for callout leader directions.
   const cx0 = GW / 2
   const cy0 = GH / 2
   const hasSelection = activeId !== null
@@ -151,7 +171,8 @@ function BubbleField({
           const labelAnchor: "start" | "end" | "middle" =
             ux > 0.25 ? "start" : ux < -0.25 ? "end" : "middle"
           const labelX = leadEndX + (labelAnchor === "start" ? 3 : labelAnchor === "end" ? -3 : 0)
-          const labelY = leadEndY + (uy < -0.4 ? -1 : uy > 0.4 ? 9 : 3)
+          // Upward leaders need extra clearance so the text baseline doesn't touch the line.
+          const labelY = leadEndY + (uy < -0.4 ? -4 : uy > 0.4 ? 9 : 3)
 
           return (
             <g
@@ -168,6 +189,7 @@ function BubbleField({
               tabIndex={0}
               aria-label={`${b.label}: ${b.count}${isActive ? " (selected)" : ""}`}
             >
+              <title>{`${b.label} — ${b.count}`}</title>
               <circle
                 cx={b.x}
                 cy={b.y}
@@ -199,7 +221,7 @@ function BubbleField({
                     className="pointer-events-none fill-foreground"
                     style={{ fontSize: 10.5, fontWeight: 600 }}
                   >
-                    {b.label}
+                    {truncateCalloutLabel(b.label)}
                     <tspan
                       className="fill-muted-foreground"
                       dx={4}
