@@ -383,13 +383,6 @@ export function HeroInsight({
                   ))
                 )}
               </div>
-              <button
-                onClick={() => onNavigateToCategory?.(categorySlug)}
-                className="mt-4 text-sm font-medium text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
-              >
-                View all {category} issues
-                <ArrowRight className="h-3 w-3" />
-              </button>
             </div>
           </div>
         </CardContent>
