@@ -30,6 +30,7 @@ import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-stri
 import { StoryDrawer } from "@/components/dashboard/story-drawer"
 import type { StoryDrawerTarget } from "@/components/dashboard/story-drawer/types"
 import { useDrawerHash } from "@/components/dashboard/story-drawer/use-drawer-hash"
+import { StickyScopeBar } from "@/components/dashboard/sticky-scope-bar"
 
 type CatOpt = { value: string; label: string; count: number }
 
@@ -260,6 +261,18 @@ export function DashboardStoryView({
 
   return (
     <div className="max-w-3xl mx-auto space-y-16 pb-24">
+      <StickyScopeBar
+        globalTimeLabel={globalTimeLabel}
+        categoryLabel={
+          categoryOptions.find((o) => o.value === categoryValue)?.label ?? "All topics"
+        }
+        totalCount={statsTotalIssues}
+        asOfActive={asOfActive}
+        onClearCategory={
+          categoryValue === "all" ? undefined : () => onCategoryChange("all")
+        }
+        onOpenDashboard={onOpenDashboardFromAtlas}
+      />
       <header className="pt-2 space-y-3">
         <p className="text-xs font-semibold uppercase tracking-widest text-primary">Story</p>
         <h2 className="text-3xl sm:text-4xl font-serif font-bold text-foreground text-balance leading-tight">

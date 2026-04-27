@@ -8,6 +8,10 @@ import {
   type CountBubble,
 } from "@/lib/dashboard/story-category-atlas-layout"
 import { pickAtlasAnnotation } from "@/lib/dashboard/atlas-annotation"
+import {
+  pickCalloutDirection,
+  type BubbleGeom,
+} from "@/lib/dashboard/atlas-callout-direction"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { ChevronDown, MousePointer2, Sparkles, Tag, X } from "lucide-react"
@@ -181,12 +185,21 @@ function BubbleField({
           // sit above. dominantBaseline="central" keeps the count visually
           // centered on the y coordinate, regardless of font metrics.
           const countY = labelInside ? b.y + countFontSize * 0.55 + 2 : b.y
-          // Direction of leader line for small bubbles: outward from canvas center.
-          const dx = b.x - cx0
-          const dy = b.y - cy0
-          const dist = Math.max(1, Math.hypot(dx, dy))
-          const ux = dx / dist
-          const uy = dy / dist
+          // Direction of leader line: pick the cardinal/diagonal with the most
+          // clearance from neighbouring bubbles and canvas edges. Replaces the
+          // previous "outward from canvas center" heuristic, which collapsed
+          // into a default-right vector when the bubble *was* at canvas center.
+          const direction = useCallout
+            ? pickCalloutDirection(b, placed, {
+                leaderLength: b.r + 9 + 28, // bubble radius + gap + ~half a label width
+                canvas: { width: GW, height: GH },
+                edgePad: 4,
+                labelHalfWidth: 32,
+                preferred: { ux: b.x >= cx0 ? 1 : -1, uy: 0 }, // gentle bias outward
+              })
+            : { ux: 0, uy: 0 }
+          const ux = direction.ux
+          const uy = direction.uy
           const leadStartX = b.x + ux * b.r
           const leadStartY = b.y + uy * b.r
           const leadEndX = b.x + ux * (b.r + 9)
@@ -293,22 +306,39 @@ function BubbleField({
         })}
 
         {/* Editorial annotation: leader-line + serif callout pointing at the dominant
-            bubble. Same idea as the timeline's peak-day annotation. */}
+            bubble. Direction is picked for max neighbour clearance — the dominant
+            bubble is often *at* the canvas centre, so an "outward from centre"
+            heuristic collapses and overlaps neighbours. */}
         {annotationBubble && annotation && (() => {
-          const dx = annotationBubble.x - cx0
-          const dy = annotationBubble.y - cy0
-          const dist = Math.max(1, Math.hypot(dx, dy))
-          const ux = dx / dist
-          const uy = dy / dist
-          // Push the callout 28px past the bubble edge in the outward direction so
-          // it doesn't overlap any neighbours.
+          // Approximate label width for edge-clearance scoring. "↳ Bug — 99%" is
+          // ~80 px at fontSize 11; halve it for half-width.
+          const approxLabel = `↳ ${annotation.label} — ${Math.round(annotation.share * 100)}%`
+          const labelHalfWidth = Math.max(40, approxLabel.length * 3.5)
+          const direction = pickCalloutDirection(
+            annotationBubble as BubbleGeom,
+            placed as BubbleGeom[],
+            {
+              leaderLength: annotationBubble.r + 28,
+              canvas: { width: GW, height: GH },
+              edgePad: 4,
+              labelHalfWidth,
+              // Tie-break toward the side with more horizontal space.
+              preferred: { ux: annotationBubble.x >= GW / 2 ? -1 : 1, uy: 0 },
+            },
+          )
+          const ux = direction.ux
+          const uy = direction.uy
           const sx = annotationBubble.x + ux * (annotationBubble.r + 4)
           const sy = annotationBubble.y + uy * (annotationBubble.r + 4)
           const ex = annotationBubble.x + ux * (annotationBubble.r + 28)
           const ey = annotationBubble.y + uy * (annotationBubble.r + 28)
-          const anchor: "start" | "end" =
-            ex >= GW / 2 ? "start" : "end"
-          const labelX = ex + (anchor === "start" ? 4 : -4)
+          // Anchor based on which way the leader is pointing — "start" when the
+          // leader goes right (label flows right), "end" when it goes left.
+          const anchor: "start" | "end" | "middle" =
+            ux > 0.2 ? "start" : ux < -0.2 ? "end" : "middle"
+          const labelX = ex + (anchor === "start" ? 4 : anchor === "end" ? -4 : 0)
+          // For purely vertical leaders, lift / drop the label off the line endpoint.
+          const labelY = ey + (uy < -0.4 ? -3 : uy > 0.4 ? 12 : 3)
           const sharePct = Math.round(annotation.share * 100)
           return (
             <g aria-hidden>
@@ -323,7 +353,7 @@ function BubbleField({
               />
               <text
                 x={labelX}
-                y={ey + 3}
+                y={labelY}
                 textAnchor={anchor}
                 className="fill-foreground"
                 style={{
