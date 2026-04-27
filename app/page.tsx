@@ -778,7 +778,7 @@ const handleHeroLlmCategoryDrill = (
               <HeroInsight
                 topInsight={heroInsight}
                 onExploreIssues={handleHeroExploreIssues}
-                onNavigateToCategory={handleNavigateToCategory}
+                onNavigateToCategory={handleCategoryViewFullListInTriage}
                 onLlmCategoryDrill={handleHeroLlmCategoryDrill}
                 issueTableTimeLabel={globalTimeLabel}
                 variant="v2"
