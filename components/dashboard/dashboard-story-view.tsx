@@ -3,17 +3,103 @@
 import { useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { SignalTimelineStory } from "@/components/dashboard/signal-timeline-story"
 import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
-import { BookOpen, ArrowDown, ExternalLink, Layers3, TriangleAlert } from "lucide-react"
+import {
+  ArrowDown,
+  ArrowRight,
+  ArrowUp,
+  BookOpen,
+  ChevronDown,
+  ExternalLink,
+  Layers3,
+  TriangleAlert,
+} from "lucide-react"
 import { StoryCategoryAtlas } from "@/components/dashboard/story-category-atlas"
 import { GlobalFilterBar } from "@/components/dashboard/global-filter-bar"
 import { DataProvenanceStrip } from "@/components/dashboard/data-provenance-strip"
-import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 
 type CatOpt = { value: string; label: string; count: number }
+
+/**
+ * Severity badge encoding: dot color + single-letter code so the level survives
+ * for color-vision-deficient readers and grayscale prints.
+ */
+const SEVERITY_BADGE: Record<
+  NonNullable<ClusterRollupRow["dominant_severity"]>,
+  { dot: string; code: "L" | "M" | "H" | "C"; label: string }
+> = {
+  low: { dot: "bg-muted-foreground/40", code: "L", label: "Low severity" },
+  medium: { dot: "bg-amber-500", code: "M", label: "Medium severity" },
+  high: { dot: "bg-orange-500", code: "H", label: "High severity" },
+  critical: { dot: "bg-red-600", code: "C", label: "Critical severity" },
+}
+
+function SeverityBadge({
+  level,
+}: {
+  level: NonNullable<ClusterRollupRow["dominant_severity"]>
+}) {
+  const b = SEVERITY_BADGE[level]
+  return (
+    <span
+      aria-label={b.label}
+      title={b.label}
+      className="inline-flex items-center gap-1"
+    >
+      <span aria-hidden className={`inline-block h-2 w-2 rounded-full ${b.dot}`} />
+      <span aria-hidden className="font-mono text-[10px] font-semibold tracking-wider">
+        {b.code}
+      </span>
+    </span>
+  )
+}
+
+/** Format a window of N hours into a short, readable suffix (e.g., "24h", "7d", "2w"). */
+function formatWindowHours(hours: number | undefined): string {
+  if (!hours || hours <= 0) return "prior"
+  if (hours < 24) return `prior ${Math.round(hours)}h`
+  const days = hours / 24
+  if (days < 7) return `prior ${Math.round(days)}d`
+  const weeks = days / 7
+  if (weeks < 4.5) return `prior ${Math.round(weeks)}w`
+  return `prior ${Math.round(days / 30)}mo`
+}
+
+function SurgeDelta({ pct, windowHours }: { pct: number; windowHours?: number }) {
+  if (Math.abs(pct) < 5) return null
+  const up = pct > 0
+  const sign = up ? "+" : "−"
+  const window = formatWindowHours(windowHours)
+  return (
+    <span
+      title={up ? `More than the ${window}` : `Fewer than the ${window}`}
+      className={up ? "text-foreground" : "text-muted-foreground"}
+    >
+      {up ? "↑" : "↓"} {sign}
+      {Math.abs(Math.round(pct))}% vs {window}
+    </span>
+  )
+}
+
+function clusterPrimaryTitle(r: ClusterRollupRow): {
+  title: string
+  source: "representative" | "label" | "fallback"
+} {
+  const rep = r.representative_title?.trim()
+  if (rep) return { title: rep, source: "representative" }
+  if (
+    r.label &&
+    r.label_confidence != null &&
+    r.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
+  ) {
+    return { title: r.label, source: "label" }
+  }
+  return { title: "Untitled cluster", source: "fallback" }
+}
 
 interface DashboardStoryViewProps {
   issues: Issue[]
@@ -85,20 +171,13 @@ export function DashboardStoryView({
   const newCodes = fingerprintSurges?.new_in_window ?? []
   const showClusterSection = (clusterRows?.length ?? 0) > 0
 
-  const clusterDisplayLabel = (r: ClusterRollupRow) => {
-    if (
-      r.label &&
-      r.label_confidence != null &&
-      r.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
-    ) {
-      return r.label
+  const { multiClusters, singletonClusters } = useMemo(() => {
+    const rows = clusterRows ?? []
+    return {
+      multiClusters: rows.filter((r) => r.count > 1),
+      singletonClusters: rows.filter((r) => r.count === 1),
     }
-    // The labeller writes a deterministic fallback at the displayable
-    // floor for every cluster (lib/storage/cluster-label-fallback.ts), so
-    // this branch only fires for the rare label-IS-NULL case. Clusters
-    // surface as Families in user copy. See docs/ARCHITECTURE.md §6.0.
-    return `Cluster #${r.id.slice(0, 8)}`
-  }
+  }, [clusterRows])
 
   return (
     <div className="max-w-3xl mx-auto space-y-16 pb-24">
@@ -195,46 +274,79 @@ export function DashboardStoryView({
         <section className="space-y-4">
           <div className="flex items-center gap-2 text-primary">
             <Layers3 className="h-5 w-5" />
-            <h3 className="text-2xl font-serif font-semibold">Semantic clusters (Layer A)</h3>
+            <h3 className="text-2xl font-serif font-semibold">Where reports cluster</h3>
           </div>
           <p className="text-muted-foreground leading-relaxed">
-            Top embedding-based groupings in your current time and category window. These are the same{" "}
-            <code className="text-xs bg-muted px-1 rounded">cluster_id</code> values as the issues API and the AI triage
-            tab — open the table to read raw reports, or triage to see how the LLM classified each item in the cluster.
+            Reports that look alike, grouped by their text content. The biggest groups are the
+            most repeated complaints — open one to read the raw posts, or jump to triage to see
+            how the classifier labelled each item.
           </p>
-          <ul className="space-y-2">
-            {(clusterRows ?? []).slice(0, 8).map((r) => (
-              <li
-                key={r.id}
-                className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-b border-border/60 py-3 ${
-                  activeClusterId === r.id ? "bg-muted/20 -mx-2 px-2 rounded-md border border-border/80" : ""
-                }`}
+
+          {multiClusters.length > 0 ? (
+            <ul className="divide-y divide-border/50">
+              {multiClusters.slice(0, 8).map((r) => (
+                <ClusterStoryRow
+                  key={r.id}
+                  cluster={r}
+                  isActive={activeClusterId === r.id}
+                  onExplore={() => onOpenClusterInTable(r.id)}
+                  onTriage={() => onOpenClusterInTriage(r.id)}
+                />
+              ))}
+            </ul>
+          ) : (
+            <div className="rounded-lg border border-dashed border-border/70 p-4 space-y-3">
+              <p className="text-sm italic text-muted-foreground">
+                No multi-report families in this window — every signal so far stands alone.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={() =>
+                  document
+                    .getElementById("story-filters")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
               >
-                <div className="min-w-0">
-                  <p className="font-medium text-foreground truncate">{clusterDisplayLabel(r)}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {r.count} in window · {r.classified_count} with LLM classification timestamp
-                  </p>
-                  <div className="mt-1">
-                    <ClusterTrustRibbon cluster={r} />
-                  </div>
+                Widen the window
+                <ArrowUp className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
+
+          {singletonClusters.length > 0 && (
+            <Collapsible className="rounded-lg border border-border/50 bg-card/40">
+              <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left hover:bg-muted/30 rounded-lg">
+                <div className="flex flex-col items-start gap-0.5">
+                  <span className="text-sm text-muted-foreground hover:text-foreground">
+                    Show {singletonClusters.length} single-report cluster
+                    {singletonClusters.length === 1 ? "" : "s"}
+                  </span>
+                  <span className="text-xs text-muted-foreground/70">
+                    Reports we couldn&rsquo;t group with anything else yet — collapsed to keep the
+                    main list focused on repeated complaints.
+                  </span>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onOpenClusterInTable(r.id)}
-                  >
-                    Open in table
-                  </Button>
-                  <Button type="button" variant="secondary" size="sm" onClick={() => onOpenClusterInTriage(r.id)}>
-                    LLM triage
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
+                <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform data-[state=open]:rotate-180" />
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <ul className="divide-y divide-border/40 px-4 pb-2">
+                  {singletonClusters.slice(0, 20).map((r) => (
+                    <ClusterStoryRow
+                      key={r.id}
+                      cluster={r}
+                      isActive={activeClusterId === r.id}
+                      onExplore={() => onOpenClusterInTable(r.id)}
+                      onTriage={() => onOpenClusterInTriage(r.id)}
+                      compact
+                    />
+                  ))}
+                </ul>
+              </CollapsibleContent>
+            </Collapsible>
+          )}
         </section>
       )}
 
@@ -299,5 +411,92 @@ export function DashboardStoryView({
         </Button>
       </section>
     </div>
+  )
+}
+
+function ClusterStoryRow({
+  cluster: r,
+  isActive,
+  onExplore,
+  onTriage,
+  compact = false,
+}: {
+  cluster: ClusterRollupRow
+  isActive: boolean
+  onExplore: () => void
+  onTriage: () => void
+  compact?: boolean
+}) {
+  const { title, source } = clusterPrimaryTitle(r)
+  const reportsLabel = r.count === 1 ? "1 report" : `${r.count} reports`
+  const showReviewed = r.classified_count > 0
+  const showFingerprint = r.fingerprint_hit_rate > 0
+  const showSurge =
+    r.surge_delta_pct != null && Number.isFinite(r.surge_delta_pct) && r.surge_delta_pct !== 0
+
+  return (
+    <li
+      className={`${compact ? "py-2.5" : "py-4"} ${
+        isActive ? "bg-muted/30 -mx-2 px-2 rounded-md" : ""
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <h4
+            className={`${
+              compact ? "text-sm" : "text-base"
+            } font-medium text-foreground leading-snug line-clamp-2`}
+            title={source === "fallback" ? `Cluster ${r.id.slice(0, 8)}` : title}
+          >
+            {title}
+          </h4>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
+            {r.dominant_severity && <SeverityBadge level={r.dominant_severity} />}
+            <span className="font-medium text-foreground/80">{reportsLabel}</span>
+            {showReviewed && (
+              <span>
+                {r.reviewed_count}/{r.classified_count} reviewed
+              </span>
+            )}
+            {showFingerprint && (
+              <span>
+                {Math.round(r.fingerprint_hit_rate * 100)}% match a known error pattern
+              </span>
+            )}
+            {showSurge && (
+              <SurgeDelta
+                pct={r.surge_delta_pct as number}
+                windowHours={r.surge_window_hours}
+              />
+            )}
+          </div>
+          <p className="font-mono text-[10px] tracking-tight text-muted-foreground/70">
+            cluster {r.id.slice(0, 8)}
+            {r.cluster_path === "fallback" ? " · title fallback" : ""}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={onTriage}
+          >
+            Triage
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1 px-2.5 text-xs"
+            onClick={onExplore}
+          >
+            Explore
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
+    </li>
   )
 }
