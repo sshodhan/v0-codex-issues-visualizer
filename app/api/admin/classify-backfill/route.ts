@@ -35,13 +35,18 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 //
 // See docs/ARCHITECTURE.md §3.5 (scheduled jobs + manual triggers).
 
-export const maxDuration = 60
+// Pro plan caps serverless functions at 300s. Bumped from 60s after
+// production 504s on `limit=10` batches when OpenAI latency spiked —
+// 60s was the Hobby ceiling and we're not on Hobby anymore. The cron
+// path stays at 60s (its own concern, scheduled cadence).
+export const maxDuration = 300
 
 const DEFAULT_LIMIT = 10
-// 15 canonicals × ~3-5s/call = hard upper bound of what fits under
-// Hobby's 60s maxDuration. 100 is the upper bound the panel exposes —
-// operators running on Pro can push it, but on Hobby they must keep
-// the per-batch limit low enough to finish.
+// MAX_LIMIT=100 is what the admin panel exposes. With Pro's 300s cap
+// and ~3-5s per gpt-5-mini call, a full 100-row batch fits with
+// headroom; the operator-tuned default stays at 10 so each "Run until
+// done" iteration finishes well under the timeout even when latency is
+// noisy.
 const MAX_LIMIT = 100
 
 // Default window for the admin panel's stats. Chosen to match the

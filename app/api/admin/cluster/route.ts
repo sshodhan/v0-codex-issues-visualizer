@@ -9,7 +9,7 @@ import {
 import { runSemanticClusteringForBatch } from "@/lib/storage/semantic-clusters"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
-export const maxDuration = 60
+export const maxDuration = 300
 
 const DEFAULT_LIMIT = 500
 const MAX_LIMIT = 2000
