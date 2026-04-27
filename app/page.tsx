@@ -710,19 +710,6 @@ const handleHeroLlmCategoryDrill = (
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6 space-y-6">
-        {/*
-          Persistent pipeline-freshness strip. Rendered ABOVE the
-          loading/error/empty branching so "no issues in this window" vs
-          "pipeline still catching up" vs "stats feed failed" are visible
-          in every state — not hidden behind the dashboard-loaded gate.
-        */}
-        <PipelineFreshnessStrip
-          prereq={pipelinePrereq}
-          pendingReviewCount={pipelineReviewCount}
-          statsError={Boolean(classificationStatsError)}
-          windowLabel={globalTimeLabel}
-          asOfActive={asOf != null}
-        />
 
         {statsLoading ? (
           <DashboardSkeleton />
@@ -853,6 +840,15 @@ const handleHeroLlmCategoryDrill = (
   onViewFullList={handleCategoryViewFullListInTriage}
   />
               {/* [V1 - DEPRECATED] skipFirstCategorySlug={undefined} - shows all categories including hero */}
+
+              {/* Pipeline Freshness Status - positioned under Hot themes */}
+              <PipelineFreshnessStrip
+                prereq={pipelinePrereq}
+                pendingReviewCount={pipelineReviewCount}
+                statsError={Boolean(classificationStatsError)}
+                windowLabel={globalTimeLabel}
+                asOfActive={asOf != null}
+              />
 
               {/* Trend Chart - Historical context */}
               {stats.trendData.length > 0 && (

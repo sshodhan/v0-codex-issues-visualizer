@@ -13,7 +13,7 @@
 //     picker for partially-caught-up pipelines)
 //   - components/dashboard/pipeline-freshness-strip.tsx (renderer)
 
-import { pickPrimaryCta, type PrerequisiteStatus } from "../classification/prerequisites.ts"
+import { type PrerequisiteStatus } from "../classification/prerequisites.ts"
 import { MIN_IMPACT_SCORE } from "../classification/run-backfill-constants.ts"
 
 export type PipelineFreshnessState =
@@ -97,7 +97,7 @@ export interface PipelineFreshnessInputs {
   freshnessSlaMinutes?: number
 }
 
-const DEFAULT_FRESHNESS_SLA_MINUTES = 120
+const DEFAULT_FRESHNESS_SLA_MINUTES = 1440
 
 export function derivePipelineFreshness(
   inputs: PipelineFreshnessInputs,
@@ -194,102 +194,9 @@ export function derivePipelineFreshness(
     }
   }
 
-  if (
-    prereq.pendingClassification > 0 ||
-    prereq.pendingClustering > 0 ||
-    lastClassifyBackfillFailed
-  ) {
-    const reason: PipelineFreshnessReason =
-      prereq.pendingClassification > 0 && prereq.pendingClustering > 0
-        ? "pending-classification-and-clustering"
-        : prereq.pendingClassification > 0
-          ? "pending-classification"
-          : prereq.pendingClustering > 0
-            ? "pending-clustering"
-            : "classify-backfill-failed"
-
-    const parts: string[] = []
-    if (prereq.pendingClassification > 0) {
-      // Split messaging to distinguish between:
-      // 1. New unclassified items (highImpactPendingClassification)
-      // 2. Previously classified items with lower scores (pendingClassification - highImpactPendingClassification)
-      const high = prereq.highImpactPendingClassification
-      const low = prereq.pendingClassification - high
-      
-      if (high > 0 && low > 0) {
-        // Both new high-impact unclassified AND previously classified low-impact items
-        parts.push(
-          `${high} new issues awaiting classification (high-impact) · ${low} previously classified with lower scores`,
-        )
-      } else if (high > 0 && low === 0) {
-        // Only new high-impact unclassified items
-        parts.push(
-          `${high} new issues awaiting classification (high-impact)`,
-        )
-      } else if (high === 0 && low > 0) {
-        // Only previously classified items with lower scores (all below threshold)
-        parts.push(
-          `${low} previously classified issues below review threshold (impact-${MIN_IMPACT_SCORE})`,
-        )
-      } else {
-        parts.push(`${prereq.pendingClassification} awaiting classification`)
-      }
-    }
-    if (prereq.pendingClustering > 0) {
-      parts.push(`${prereq.pendingClustering} awaiting clustering`)
-    }
-    if (lastClassifyBackfillFailed) {
-      parts.push("last classify-backfill failed")
-    }
-
-    const primary = pickPrimaryCta(prereq)
-    let cta: { href: string; label: string } | null =
-      primary.kind === "classify-backfill" || primary.kind === "clustering"
-        ? { href: primary.href, label: primary.label }
-        : primary.kind === "openai-missing"
-          ? { href: "/admin", label: "Configure OpenAI key" }
-          : null
-    // When every pending row is below the impact threshold there's still
-    // value in pointing the reviewer at the admin panel — they can see
-    // the policy, lower the threshold, or confirm the deferral is
-    // intentional. `pickPrimaryCta` now returns `{ kind: "none" }` in
-    // that case (it used to return a "Run classify-backfill" CTA that
-    // did nothing); substitute a "View classify-backfill policy" link so
-    // the strip still has an actionable next step.
-    if (
-      !cta &&
-      prereq.pendingClassification > 0 &&
-      prereq.highImpactPendingClassification === 0 &&
-      prereq.openaiConfigured
-    ) {
-      cta = {
-        href: "/admin?tab=classify-backfill",
-        label: "View classify-backfill policy",
-      }
-    }
-    // Fallback: `pickPrimaryCta` returns `{ kind: "none" }` when nothing is
-    // pending, but a failed classify-backfill run still puts us in the
-    // degraded state above — and the user still needs a way to retry. Link
-    // to the classify-backfill admin tab so there is always an actionable
-    // next step for a non-healthy state. See invariant test:
-    // "failure and degraded states surface a CTA".
-    if (!cta && lastClassifyBackfillFailed) {
-      cta = { href: "/admin?tab=classify-backfill", label: "Retry classify-backfill" }
-    }
-
-    return {
-      state: "degraded",
-      reason,
-      headline: "Pipeline not caught up",
-      subtext:
-        parts.length > 0
-          ? `${parts.join(" · ")}. Numbers below are a partial view until backlog clears.`
-          : "Some pipeline steps are behind; numbers below are a partial view.",
-      cta,
-      flags: { lastClassifyBackfillFailed },
-      metrics,
-    }
-  }
+  // Note: Pending classification/clustering no longer triggers degraded state.
+  // The strip will show as healthy with informational subtext about pending items.
+  // Only staleness (> 24 hours since last sync) triggers the yellow/degraded appearance.
 
   // Freshness SLA: downgrade a caught-up pipeline to `degraded` when the
   // last scrape is older than the configured SLA. An "all green" strip on
@@ -314,11 +221,32 @@ export function derivePipelineFreshness(
     }
   }
 
+  // Build informational subtext about pipeline status
+  const subtextParts: string[] = [
+    `${prereq.classifiedCount}/${prereq.observationsInWindow} classified`,
+    `${prereq.clusteredCount}/${prereq.observationsInWindow} clustered in ${windowLabel}`,
+  ]
+  
+  // Add info about pending items if any (informational, not a warning)
+  if (prereq.pendingClassification > 0) {
+    const high = prereq.highImpactPendingClassification
+    const low = prereq.pendingClassification - high
+    if (high > 0) {
+      subtextParts.push(`${high} awaiting classification`)
+    }
+    if (low > 0) {
+      subtextParts.push(`${low} previously classified below review threshold (impact-${MIN_IMPACT_SCORE})`)
+    }
+  }
+  if (prereq.pendingClustering > 0) {
+    subtextParts.push(`${prereq.pendingClustering} awaiting clustering`)
+  }
+
   return {
     state: "healthy",
     reason: "all-caught-up",
     headline: "Pipeline caught up",
-    subtext: `${prereq.classifiedCount}/${prereq.observationsInWindow} classified · ${prereq.clusteredCount}/${prereq.observationsInWindow} clustered in ${windowLabel}.`,
+    subtext: subtextParts.join(" · "),
     cta: null,
     flags: { lastClassifyBackfillFailed },
     metrics,
