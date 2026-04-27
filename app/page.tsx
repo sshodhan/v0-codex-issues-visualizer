@@ -331,6 +331,7 @@ function DashboardContentInner() {
   }
 
   const handleCategoryViewFullListInTriage = (categorySlug: string) => {
+    console.log("[v0] handleCategoryViewFullListInTriage called with:", categorySlug, "switching to v3 tab")
     setActiveTab("v3")
     setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
