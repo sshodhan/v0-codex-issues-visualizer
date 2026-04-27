@@ -67,6 +67,10 @@ function prepLlm(rows: LlmRow[]): LlmBubble[] {
   return out
 }
 
+export type AtlasBubbleTarget =
+  | { kind: "heuristic"; slug: string; label: string; color?: string }
+  | { kind: "llm"; slug: string; label: string; color?: string }
+
 interface StoryCategoryAtlasProps {
   globalTimeLabel: string
   globalCategoryLabel: string
@@ -78,6 +82,12 @@ interface StoryCategoryAtlasProps {
   onSelectHeuristicSlug: (slug: string) => void
   onOpenLlmInTriage: (llmCategorySlug: string) => void
   onOpenDashboard: () => void
+  /**
+   * Preferred click behavior: open a drawer to preview/explore a bubble.
+   * When supplied, bubble clicks call this instead of the legacy commit handlers.
+   * The drawer is responsible for committing via onSelectHeuristicSlug / onOpenLlmInTriage.
+   */
+  onExploreBubble?: (target: AtlasBubbleTarget) => void
   /** Global filter slug e.g. "bug" or "all" */
   selectedHeuristicSlug: string
   selectedLlmCategorySlug: string | null
@@ -282,6 +292,7 @@ export function StoryCategoryAtlas({
   onSelectHeuristicSlug,
   onOpenLlmInTriage,
   onOpenDashboard,
+  onExploreBubble,
   selectedHeuristicSlug,
   selectedLlmCategorySlug,
 }: StoryCategoryAtlasProps) {
@@ -300,15 +311,34 @@ export function StoryCategoryAtlas({
   }, [selectedLlmCategorySlug, llmBubbles])
 
   const onHeuPick = (id: string) => {
-    if (id === "h:other") onSelectHeuristicSlug("all")
-    else onSelectHeuristicSlug(id.replace(/^h:/, ""))
+    if (id === "h:other") {
+      // "Other (combined)" has no single slug to drill into — keep legacy behaviour.
+      onSelectHeuristicSlug("all")
+      return
+    }
+    const slug = id.replace(/^h:/, "")
+    const b = heuBubbles.find((x) => x.id === id)
+    if (!b) return
+    if (onExploreBubble) {
+      onExploreBubble({ kind: "heuristic", slug, label: b.label, color: b.color })
+    } else {
+      onSelectHeuristicSlug(slug)
+    }
   }
 
   const onLlmPick = (id: string) => {
     const b = (llmBubbles as LlmBubble[]).find((x) => x.id === id)
     if (!b) return
-    if (b.rawSlug === "__other__" || id === "l:other") onOpenLlmInTriage("all")
-    else onOpenLlmInTriage(formatLlmCategorySlug(b.rawSlug))
+    if (b.rawSlug === "__other__" || id === "l:other") {
+      onOpenLlmInTriage("all")
+      return
+    }
+    const slug = formatLlmCategorySlug(b.rawSlug)
+    if (onExploreBubble) {
+      onExploreBubble({ kind: "llm", slug, label: b.label })
+    } else {
+      onOpenLlmInTriage(slug)
+    }
   }
 
   return (
