@@ -331,15 +331,22 @@ function DashboardContentInner() {
   }
 
   const handleCategoryViewFullListInTriage = (categorySlug: string) => {
-    setActiveTab("classifications")
-    applyIssueSearchParams({ llmCategory: categorySlug })
+    setActiveTab("v3")
+    setGlobalCategory(categorySlug)
     if (typeof window !== "undefined") {
-      requestAnimationFrame(() => {
-        document.getElementById("triage-semantic-clusters")?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        })
-      })
+      // Retry mechanism to wait for the element to appear in the DOM after tab switch
+      const scrollToElement = (retries = 10) => {
+        const element = document.getElementById("issues-table-anchor")
+        if (element) {
+          element.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
+        } else if (retries > 0) {
+          setTimeout(() => scrollToElement(retries - 1), 50)
+        }
+      }
+      setTimeout(() => scrollToElement(), 50)
     }
   }
 
