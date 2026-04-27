@@ -742,6 +742,15 @@ const handleHeroLlmCategoryDrill = (
               </TabsTrigger>
             </TabsList>
 
+            {/* Global Filters */}
+            <GlobalFilterBar
+              timeDays={globalDays}
+              onTimeChange={setGlobalDays}
+              categoryOptions={categoryOptions}
+              categoryValue={globalCategory}
+              onCategoryChange={setGlobalCategory}
+            />
+
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
               {/* V2: Always show DataProvenanceStrip */}
@@ -794,15 +803,6 @@ const handleHeroLlmCategoryDrill = (
                 <FingerprintSurgeCard variant="v1" ... />
                 <HeroInsight variant="v1" ... />
               */}
-
-              {/* Global Filters */}
-              <GlobalFilterBar
-                timeDays={globalDays}
-                onTimeChange={setGlobalDays}
-                categoryOptions={categoryOptions}
-                categoryValue={globalCategory}
-                onCategoryChange={setGlobalCategory}
-              />
 
               {/* Charts Row - Visual context */}
               <div className="grid gap-6 lg:grid-cols-2">
@@ -953,17 +953,9 @@ const handleHeroLlmCategoryDrill = (
               </div>
             </TabsContent>
 
-            {/* AI Classifications Tab */}
-            <TabsContent value="classifications" className="space-y-6 mt-6">
-              <GlobalFilterBar
-                timeDays={globalDays}
-                onTimeChange={setGlobalDays}
-                categoryOptions={categoryOptions}
-                categoryValue={globalCategory}
-                onCategoryChange={setGlobalCategory}
-              />
-
-              <ClassificationTriage
+  {/* AI Classifications Tab */}
+  <TabsContent value="classifications" className="space-y-6 mt-6">
+    <ClassificationTriage
                 records={classifications}
                 stats={classificationStats}
                 isLoading={classificationsLoading}
