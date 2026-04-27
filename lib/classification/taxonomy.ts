@@ -17,6 +17,7 @@ export const CATEGORY_ENUM = [
   "retrieval_context_mismatch",
   "user_intent_misinterpretation",
   "autonomy_safety_violation",
+  "output_content_safety",
   "performance_latency_issue",
   "cost_quota_overrun",
   "session_auth_error",
@@ -189,6 +190,23 @@ export const CATEGORY_DEFINITIONS: Record<IssueCategory, CategoryDefinition> = {
     ],
     not_when: [
       "non-destructive functional bug (use code_generation_bug or the relevant category)",
+      "model emitted unsafe content in its output without taking an action (use output_content_safety)",
+    ],
+  },
+  output_content_safety: {
+    one_liner:
+      "The model emitted unsafe, inappropriate, sensitive, or off-policy content in its output. Distinct from autonomy_safety_violation, which covers unsafe agent actions; this category covers what the model says, not what it does.",
+    pick_when: [
+      "adult / violent / hateful / illegal content surfaced in output",
+      "PII or secret leaked into model-generated text (regurgitation, not the agent printing a known secret)",
+      "verbatim training-data memorization appeared in output",
+      "user prompt-injection succeeded and produced off-policy content",
+      "model engaged with a topic it should have refused",
+    ],
+    not_when: [
+      "the agent took an unsafe action like rm -rf or printed a known credential it had access to (use autonomy_safety_violation)",
+      "the model fabricated a code symbol or API that does not exist (use hallucinated_code)",
+      "the output was merely formatted wrong but content was on-policy (use user_intent_misinterpretation)",
     ],
   },
   performance_latency_issue: {
@@ -316,6 +334,13 @@ export const SUBCATEGORY_EXAMPLES: Record<IssueCategory, readonly string[]> = {
     "unsafe_command_suggested",
     "secret_exposure_risk",
     "unapproved_external_action",
+  ],
+  output_content_safety: [
+    "unsafe_content_emitted",
+    "pii_or_secret_in_output",
+    "prompt_injection_succeeded",
+    "training_data_leakage",
+    "prohibited_topic_engaged",
   ],
   performance_latency_issue: [
     "slow_response",
