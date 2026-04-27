@@ -63,11 +63,7 @@ export function DataProvenanceStrip({
         </span>
       ) : (
         <span>
-          <span className="font-medium text-foreground">View past data:</span> add{" "}
-          <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono text-foreground">
-            ?as_of=YYYY-MM-DDTHH:MM:SSZ
-          </code>{" "}
-          to the URL to filter and show issues as they were at that time.
+          <span className="font-medium text-foreground">How to use:</span> Click any category card to filter issues, or use the tabs above to switch between Dashboard and AI Classifications views.
         </span>
       )}
     </div>
