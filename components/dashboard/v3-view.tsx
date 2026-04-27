@@ -11,6 +11,7 @@ import { composeWhySurfaced } from "@/lib/classification/why-surfaced"
 import { llmCategoryLabel } from "@/lib/classification/llm-category-display"
 import { SURGE_CHIP_THRESHOLD_PCT } from "@/lib/classification/rollup-constants"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
+import { TrustSummaryState } from "@/components/dashboard/trust-completeness"
 
 type RailKey = "fix_next" | "breaking_now" | "review_now"
 
@@ -108,22 +109,6 @@ function getTopClusters(clusters: ClusterRollupRow[], railTag: "actionability" |
       return b.count - a.count
     })
     .slice(0, 3)
-}
-
-function TrustBar({ label, value }: { label: string; value: number }) {
-  const pct = Math.round(Math.min(1, Math.max(0, value)) * 100)
-  const color = pct >= 80 ? "bg-green-500" : pct >= 50 ? "bg-amber-400" : "bg-red-400"
-  return (
-    <div className="space-y-0.5">
-      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{label}</span>
-        <span>{pct}%</span>
-      </div>
-      <div className="h-1.5 w-full rounded-full bg-muted">
-        <div className={`h-1.5 rounded-full ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
 }
 
 function OriginChip({ path }: { path: "semantic" | "fallback" }) {
@@ -274,13 +259,11 @@ function ClusterCard({
 
       {/* Three-panel body */}
       <div className="border-t pt-2 space-y-3">
-        {/* Panel 1: Trust & Completeness */}
-        <div className="space-y-1.5">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Trust & Completeness</p>
-          <TrustBar label="Classified" value={classified} />
-          <TrustBar label="Human reviewed" value={reviewed} />
-          <TrustBar label="Regex coverage" value={regexCoverage} />
-        </div>
+        <TrustSummaryState
+          classifiedShare={classified}
+          reviewedShare={reviewed}
+          fingerprintHitRate={regexCoverage}
+        />
 
         {/* Panel 2: Regex Variants */}
         {cluster.regex_variants !== undefined ? (
