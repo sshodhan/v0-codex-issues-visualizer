@@ -190,7 +190,16 @@ export async function countBackfillCandidates(
   const { count, error } = await q
 
   if (error) {
-    logServerError("classify-backfill", "count_failed", error)
+    // PostgREST sometimes returns `{ message: "" }` for transient
+    // failures (aborted fetch, connection drop). Without query context
+    // the operator can't tell which of the five parallel counts blew up
+    // — log the threshold and window so the line is actionable on its
+    // own.
+    logServerError("classify-backfill", "count_failed", error, {
+      table: "mv_observation_current",
+      threshold,
+      publishedSince: opts.publishedSince?.toISOString() ?? null,
+    })
     throw error
   }
   return count ?? 0
@@ -216,7 +225,10 @@ export async function countBackfillCandidatesAllImpact(
   const { count, error } = await q
 
   if (error) {
-    logServerError("classify-backfill", "count_all_impact_failed", error)
+    logServerError("classify-backfill", "count_all_impact_failed", error, {
+      table: "mv_observation_current",
+      publishedSince: opts.publishedSince?.toISOString() ?? null,
+    })
     throw error
   }
   return count ?? 0

@@ -103,3 +103,36 @@ test("normalizeError returns empty-message fallback for Error with no message", 
   const normalized = normalizeError(err)
   assert.equal(normalized.message, "(no message)")
 })
+
+test("normalizeError returns (no message) for plain-object errors with empty message and no other fields", () => {
+  // PostgREST sometimes bubbles transient failures up as
+  // `{ message: "" }` with nothing else populated. The previous
+  // implementation JSON-stringified the object and emitted the literal
+  // `{"message":""}` — which carries the same amount of information as
+  // "[object Object]" did. Surface "(no message)" instead so callers
+  // know there's nothing to dig into and rely on surrounding context.
+  const empty = { message: "" }
+  const normalized = normalizeError(empty)
+  assert.equal(normalized.message, "(no message)")
+  assert.equal(normalized.errorName, "NonError")
+})
+
+test("normalizeError returns (no message) for fully empty plain objects", () => {
+  const normalized = normalizeError({})
+  assert.equal(normalized.message, "(no message)")
+})
+
+test("normalizeError preserves real fields when message is empty but other keys carry info", () => {
+  // If `message` is empty but `code`/`details` are populated, surface
+  // those — they're the actionable bit. The serialized fallback shows
+  // the operator the full shape so they can correlate.
+  const partial = { message: "", code: "PGRST301", details: "abort" }
+  const normalized = normalizeError(partial)
+  assert.equal(normalized.code, "PGRST301")
+  assert.equal(normalized.details, "abort")
+  assert.ok(
+    normalized.message.includes("PGRST301") ||
+      normalized.message.includes("abort"),
+    `expected serialized fallback to mention populated fields, got ${normalized.message}`,
+  )
+})
