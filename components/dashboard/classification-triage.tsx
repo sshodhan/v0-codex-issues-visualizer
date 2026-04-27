@@ -52,7 +52,11 @@ import type { ClassificationRecord, ClassificationStats, ClusterSummary } from "
 import { useClusters } from "@/hooks/use-dashboard-data"
 import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import { CATEGORY_ENUM } from "@/lib/classification/taxonomy"
-import { llmCategoryLabel } from "@/lib/classification/llm-category-display"
+import {
+  formatSubcategoryLabel,
+  llmCategoryLabel,
+  triageGroupParts,
+} from "@/lib/classification/llm-category-display"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 
 // Two example LLM-category slugs interpolated into reviewer-facing copy
@@ -122,33 +126,6 @@ function hasTrustedLabel(
   confidence: number | null,
 ): boolean {
   return label !== null && confidence !== null && confidence >= LABEL_CONFIDENCE_SHOW_THRESHOLD
-}
-
-function formatSubcategoryLabel(subcategory: string | null | undefined): string {
-  if (!subcategory) return "General"
-  return subcategory
-    .split(/[_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ")
-}
-
-function triageGroupParts(record: Pick<ClassificationRecord, "effective_category" | "effective_subcategory">): {
-  raw: string
-  label: string
-  rawCategory: string
-  rawSubcategory: string
-} {
-  const rawCategory = record.effective_category
-  const rawSubcategory = record.effective_subcategory || "General"
-  const formattedCategory = llmCategoryLabel(rawCategory)
-  const formattedSubcategory = formatSubcategoryLabel(record.effective_subcategory)
-  return {
-    raw: `${rawCategory} › ${rawSubcategory}`,
-    label: `${formattedCategory} › ${formattedSubcategory}`,
-    rawCategory,
-    rawSubcategory,
-  }
 }
 
 // `pickPrimaryCta` + PrerequisiteStatus shape live in
@@ -245,7 +222,10 @@ export function ClassificationTriage({
   const groups = useMemo(() => {
     const grouped = new Map<string, { total: number; highRisk: number; label: string }>()
     for (const record of globallyFilteredRecords) {
-      const group = triageGroupParts(record)
+      const group = triageGroupParts({
+        category: record.effective_category,
+        subcategory: record.effective_subcategory,
+      })
       const key = group.raw
       const current = grouped.get(key) || { total: 0, highRisk: 0, label: group.label }
       current.total += 1
@@ -278,7 +258,10 @@ export function ClassificationTriage({
     return globallyFilteredRecords.filter((record) => {
       const groupMatch =
         groupFilter === "all" ||
-        triageGroupParts(record).raw === groupFilter
+        triageGroupParts({
+          category: record.effective_category,
+          subcategory: record.effective_subcategory,
+        }).raw === groupFilter
       const semanticMatch =
         semanticClusterFilter === "all" || record.cluster_id === semanticClusterFilter
       return groupMatch && semanticMatch
@@ -692,7 +675,11 @@ export function ClassificationTriage({
                       </div>
                       <p
                         className="text-xs text-muted-foreground"
-                        title={`Slug: ${record.effective_subcategory || "General"}`}
+                        title={
+                          record.effective_subcategory
+                            ? `Slug: ${record.effective_subcategory}`
+                            : "No subcategory slug — showing the General fallback"
+                        }
                       >
                         {formatSubcategoryLabel(record.effective_subcategory)}
                       </p>
@@ -1325,7 +1312,10 @@ function LayerBreadcrumb({
       ? record.cluster_label
       : `Cluster #${record.cluster_id.slice(0, 8)}`
     : null
-  const group = triageGroupParts(record)
+  const group = triageGroupParts({
+    category: record.effective_category,
+    subcategory: record.effective_subcategory,
+  })
 
   const baseClass = compact
     ? "mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"

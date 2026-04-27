@@ -7,7 +7,7 @@
 // `--experimental-strip-types`, and pulling Tailwind classnames into
 // that path would couple the prompt build to the design system.
 
-import { CATEGORY_ENUM, type IssueCategory } from "./taxonomy"
+import { CATEGORY_ENUM, type IssueCategory } from "./taxonomy.ts"
 
 export const LLM_CATEGORY_LABELS: Record<IssueCategory, string> = {
   incomplete_context_overflow: "Incomplete context / overflow",
@@ -114,11 +114,33 @@ const FALLBACK_PALETTE: LlmCategoryPalette = {
   ring: "ring-border",
 }
 
+// Humanize a snake_case / kebab-case slug.
+//   - "title" mode capitalizes every word ("Missing Dependency") — matches
+//     how subcategories already render in the triage UI.
+//   - "sentence" mode capitalizes the first word only ("Output content
+//     safety") — matches the curated `LLM_CATEGORY_LABELS` style so the
+//     fallback path is visually indistinguishable from a hand-tuned entry.
+function humanizeSlug(slug: string, mode: "title" | "sentence" = "title"): string {
+  const parts = slug.split(/[_-]+/).filter(Boolean)
+  if (parts.length === 0) return slug
+  if (mode === "sentence") {
+    const [first, ...rest] = parts
+    return [
+      first.charAt(0).toUpperCase() + first.slice(1).toLowerCase(),
+      ...rest.map((p) => p.toLowerCase()),
+    ].join(" ")
+  }
+  return parts.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ")
+}
+
 export function llmCategoryLabel(slug: string): string {
   if ((CATEGORY_ENUM as readonly string[]).includes(slug)) {
     return LLM_CATEGORY_LABELS[slug as IssueCategory]
   }
-  return slug
+  // Fallback: a new enum value may land in taxonomy.ts before its
+  // hand-tuned label entry above. Sentence-case the slug so reviewers
+  // still see something readable instead of `output_content_safety`.
+  return slug ? humanizeSlug(slug, "sentence") : slug
 }
 
 export function llmCategoryPalette(slug: string): LlmCategoryPalette {
@@ -126,4 +148,43 @@ export function llmCategoryPalette(slug: string): LlmCategoryPalette {
     return LLM_CATEGORY_PALETTE[slug as IssueCategory]
   }
   return FALLBACK_PALETTE
+}
+
+// Subcategory is open-ended (LLM-coined snake_case per the prompt
+// schema), so there's no enum-driven label map. Format defensively and
+// fall back to "General" when absent — matches the "General" sentinel
+// used as the raw-slug placeholder in `triageGroupParts` below.
+export function formatSubcategoryLabel(subcategory: string | null | undefined): string {
+  if (!subcategory) return "General"
+  return humanizeSlug(subcategory)
+}
+
+export interface TriageGroupParts {
+  /** Stable raw key — `category › subcategory` slug — used for grouping, filtering, and as the React key. Never localized. */
+  raw: string
+  /** Human-friendly `Category › Subcategory` for display only. */
+  label: string
+  /** Raw category slug, exposed so the caller can build slug-only tooltips. */
+  rawCategory: string
+  /**
+   * Raw subcategory slug, or the literal "General" sentinel when the
+   * record has no subcategory. Callers showing this in a "raw slug"
+   * tooltip should map "General" back to a placeholder like "(none)" —
+   * the sentinel is for grouping/equality, not for reviewer display.
+   */
+  rawSubcategory: string
+}
+
+export function triageGroupParts(input: {
+  category: string
+  subcategory: string | null | undefined
+}): TriageGroupParts {
+  const rawCategory = input.category
+  const rawSubcategory = input.subcategory || "General"
+  return {
+    raw: `${rawCategory} › ${rawSubcategory}`,
+    label: `${llmCategoryLabel(rawCategory)} › ${formatSubcategoryLabel(input.subcategory)}`,
+    rawCategory,
+    rawSubcategory,
+  }
 }
