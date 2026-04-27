@@ -1,6 +1,6 @@
 "use client"
 
-import { useId, useMemo, useState } from "react"
+import { useId, useMemo } from "react"
 import {
   countBubbles,
   formatLlmCategorySlug,
@@ -82,7 +82,25 @@ interface StoryCategoryAtlasProps {
 }
 
 const GW = 520
-const GH = 300
+const GH = 320
+
+function isHexColor(color: string): boolean {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(color.trim())
+}
+
+function readableTextOn(fill: string): string {
+  const c = fill.trim()
+  if (!isHexColor(c)) return "white"
+  const normalized =
+    c.length === 4
+      ? `#${c[1]}${c[1]}${c[2]}${c[2]}${c[3]}${c[3]}`
+      : c
+  const r = parseInt(normalized.slice(1, 3), 16)
+  const g = parseInt(normalized.slice(3, 5), 16)
+  const b = parseInt(normalized.slice(5, 7), 16)
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+  return luminance > 0.6 ? "hsl(var(--foreground))" : "white"
+}
 
 function BubbleField({
   kind,
@@ -131,6 +149,13 @@ function BubbleField({
                 : isActive
                   ? "hsl(var(--chart-2))"
                   : "hsl(var(--chart-2) / 0.45)"
+          const label = b.label.length > 18 ? `${b.label.slice(0, 16)}…` : b.label
+          const smallBubble = b.r <= 24
+          const showInnerLabel = b.r >= 28
+          const textFill = readableTextOn(fill)
+          const labelOnLeft = b.x > GW * 0.55
+          const labelX = labelOnLeft ? Math.max(10, b.x - (b.r + 8)) : Math.min(GW - 10, b.x + b.r + 8)
+          const labelAnchor = labelOnLeft ? "end" : "start"
           return (
             <g
               key={b.id}
@@ -157,30 +182,53 @@ function BubbleField({
               />
               <text
                 x={b.x}
-                y={b.y - 5}
+                y={showInnerLabel ? b.y + 10 : b.y + 4}
                 textAnchor="middle"
                 className="pointer-events-none"
-                fill="white"
-                stroke="rgba(0,0,0,0.5)"
-                strokeWidth={0.35}
+                fill={textFill}
+                stroke={textFill === "white" ? "rgba(0,0,0,0.5)" : "rgba(255,255,255,0.4)"}
+                strokeWidth={showInnerLabel ? 0.35 : 0.25}
                 paintOrder="stroke fill"
-                style={{ fontSize: Math.max(7, Math.min(12, b.r / 2.1)) }}
-              >
-                {b.label.length > 16 ? `${b.label.slice(0, 14)}…` : b.label}
-              </text>
-              <text
-                x={b.x}
-                y={b.y + 8}
-                textAnchor="middle"
-                className="pointer-events-none"
-                fill="white"
-                stroke="rgba(0,0,0,0.5)"
-                strokeWidth={0.35}
-                paintOrder="stroke fill"
-                style={{ fontSize: Math.max(7, Math.min(11, b.r / 2.4)) }}
+                style={{ fontSize: Math.max(8, Math.min(12, b.r / 2.35)), fontWeight: 600 }}
               >
                 {b.count}
               </text>
+              {showInnerLabel ? (
+                <text
+                  x={b.x}
+                  y={b.y - 8}
+                  textAnchor="middle"
+                  className="pointer-events-none"
+                  fill={textFill}
+                  stroke={textFill === "white" ? "rgba(0,0,0,0.5)" : "rgba(255,255,255,0.4)"}
+                  strokeWidth={0.35}
+                  paintOrder="stroke fill"
+                  style={{ fontSize: Math.max(8, Math.min(13, b.r / 2.2)), fontWeight: 600 }}
+                >
+                  {label}
+                </text>
+              ) : null}
+              {smallBubble ? (
+                <>
+                  <line
+                    x1={labelOnLeft ? b.x - b.r + 2 : b.x + b.r - 2}
+                    y1={b.y}
+                    x2={labelOnLeft ? labelX + 3 : labelX - 3}
+                    y2={b.y}
+                    stroke="hsl(var(--muted-foreground) / 0.7)"
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={labelX}
+                    y={b.y - 2}
+                    textAnchor={labelAnchor}
+                    className="pointer-events-none fill-foreground"
+                    style={{ fontSize: 11, fontWeight: 600 }}
+                  >
+                    {label}
+                  </text>
+                </>
+              ) : null}
             </g>
           )
         })}
