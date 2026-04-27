@@ -331,9 +331,10 @@ function DashboardContentInner() {
   }
 
   const handleCategoryViewFullListInTriage = (categorySlug: string) => {
-    console.log("[v0] handleCategoryViewFullListInTriage called with:", categorySlug, "switching to v3 tab")
     setActiveTab("v3")
     setGlobalCategory(categorySlug)
+    // Clear any existing llmCategory filter to show all issues in the category
+    applyIssueSearchParams({ llmCategory: null, clusterId: null, compoundKey: null })
     if (typeof window !== "undefined") {
       // Retry mechanism to wait for the element to appear in the DOM after tab switch
       const scrollToElement = (retries = 10) => {
