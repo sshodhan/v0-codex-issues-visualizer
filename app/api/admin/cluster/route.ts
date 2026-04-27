@@ -163,12 +163,58 @@ export async function POST(request: NextRequest) {
     const sampleKeys: Array<{ id: string; title: string; cluster_key: string }> = []
 
     if (mode === "semantic") {
+      // Pull Topic slug + latest error code per observation in this batch
+      // so the labeller has the deterministic-fallback signals it needs
+      // (lib/storage/cluster-label-fallback.ts). Both lookups are best-
+      // effort: missing rows just leave the field null, which the
+      // fallback handles gracefully.
+      const ids = rows.map((row) => row.id as string)
+      const topicSlugById = new Map<string, string>()
+      const errorCodeById = new Map<string, string>()
+      if (ids.length > 0) {
+        const [catRes, fpRes] = await Promise.all([
+          supabase
+            .from("category_assignments")
+            .select("observation_id, computed_at, categories:category_id(slug)")
+            .in("observation_id", ids)
+            .order("computed_at", { ascending: false }),
+          supabase
+            .from("bug_fingerprints")
+            .select("observation_id, error_code, computed_at")
+            .in("observation_id", ids)
+            .not("error_code", "is", null)
+            .order("computed_at", { ascending: false }),
+        ])
+        // PostgREST inflates the embedded `categories(slug)` join as a
+        // single object at runtime, but Supabase's generated typings
+        // model it as an array — cast through unknown to bridge that
+        // gap. Same pattern as scripts/013_backfill_fingerprints.ts.
+        for (const row of (catRes.data ?? []) as unknown as Array<{
+          observation_id: string
+          categories: { slug: string } | null
+        }>) {
+          if (!topicSlugById.has(row.observation_id) && row.categories?.slug) {
+            topicSlugById.set(row.observation_id, row.categories.slug)
+          }
+        }
+        for (const row of (fpRes.data ?? []) as Array<{
+          observation_id: string
+          error_code: string | null
+        }>) {
+          if (!errorCodeById.has(row.observation_id) && row.error_code) {
+            errorCodeById.set(row.observation_id, row.error_code)
+          }
+        }
+      }
+
       const semanticResult = await runSemanticClusteringForBatch(
         supabase,
         rows.map((row) => ({
           id: row.id as string,
           title: ((row.title as string) ?? "").trim(),
           content: (row.content as string | null) ?? null,
+          topicSlug: topicSlugById.get(row.id as string) ?? null,
+          errorCode: errorCodeById.get(row.id as string) ?? null,
         })),
         {
           similarityThreshold: body.similarityThreshold,

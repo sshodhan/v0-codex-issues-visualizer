@@ -79,21 +79,290 @@ This prevents the triage panel from staying empty unless ingestion itself is emp
 - Stable for same membership set.
 
 ### 4.4 Labeling
-- Label model: `OPENAI_CLUSTER_LABEL_MODEL` (default `gpt-5-mini`).
-- Prompt requests strict JSON with:
-  - `label` (<= 6 words)
-  - `rationale` (<= 1 sentence)
-  - `confidence` (0..1)
-- On failure, use fallback title-based label with low confidence and explicit fallback rationale.
-- **UI naming.** The cluster's `label` is surfaced to users as the
-  **"Family name"** (clusters are surfaced as **"Families"** in user
-  copy — "Top Families" section, drill-down chips, etc.). When `label`
-  is missing or below the `0.6` confidence threshold, the UI shows
-  **"Unnamed family"**. The technical noun "Semantic cluster
-  (Layer A)" stays in methodology surfaces (e.g. the
-  `LayerExplainerRow` in classification-triage). See
-  `docs/ARCHITECTURE.md` §6.0. Distinct from per-issue `llm_subcategory`
-  (one string per cluster vs. one string per classified observation).
+
+The cluster's `label` is surfaced to users as the **"Family name"**
+(clusters render as **"Families"** in user copy — "Top Families"
+section, drill-down chips, family-detail page `<h1>`, V3 prioritized-
+rails cards, story-tab cluster list, classification-triage chip
+strip). It is distinct from per-issue `llm_subcategory` (one string
+per cluster vs. one string per classified observation). The
+technical noun "Semantic cluster (Layer A)" stays in methodology
+surfaces (e.g. the `LayerExplainerRow` in classification-triage). See
+`docs/ARCHITECTURE.md` §6.0 for the cross-vocabulary glossary.
+
+#### 4.4.1 Source priority (`semantic_cluster_label` v2)
+
+The labeller writes one of five possible v2 source tags into
+`clusters.label_model` (a sixth, the legacy `fallback:title`, only
+appears on pre-v2 rows that have not yet been backfilled). All tags
+are surfaced as a typed const-object `LABEL_MODEL` in
+`lib/storage/cluster-label-fallback.ts`, so a typo at any write site
+is a compile error and `grep LABEL_MODEL` enumerates every emission
+and read site.
+
+Resolution order, evaluated per cluster:
+
+```
+┌─────────────────────────────┐  confidence ≥ 0.7
+│ small-model LLM             ├──────────────► accept
+│ OPENAI_CLUSTER_LABEL_MODEL  │   `openai:<small-model>`
+└──────────────┬──────────────┘
+               │ confidence < 0.7
+               ▼
+┌─────────────────────────────┐  pick higher-confidence of the two
+│ large-model LLM (escalate)  ├──────────────► if best ≥ 0.6, accept
+│ OPENAI_CLUSTER_LABEL_       │   `openai:<chosen-model>`
+│ MODEL_LARGE                 │
+└──────────────┬──────────────┘
+               │ best LLM confidence < 0.6 OR both calls failed
+               ▼
+┌─────────────────────────────┐  always returns a label at conf ≥ 0.4
+│ deterministic fallback      ├──────────────► write whichever rung fired
+│ composeDeterministicLabel() │   `deterministic:topic-and-error` (0.55)
+│                             │   `deterministic:topic`           (0.45)
+│                             │   `deterministic:error`           (0.45)
+│                             │   `deterministic:title`           (0.40)
+└─────────────────────────────┘
+```
+
+The escalation step mirrors `lib/classification/pipeline.ts:160-192`
+exactly (same `0.7` trigger, same env-var convention, same
+`processing_events` `attempted` / `escalated` shape). Mirroring is
+deliberate so operators carry one mental model across both pipelines.
+
+#### 4.4.2 Deterministic fallback rungs
+
+Implemented in `lib/storage/cluster-label-fallback.ts` as a pure
+function — no Supabase, no OpenAI, no React in scope; it is unit-
+tested directly via `tests/cluster-label-fallback.test.ts` (10
+cases). Inputs come from member-aggregate signals already present in
+the three-layer model (no new derivation, no new column):
+
+| Rung | Signals required | Example label | Confidence | `label_model` |
+|------|------------------|---------------|------------|---------------|
+| 1 | dominant Topic + dominant error code | `Bug cluster · ENOENT` | `0.55` | `deterministic:topic-and-error` |
+| 2 | dominant Topic only | `Performance cluster` | `0.45` | `deterministic:topic` |
+| 3 | dominant error code only | `EACCES cluster` | `0.45` | `deterministic:error` |
+| 4 | titles only (last resort) | `Cluster · <shortest title>` | `0.40` | `deterministic:title` |
+
+- *Dominant* = `mode()` over the cluster's members, ties broken
+  lexicographically ascending. Deterministic across runs, matches
+  the dominant slug the LLM prompt was told about.
+- Topic comes from `category_assignments.category_id` →
+  `categories.slug` (the heuristic regex bucket, written every
+  ingest by `lib/scrapers/index.ts:165` via `recordCategory`).
+- Error code comes from `bug_fingerprints.error_code` (regex
+  extractor in `lib/scrapers/bug-fingerprint.ts`, written every
+  ingest at `lib/scrapers/index.ts:201` — see migration
+  `013_bug_fingerprints.sql`).
+- Topic-slug → display name resolved by `topicNameForSlug()`:
+  static map for the 10 seed slugs in `scripts/002_*.sql`
+  (`Bug`, `Performance`, `Feature Request`, …), title-case
+  fallback for slugs added later so unknown topics still degrade
+  gracefully.
+
+#### 4.4.3 Confidence calibration
+
+The numbers (`0.4` / `0.45` / `0.55` / `0.6` / `0.7`) are not
+calibrated probabilities — `clusters.label_confidence` is a
+self-reported score from the labeller. They are picked as
+*ranking thresholds* with these invariants:
+
+| Threshold | Meaning | Used where |
+|-----------|---------|------------|
+| `0.4` | UI show-floor | exported constant `MIN_DISPLAYABLE_LABEL_CONFIDENCE` in `lib/storage/cluster-label-fallback.ts`, imported by `app/page.tsx`, `app/families/[clusterId]/page.tsx`, `components/dashboard/{dashboard-story-view,v3-view,classification-triage}.tsx` |
+| `0.4` | Lowest deterministic write | `cluster-label-fallback.ts` `CONFIDENCE_TITLE_ONLY` (defined as `= MIN_DISPLAYABLE_LABEL_CONFIDENCE`, so a single edit moves both) |
+| `0.55` | Highest deterministic write | `cluster-label-fallback.ts` `CONFIDENCE_TOPIC_AND_ERROR` |
+| `0.6` | LLM accept floor | `semantic-clusters.ts` `LABEL_ACCEPT_BELOW` |
+| `0.7` | LLM escalation trigger | `semantic-clusters.ts` `LABEL_ESCALATE_BELOW` — matches `pipeline.ts` |
+| `0.8` | "High confidence" badge | `classification-triage.tsx` `LABEL_CONFIDENCE_HIGH_THRESHOLD` — only LLM-confident labels qualify |
+
+**Self-enforcing contract.** Both the UI show-floor and the lowest
+deterministic write reference the *same* exported constant
+(`MIN_DISPLAYABLE_LABEL_CONFIDENCE`), so a single edit moves both in
+lockstep — it is impossible for the labeller to write a value the UI
+would suppress. A future engineer adding a new rung at confidence
+`0.3` would have to lower the constant, which mechanically lowers the
+UI floor at every render site. The contract is also pinned at runtime
+by `tests/label-confidence-contract.test.ts`, which fails the build
+if any UI file regresses to a hardcoded `0.4` literal next to
+`label_confidence`.
+
+The deterministic ceiling (`0.55`) sits below the LLM accept floor
+(`0.6`), so a confident LLM label always out-ranks the strongest
+deterministic one in any sort that uses `label_confidence`. This
+keeps "Top Families by confidence" intuitive without separate
+sort keys per source.
+
+#### 4.4.4 Prompt context (passed to the LLM step)
+
+```
+Likely Topic for the cluster: <dominant-topic-name>.
+Recurring error codes: <up to 3, distinct>.
+
+Issue titles (<N> total, showing up to 8):
+1. <title>
+2. <title>
+…
+```
+
+Constraints in prompt copy:
+- Label `<= 6 words`, *topic-flavoured even when uncertain*
+  (e.g. `Auth Issue Cluster` rather than refusing).
+- Confidence `0..1`, lower honestly when titles are heterogeneous;
+  do not penalise terse-but-topical labels.
+- "Prefer a label grounded in the supplied Topic and recurring
+  error code when present."
+
+Caps live as named constants
+(`LABEL_PROMPT_TITLE_LIMIT = 8`,
+`LABEL_PROMPT_ERROR_CODE_LIMIT = 3`) in
+`lib/storage/semantic-clusters.ts:40-41`.
+
+#### 4.4.5 Audit trail
+
+Per-row, on `clusters`:
+- `label` — the displayed string.
+- `label_rationale` — the labeller's one-sentence justification
+  (LLM rationale or deterministic-fallback prose).
+- `label_confidence` — see §4.4.3.
+- `label_model` — one of five v2 values (§4.4.1) on rows written
+  under v2; pre-v2 rows may still carry the legacy `fallback:title`
+  stub until the backfill has run (§4.4.7).
+- `label_algorithm_version` — `semantic_cluster_label` (currently
+  `v2`). Pinned across the runtime registry
+  (`lib/storage/algorithm-versions.ts`) and the schema verifier
+  manifest (`lib/schema/expected-manifest.ts`) by
+  `tests/algorithm-version-manifest-contract.test.ts`, which fails
+  the build if either half of that pair is bumped without the other.
+- `labeling_updated_at` — last write.
+
+All written via the `set_cluster_label` SECURITY DEFINER RPC
+(`scripts/012_semantic_clustering.sql:47`). Row-level audit makes
+queries like *"of clusters labelled in the last 7 days, what
+fraction needed deterministic fallback?"* answerable directly:
+
+```sql
+SELECT label_model, count(*)
+FROM clusters
+WHERE labeling_updated_at > now() - interval '7 days'
+GROUP BY label_model;
+```
+
+#### 4.4.6 Observability
+
+Time-series view on top of the row-level audit: every fallback
+write emits a structured server log via
+`lib/error-tracking/server-logger.ts`:
+
+```jsonc
+{
+  "component": "cluster-labeling",
+  "event": "deterministic_fallback_used",
+  "level": "info",
+  "data": {
+    "cluster_key": "semantic:<digest>",
+    "cluster_id": "<uuid>",
+    "member_count": <N>,
+    "dominant_topic_slug": "bug" | null,
+    "distinct_error_codes": ["ENOENT", …],
+    "llm_confidence": <number> | null,
+    "llm_model": "gpt-5-mini" | null,
+    "chosen_model": "deterministic:topic-and-error",
+    "chosen_confidence": 0.55
+  }
+}
+```
+
+A spike in `deterministic_fallback_used` rate doesn't break the
+pipeline (Reliability principles in §6.1 still hold) — it is the
+canary that LLM label quality is degrading before users notice.
+
+#### 4.4.7 Backfill
+
+`scripts/021_backfill_deterministic_labels.ts` is the one-shot
+catch-up that follows `semantic_cluster_label` v1 → v2. Pattern
+follows `scripts/013_backfill_fingerprints.ts` exactly:
+
+1. Dry-run by default — writes `scripts/tmp/cluster-label-backfill-
+   YYYYMMDD.json` with the per-cluster decision matrix and a
+   summary tally by `label_model`. No DB writes.
+2. `--apply` requires the env var `CLUSTER_LABEL_CONFIRM=yes` —
+   refusal exit code `2` otherwise.
+3. Selection: clusters where
+   `label_confidence < 0.6 OR label_model = LABEL_MODEL.LEGACY_FALLBACK_TITLE
+    OR label IS NULL`. The legacy tag is the v1 stub model string
+   (`'fallback:title'`); the script references it via the typed
+   constant in `cluster-label-fallback.ts` so the migration target
+   is grep-discoverable and survives a rename. Idempotent:
+   re-running preserves confident LLM labels written between runs.
+4. Per cluster: pulls active members from `cluster_members`
+   (`detached_at IS NULL`), then their Topic slugs and error codes
+   in batched lookups, calls `composeDeterministicLabel(...)`,
+   writes via `set_cluster_label` RPC with the appropriate
+   `lbl_model` tag.
+
+Run order:
+
+```bash
+# 1) Apply v2 pipeline (this PR), then dry-run:
+node --experimental-strip-types scripts/021_backfill_deterministic_labels.ts --dry-run
+
+# 2) Review scripts/tmp/cluster-label-backfill-YYYYMMDD.json,
+#    confirm the by_model distribution looks reasonable.
+
+# 3) Apply:
+CLUSTER_LABEL_CONFIRM=yes \
+  node --experimental-strip-types scripts/021_backfill_deterministic_labels.ts --apply
+```
+
+#### 4.4.8 UI rendering contract
+
+Producer (`semantic-clusters.ts`, after the labeller runs) guarantees:
+
+> Every cluster row has `label IS NOT NULL` and
+> `label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` after the
+> labeller runs.
+
+Consumer (the render sites listed below) guarantees:
+
+> Anything `label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` is
+> shown verbatim. Anything below is impossible (the producer cannot
+> emit it). `label IS NULL` is defence-in-depth only — rendered as
+> `Cluster #<short-id>` rather than the legacy "Unnamed family"
+> placeholder. The `LABEL_CONFIDENCE_HIGH_THRESHOLD = 0.8`
+> separately gates the "High confidence" badge so the *quality*
+> signal is preserved at a different surface (badge vs name).
+
+The two contracts compose mechanically because they reference the
+**same exported constant**. Two thresholds, two non-overlapping
+meanings. Render-site list:
+
+| Surface | File | Threshold check |
+|---------|------|------------------|
+| Top Families card grid | `app/page.tsx` | `cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Active-cluster header chip | `app/page.tsx` | `row.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Story-tab cluster list | `components/dashboard/dashboard-story-view.tsx` | `r.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| V3 prioritized-rails card | `components/dashboard/v3-view.tsx` | `cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Triage chip strip + detail panel + breadcrumb (3 sites) | `components/dashboard/classification-triage.tsx` | `hasTrustedLabel(...)` (constant `LABEL_CONFIDENCE_SHOW_THRESHOLD = MIN_DISPLAYABLE_LABEL_CONFIDENCE`) |
+| Family-detail page `<h1>` | `app/families/[clusterId]/page.tsx` | `data.family.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE` |
+| Issues-table active-cluster pill | `components/dashboard/issues-table.tsx` | inherits via `activeClusterLabel` prop |
+
+The contract is pinned at three layers of test depth:
+- **Per-rung** — `tests/cluster-label-fallback.test.ts` asserts every
+  rung emits the canonical `LABEL_MODEL.*` value at confidence ≥
+  `MIN_DISPLAYABLE_LABEL_CONFIDENCE`.
+- **Producer/consumer** — `tests/label-confidence-contract.test.ts`
+  asserts the deterministic-rung emission set equals the
+  `LABEL_MODEL` deterministic taxonomy, and walks `app/` and
+  `components/dashboard/` to fail the build on any hardcoded `0.4`
+  literal next to `label_confidence`.
+- **Algorithm version** —
+  `tests/algorithm-version-manifest-contract.test.ts` asserts the
+  `semantic_cluster_label` value in `CURRENT_VERSIONS` equals the
+  one in `EXPECTED_MANIFEST`, so a future bump can't drift the
+  schema verifier into a false-positive "unapplied migration"
+  warning.
 
 ### 4.5 Fallback guarantees
 If any of the following occur:
@@ -125,6 +394,10 @@ Outcome: triage lane has fresh rows after scrape runs, and cluster-based triage 
 ### 6.1 Reliability principles
 - **Never block ingestion on OpenAI calls.**
 - **Always attach to some cluster** (semantic or deterministic).
+- **Always name the cluster you attached to** — every cluster has
+  `label IS NOT NULL` and `label_confidence >= 0.4` after the
+  labeller runs (§4.4.1). LLM unavailability degrades label quality,
+  not label presence.
 - **Log failures, continue processing.**
 
 ### 6.2 Observability
@@ -135,10 +408,21 @@ Run results expose:
 - embedding failures
 - labeling failures
 
+Per-cluster row-level audit:
+- `clusters.label_model` — six possible values that distinguish LLM
+  vs. deterministic source and which deterministic rung fired
+  (§4.4.5). Queryable directly for "what fraction of recent labels
+  needed fallback?".
+
+Time-series:
+- Structured server log `component: cluster-labeling, event:
+  deterministic_fallback_used` per fallback write (§4.4.6). Watch the
+  rate as a leading indicator of LLM label-quality drift.
+
 Classification queue also logs attempted/classified/skipped/failed counts.
 
 ### 6.3 Replay and versioning
-Embedding and semantic labeling use algorithm-version tags (`observation_embedding`, `semantic_cluster_label`) so improvements can be rolled out safely and compared historically.
+Embedding and semantic labeling use algorithm-version tags (`observation_embedding`, `semantic_cluster_label`) so improvements can be rolled out safely and compared historically. The labeller bumped v1 → v2 in 2026-04-26 to introduce the deterministic fallback ladder (§4.4); the one-shot backfill `scripts/021_backfill_deterministic_labels.ts` (§4.4.7) restates v1 stub rows under the v2 contract. Old `algorithm_version = 'v1'` rows are not deleted — `?as_of=T` queries against pre-migration timestamps still see the original v1 stubs.
 
 ---
 
@@ -164,7 +448,7 @@ Historical `clusterFilter` / "TOP CLASSIFICATION CLUSTERS" / "Clustered classifi
 Two follow-up renames landed in a later pass (see `docs/ARCHITECTURE.md` §6.0):
 
 - **"Category focus" slider → "Topic focus"** in the global filter bar. The heuristic regex bucket is surfaced as "Topic" everywhere in user copy, leaving "category" reserved for the LLM strict-schema enum (`classifications.category`).
-- **"Cluster label" placeholder strings → "Unnamed family"** wherever a cluster's display name is empty or below the `0.6` confidence floor. Code identifier `cluster_label` is unchanged.
+- **"Cluster label" placeholder strings → Family name with deterministic fallback.** Originally any cluster whose `label_confidence` sat below the `0.6` floor rendered "Unnamed family" in the UI. With `semantic_cluster_label` v2 the labelling pipeline writes a deterministic Topic+error fallback at confidence `>= 0.4` for every cluster, so the UI show-threshold is now `0.4` and the placeholder is reserved for the `label IS NULL` defence-in-depth case (rendered as `Cluster #<short-id>`). Code identifier `cluster_label` is unchanged. See §4.4 for the full source-priority chain.
 
 ### UI — triage behavior
 - Triage UI distinguishes:
@@ -219,13 +503,16 @@ The triage card surfaces the three layers explicitly so reviewers don't have to 
 ## 8) Operational Controls
 
 ### Tunables
-- `OPENAI_EMBEDDING_MODEL`
-- `OPENAI_CLUSTER_LABEL_MODEL`
+- `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`)
+- `OPENAI_CLUSTER_LABEL_MODEL` (default `gpt-5-mini`) — small-pass label model
+- `OPENAI_CLUSTER_LABEL_MODEL_LARGE` (default: same as small) — escalation label model. Setting it to a larger model opts that deployment into the small→large escalation pattern at the cost of one extra OpenAI call per low-confidence first pass. Mirrors `CLASSIFIER_MODEL_LARGE`.
 - semantic similarity threshold (default `0.86`)
 - `minClusterSize` (default `2`)
+- `CLUSTER_LABEL_CONFIRM` (env, no default) — required `=yes` to let `scripts/021_backfill_deterministic_labels.ts --apply` write to the DB. Refusal exit code `2` otherwise.
 
 ### Recommended defaults
 - Start conservative: high threshold, small minimum cluster size.
+- Leave `OPENAI_CLUSTER_LABEL_MODEL_LARGE` unset until the per-cluster `deterministic_fallback_used` log rate (§4.4.6) shows a steady-state baseline; opt in to escalation if the fallback rate from low-confidence first-pass labels is the dominant slice.
 - Increase semantic coverage gradually while monitoring fallback rate and label quality.
 
 ---
@@ -235,11 +522,17 @@ The triage card surfaces the three layers explicitly so reviewers don't have to 
 1. **False semantic merges**
    - Mitigation: conservative threshold; fallback path; review through admin tools.
 2. **Model downtime / quota limits**
-   - Mitigation: deterministic fallback; failure logging.
+   - Mitigation: deterministic membership fallback (§4.5) **and** deterministic *label* fallback (§4.4); failure logging.
 3. **Label quality drift**
-   - Mitigation: store label confidence/model/algorithm version for auditing and future relabel jobs.
-4. **Cost growth with scale**
-   - Mitigation: embedding cache + only process new observations by default.
+   - Mitigation: store label confidence/model/algorithm version per row for auditing (§4.4.5); structured `deterministic_fallback_used` log event per fallback write (§4.4.6) as a leading indicator.
+4. **Deterministic-label false confidence**
+   - Risk: A `Bug cluster · ENOENT` label *looks* trustworthy at confidence `0.55` but is mechanically derived, not LLM-curated. Reviewers might over-trust it.
+   - Mitigation: `clusters.label_model` distinguishes `openai:*` from `deterministic:*` for any audit query; the "High confidence" badge is gated separately at `0.8` (§4.4.3) so only LLM-confident labels carry that visual marker.
+5. **Cost growth with scale**
+   - Mitigation: embedding cache + only process new observations by default. Escalation to `OPENAI_CLUSTER_LABEL_MODEL_LARGE` is opt-in (§8 Tunables) and only fires for low-confidence first passes, bounded by the cluster count (not observation count) per batch.
+6. **Threshold drift between producer and consumer**
+   - Risk: A future engineer changing the labeller's confidence floor without updating the UI render sites (or vice-versa) silently re-introduces "Unnamed family"-class regressions.
+   - Mitigation: producer and consumer thresholds are both `0.4` and reference each other via comments at `cluster-label-fallback.ts:78` and `classification-triage.tsx:111`. The producer's lowest-rung confidence equals the consumer's show-floor; this self-enforcing contract is documented in §4.4.3 and §4.4.8.
 
 ---
 
@@ -247,8 +540,9 @@ The triage card surfaces the three layers explicitly so reviewers don't have to 
 
 1. Add incremental nearest-neighbor search to reduce O(n²) pairwise comparisons for large batches.
 2. Add optional cross-batch semantic rebalancing job for long-tail consolidation.
-3. Introduce reviewer feedback loop to tune threshold and relabel strategy.
-4. Add quality metrics (cluster purity/cohesion proxies) into admin dashboards.
+3. **Tune clustering cohesion** — sweep `similarityThreshold` (currently `0.86`) and `minClusterSize` against a labelled eval set. Deferred from the labelling-pipeline pass (§4.4) because changing those re-shapes Family membership for every existing user; needs a precision/recall harness before any change ships.
+4. **In-app reviewer feedback loop on Family names** — UI affordance to rate / correct labels, plus schema for human-supplied labels (`clusters.label_human`, `label_human_actor`, `label_human_at`), plus precedence rules (`human` > `openai-high` > `deterministic` > `openai-low`). Substantial UX + auth work; deferred. The current row-level audit (§4.4.5) is the prerequisite that makes this future work tractable.
+5. Add quality metrics (cluster purity/cohesion proxies) into admin dashboards.
 
 ---
 

@@ -19,7 +19,13 @@ export const CURRENT_VERSIONS = {
   competitor_mention: "v2",
   classification: "v1",
   observation_embedding: "v1",
-  semantic_cluster_label: "v1",
+  // v2 (2026-04): the labeller pipeline grew prompt context (Topic +
+  // recurring error codes), small-→-large model escalation mirroring the
+  // classifier, and a deterministic fallback derived from cluster
+  // contents so the UI no longer renders "Unnamed family". See
+  // lib/storage/cluster-label-fallback.ts and
+  // docs/CLUSTERING_DESIGN.md §4.4.
+  semantic_cluster_label: "v2",
   // v1 of the regex bug-fingerprint extractor. Produces error codes, top
   // stack frame, env tokens, and repro counters from title + body. Feeds
   // into a compound cluster key label that splits over-aggregated

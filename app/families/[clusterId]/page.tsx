@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
+import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -64,9 +65,10 @@ export default function FamilyDetailPage() {
   if (!data.family) return <main className="container mx-auto px-4 py-8">Family not found.</main>
 
   const familyName =
-    data.family.label && (data.family.label_confidence ?? 0) >= 0.6
+    data.family.label &&
+    (data.family.label_confidence ?? 0) >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
       ? data.family.label
-      : data.family.fallback_title || "Unnamed family"
+      : data.family.fallback_title || `Cluster #${clusterId.slice(0, 8)}`
   const representativeObservationId = data.family.representative_observations[0]?.observation_id ?? null
 
   return (

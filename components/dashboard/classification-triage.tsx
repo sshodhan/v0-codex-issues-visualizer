@@ -52,6 +52,7 @@ import type { ClassificationRecord, ClassificationStats, ClusterSummary } from "
 import { useClusters } from "@/hooks/use-dashboard-data"
 import { pickPrimaryCta, type PrerequisiteStatus } from "@/lib/classification/prerequisites"
 import { CATEGORY_ENUM } from "@/lib/classification/taxonomy"
+import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 
 // Two example LLM-category slugs interpolated into reviewer-facing copy
 // that explains why the global heuristic filter doesn't apply to the LLM
@@ -101,11 +102,14 @@ const STATUS_OPTIONS = ["new", "triaged", "in-progress", "resolved", "wont-fix",
 const SEVERITY_OPTIONS = ["critical", "high", "medium", "low"] as const
 
 // Cluster-label confidence comes from a self-reported score returned by the
-// labelling model (see lib/storage/semantic-clusters.ts). Raw 2-decimal
-// display (`0.82`) implies a calibrated precision the number does not carry.
-// Bucket at display time; below 0.6 we refuse to show the label at all.
-// Data-scientist review finding M1.
-const LABEL_CONFIDENCE_SHOW_THRESHOLD = 0.6
+// labelling model OR — when the LLM is unsure — by the deterministic
+// Topic+error fallback (lib/storage/cluster-label-fallback.ts), which writes
+// labels at confidence 0.4–0.55. Raw 2-decimal display (`0.82`) implies a
+// calibrated precision the number does not carry, so we still bucket at
+// display time. The show-threshold matches the deterministic floor so
+// every cluster renders its label; the high-threshold (0.8) gates the
+// "High confidence" badge — only LLM-confident labels qualify.
+const LABEL_CONFIDENCE_SHOW_THRESHOLD = MIN_DISPLAYABLE_LABEL_CONFIDENCE
 const LABEL_CONFIDENCE_HIGH_THRESHOLD = 0.8
 
 function bucketConfidence(confidence: number): "High" | "Medium" {
@@ -546,7 +550,7 @@ export function ClassificationTriage({
               {semanticClusters.map((cluster) => {
                 const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
                   ? cluster.label!
-                  : "Unnamed family"
+                  : `Cluster #${cluster.id.slice(0, 8)}`
                 // Chip text makes in-scope vs total disambiguation
                 // explicit: primary badge is observations visible in the
                 // current window, outline badge (when different) is the
@@ -743,7 +747,7 @@ export function ClassificationTriage({
                   <p className="mt-1 font-medium">
                     {hasTrustedLabel(selected.cluster_label, selected.cluster_label_confidence)
                       ? selected.cluster_label
-                      : "Unnamed family"}
+                      : `Cluster #${selected.cluster_id.slice(0, 8)}`}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {selected.cluster_size ?? 0} related observation
@@ -1058,7 +1062,7 @@ function ClusterMemberPreview({
   if (!show || !cluster) return null
   const displayLabel = hasTrustedLabel(cluster.label, cluster.label_confidence)
     ? cluster.label!
-    : "Unnamed family"
+    : `Cluster #${cluster.id.slice(0, 8)}`
   const extraMembers = Math.max(0, cluster.in_window - cluster.samples.length)
   return (
     <div className="rounded-md border bg-muted/20 p-3 space-y-2">
@@ -1274,7 +1278,7 @@ function LayerBreadcrumb({
   const clusterLabel = record.cluster_id
     ? hasTrustedLabel(record.cluster_label, record.cluster_label_confidence)
       ? record.cluster_label
-      : "Unnamed family"
+      : `Cluster #${record.cluster_id.slice(0, 8)}`
     : null
   const groupLabel = `${record.effective_category} › ${record.effective_subcategory || "General"}`
 
