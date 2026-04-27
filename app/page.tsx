@@ -814,15 +814,6 @@ const handleHeroLlmCategoryDrill = (
                 <HeroInsight variant="v1" ... />
               */}
 
-              {/* Pipeline Freshness Status */}
-              <PipelineFreshnessStrip
-                prereq={pipelinePrereq}
-                pendingReviewCount={pipelineReviewCount}
-                statsError={Boolean(classificationStatsError)}
-                windowLabel={globalTimeLabel}
-                asOfActive={asOf != null}
-              />
-
               {/* Charts Row - Visual context */}
               <div className="grid gap-6 lg:grid-cols-2">
                 <SentimentChart data={stats.sentimentBreakdown} />
@@ -849,6 +840,15 @@ const handleHeroLlmCategoryDrill = (
   onViewFullList={handleCategoryViewFullListInTriage}
   />
               {/* [V1 - DEPRECATED] skipFirstCategorySlug={undefined} - shows all categories including hero */}
+
+              {/* Pipeline Freshness Status - positioned under Hot themes */}
+              <PipelineFreshnessStrip
+                prereq={pipelinePrereq}
+                pendingReviewCount={pipelineReviewCount}
+                statsError={Boolean(classificationStatsError)}
+                windowLabel={globalTimeLabel}
+                asOfActive={asOf != null}
+              />
 
               {/* Trend Chart - Historical context */}
               {stats.trendData.length > 0 && (
