@@ -7,7 +7,7 @@
 // `--experimental-strip-types`, and pulling Tailwind classnames into
 // that path would couple the prompt build to the design system.
 
-import { CATEGORY_ENUM, type IssueCategory } from "./taxonomy.ts"
+import type { IssueCategory } from "./taxonomy.ts"
 
 export const LLM_CATEGORY_LABELS: Record<IssueCategory, string> = {
   incomplete_context_overflow: "Incomplete context / overflow",
@@ -134,20 +134,22 @@ function humanizeSlug(slug: string, mode: "title" | "sentence" = "title"): strin
 }
 
 export function llmCategoryLabel(slug: string): string {
-  if ((CATEGORY_ENUM as readonly string[]).includes(slug)) {
-    return LLM_CATEGORY_LABELS[slug as IssueCategory]
-  }
-  // Fallback: a new enum value may land in taxonomy.ts before its
-  // hand-tuned label entry above. Sentence-case the slug so reviewers
-  // still see something readable instead of `output_content_safety`.
+  // Prefer the curated label, fall back to a sentence-cased humanization.
+  // The CATEGORY_ENUM membership check is intentionally absent: slugs land
+  // in CATEGORY_ENUM before their curated label entry catches up (the
+  // `output_content_safety` case from PR #125), and we'd rather return a
+  // readable fallback than `undefined` from a missing map key.
+  const curated = LLM_CATEGORY_LABELS[slug as IssueCategory] as string | undefined
+  if (curated) return curated
   return slug ? humanizeSlug(slug, "sentence") : slug
 }
 
 export function llmCategoryPalette(slug: string): LlmCategoryPalette {
-  if ((CATEGORY_ENUM as readonly string[]).includes(slug)) {
-    return LLM_CATEGORY_PALETTE[slug as IssueCategory]
-  }
-  return FALLBACK_PALETTE
+  // Same enum-membership-isn't-enough story as llmCategoryLabel above —
+  // an enum value with no palette entry must still resolve to a real
+  // palette object, not undefined.
+  const curated = LLM_CATEGORY_PALETTE[slug as IssueCategory] as LlmCategoryPalette | undefined
+  return curated ?? FALLBACK_PALETTE
 }
 
 // Subcategory is open-ended (LLM-coined snake_case per the prompt
