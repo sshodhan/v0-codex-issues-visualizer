@@ -17,10 +17,10 @@ import {
 import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import type { Category } from "@/lib/types"
 
-export const maxDuration = 60
+export const maxDuration = 300
 
 // Rewrites every observation's derivation rows at the currently-effective
-// algorithm version. Chunked (Vercel 60s cap) and resumable via cursor.
+// algorithm version. Chunked (Vercel Pro 300s cap) and resumable via cursor.
 // Idempotent: sentiment/category/impact have unique(observation_id,
 // algorithm_version); competitor_mention has no such constraint so we
 // pre-check before writing.

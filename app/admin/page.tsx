@@ -609,10 +609,11 @@ async function explainAdminFailure(res: Response): Promise<string> {
   }
   if (res.status === 504) {
     // Vercel's generic 504 for exceeded maxDuration — classify batches
-    // hit this when OpenAI latency + MV refresh blow past the 60s function
-    // cap. Actionable message beats the raw FUNCTION_INVOCATION_TIMEOUT.
+    // hit this when OpenAI latency + MV refresh blow past the function
+    // cap (300s on Pro). Actionable message beats the raw
+    // FUNCTION_INVOCATION_TIMEOUT.
     return (
-      "Request timed out at 60s (Vercel function limit). For classify-backfill this usually means the batch " +
+      "Request timed out at the Vercel function limit. For classify-backfill this usually means the batch " +
       "was larger than gpt-5-mini can finish in time — reduce the batch limit (try 5), or avoid running while " +
       "the 03:00 UTC cron tick is active. Try again; nothing was committed."
     )
