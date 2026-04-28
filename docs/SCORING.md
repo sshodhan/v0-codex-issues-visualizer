@@ -110,10 +110,12 @@ come from the surrounding mechanism:
 - crashes/fails with `additionalContext` → `bug`
 - `additionalContext` docs unclear / not documented → `documentation`
 
-The golden set carries one contrast row per slug (rows 51–53 plus the
-existing `Support additionalContext in PreToolUse hooks…` row) so a
-future broad `additionalcontext` phrase cannot silently collapse all
-four interpretations into one Topic. Same reasoning generalises to
+The golden set carries one contrast row per slug (rows 49–51 — the
+three v6 contrast rows for model-quality / integration / bug — plus
+row 42, the pre-existing `Support additionalContext in PreToolUse
+hooks…` feature-request row) so a future broad `additionalcontext`
+phrase cannot silently collapse all four interpretations into one
+Topic. Same reasoning generalises to
 other entity-only nouns the classifier might be tempted to over-fit on
 (e.g. `sandbox`, `pretooluse`, `additionalContext`'s sibling fields):
 add the bounded mechanism phrase, not the entity.
