@@ -1,9 +1,11 @@
 "use client"
 
+import { useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ExternalLink, ArrowUpRight, ArrowDownRight, Zap, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { logClientEvent } from "@/lib/error-tracking/client-logger"
 
 interface RealtimeInsight {
   category: { name: string; slug: string; color: string }
@@ -28,7 +30,21 @@ interface CategoryIssuesGridProps {
   skipFirstCategorySlug?: string | null
   maxIssuesPerCategory?: number
   onViewFullList?: (categorySlug: string) => void
+  /**
+   * Slug of the active topic chip ("all" or "" when no filter). Used to
+   * surface an explicit "no observations" banner when the user picked a
+   * topic that has no activity in the 72h window — without it, the grid
+   * silently shows the same content as the unfiltered view.
+   */
+  categoryFilter?: string
+  /** Display name for `categoryFilter`; falls back to the slug if missing. */
+  categoryFilterLabel?: string
 }
+
+// Categories with fewer than HOT_THRESHOLD observations in the now-window
+// move to the collapsed "Quiet" subgroup so the urgency story stays
+// scannable while keeping every active topic reachable.
+const HOT_THRESHOLD = 3
 
 function SentimentBar({ negativeRatio }: { negativeRatio: number }) {
   const negative = negativeRatio
@@ -175,21 +191,66 @@ function CategoryCard({
   )
 }
 
+function Legend() {
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-border pt-4 text-xs text-muted-foreground">
+      <span className="flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full bg-[var(--positive)]" />
+        Positive
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full bg-[var(--neutral)]" />
+        Neutral
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full bg-[var(--negative)]" />
+        Negative
+      </span>
+    </div>
+  )
+}
+
 export function CategoryIssuesGrid({
   insights,
   skipFirstCategorySlug,
   maxIssuesPerCategory = 3,
   onViewFullList,
+  categoryFilter,
+  categoryFilterLabel,
 }: CategoryIssuesGridProps) {
+  const filterActive = !!categoryFilter && categoryFilter !== "" && categoryFilter !== "all"
+  const filterMatch = filterActive
+    ? insights.find((i) => i.category.slug === categoryFilter)
+    : undefined
+  const filterEmpty = filterActive && !filterMatch
+  const filterDisplayName = categoryFilterLabel || categoryFilter || ""
+
+  // Breadcrumb for the "user filtered to a topic with no 72h activity"
+  // case. Pre-fix, this would have manifested as a silently-empty hero
+  // even when the slug had observations the cap had hidden — so the log
+  // doubles as a regression alarm: if it fires for a slug that the
+  // dashboard's topic chip claims is selectable, the data path between
+  // /api/stats and the chip's option list has drifted.
+  useEffect(() => {
+    if (filterEmpty) {
+      logClientEvent("dashboard-hot-themes-filter-empty", {
+        category: categoryFilter,
+        categoryLabel: categoryFilterLabel ?? null,
+        totalActiveCategories: insights.length,
+        activeSlugs: insights.map((i) => i.category.slug),
+      })
+    }
+  }, [filterEmpty, categoryFilter, categoryFilterLabel, insights])
+
   // Filter out the hero category if specified
   const displayed = skipFirstCategorySlug
     ? insights.filter((i) => i.category.slug !== skipFirstCategorySlug)
     : insights
 
-  // Take top 6 categories for the grid
-  const displayCategories = displayed.slice(0, 6)
+  const hot = displayed.filter((i) => i.nowCount >= HOT_THRESHOLD)
+  const quiet = displayed.filter((i) => i.nowCount < HOT_THRESHOLD)
 
-  if (displayCategories.length === 0) {
+  if (displayed.length === 0) {
     return (
       <Card>
         <CardHeader className="pb-4">
@@ -203,63 +264,85 @@ export function CategoryIssuesGrid({
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            {insights.length === 0
-              ? "No hot signals detected in the last 72 hours."
-              : "No additional themes beyond the lead story."}
+            {filterEmpty
+              ? `No observations for ${filterDisplayName} in the last 72 hours.`
+              : insights.length === 0
+                ? "No hot signals detected in the last 72 hours."
+                : "No additional themes beyond the lead story."}
           </p>
         </CardContent>
       </Card>
     )
   }
 
+  const renderCard = (insight: RealtimeInsight) => {
+    const globalRank = insights.findIndex(
+      (i) => i.category.slug === insight.category.slug
+    ) + 1
+    return (
+      <CategoryCard
+        key={insight.category.slug}
+        insight={insight}
+        rank={globalRank}
+        maxIssues={maxIssuesPerCategory}
+        onViewFullList={onViewFullList}
+      />
+    )
+  }
+
+  // When the filter is active, the lead is the user's choice (not
+  // urgency-#1), so we drop the "#1 by urgency" claim from the description.
+  const headerTitle = skipFirstCategorySlug
+    ? filterActive
+      ? "Other topics with activity"
+      : "Other Hot Themes"
+    : "What Engineers Should Fix Now"
+  const headerDescription = skipFirstCategorySlug
+    ? filterActive
+      ? "Other topics from the last 72 hours, ordered by urgency."
+      : "All topics from the last 72 hours. The lead story above is #1 by urgency."
+    : "All topics ranked by urgency (volume + momentum + impact + source diversity)"
+
   return (
     <Card>
       <CardHeader className="pb-4">
         <CardTitle className="flex items-center gap-2 text-lg">
           <Zap className="h-4 w-4 text-amber-500" />
-          {skipFirstCategorySlug ? "Other Hot Themes" : "What Engineers Should Fix Now"}
+          {headerTitle}
         </CardTitle>
-        <CardDescription>
-          {skipFirstCategorySlug
-            ? "More topics from the last 72 hours. The lead story above is #1 by urgency."
-            : "Top topics ranked by urgency (volume + momentum + impact + source diversity)"}
-        </CardDescription>
+        <CardDescription>{headerDescription}</CardDescription>
       </CardHeader>
 
       <CardContent className="p-4 pt-0">
-        {/* 2-Column Responsive Grid */}
-        <div className="grid gap-4 md:grid-cols-2">
-          {displayCategories.map((insight) => {
-            const globalRank = insights.findIndex(
-              (i) => i.category.slug === insight.category.slug
-            ) + 1
-            return (
-              <CategoryCard
-                key={insight.category.slug}
-                insight={insight}
-                rank={globalRank}
-                maxIssues={maxIssuesPerCategory}
-                onViewFullList={onViewFullList}
-              />
-            )
-          })}
-        </div>
+        {filterEmpty && (
+          <div className="mb-4 rounded-md border border-dashed border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+            No observations for{" "}
+            <span className="font-medium text-foreground">{filterDisplayName}</span> in the
+            last 72 hours. Showing all other topics with activity below.
+          </div>
+        )}
 
-        {/* Legend */}
-        <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-border pt-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--positive)]" />
-            Positive
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--neutral)]" />
-            Neutral
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--negative)]" />
-            Negative
-          </span>
-        </div>
+        {hot.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No themes with {HOT_THRESHOLD}+ observations in the last 72 hours.
+          </p>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">{hot.map(renderCard)}</div>
+        )}
+
+        {quiet.length > 0 && (
+          <details className="mt-4 group">
+            <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+              Show {quiet.length} quiet {quiet.length === 1 ? "category" : "categories"}{" "}
+              <span className="text-xs text-muted-foreground">
+                (fewer than {HOT_THRESHOLD} observations in 72h)
+              </span>
+            </summary>
+            <div className="mt-3 grid gap-4 md:grid-cols-2">{quiet.map(renderCard)}</div>
+          </details>
+        )}
+
+        <Legend />
       </CardContent>
     </Card>
   )

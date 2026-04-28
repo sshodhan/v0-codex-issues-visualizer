@@ -256,3 +256,119 @@ test("recent-window rank shifts when removing duplicate negative weighting", () 
   assert.equal(previous[0]?.category.slug, "bug")
   assert.equal(current[0]?.category.slug, "feature-request")
 })
+
+// Helper used by the coverage / reachability tests below. Builds one
+// observation per slug at the requested age, with deterministic non-zero
+// impact so urgency math runs end-to-end.
+function obsAt(
+  id: string,
+  cat: Category,
+  hoursAgo: number,
+  now: Date,
+  impact = 5,
+): RealtimeIssueInput {
+  return {
+    id,
+    title: `${cat.slug} ${id}`,
+    url: null,
+    published_at: new Date(now.getTime() - hoursAgo * 60 * 60 * 1000).toISOString(),
+    sentiment: "neutral",
+    impact_score: impact,
+    category: { name: cat.name, slug: cat.slug, color: cat.color },
+    source: { name: "Reddit", slug: "reddit" },
+  }
+}
+
+test("computeRealtimeInsights returns every active slug (no top-N cap)", () => {
+  // Coverage invariant: with one observation in each of the 11 taxonomy
+  // slugs inside the 72h window, the result must contain all 11. The
+  // historical `.slice(0, 6)` cap was the symptom in the
+  // hot-themes-coverage-proposal note.
+  const now = new Date("2026-04-28T12:00:00.000Z")
+  const issues = CATEGORIES.map((c, i) => obsAt(`o-${c.slug}`, c, 24 + i, now))
+
+  const result = computeRealtimeInsights(issues, now, 72)
+
+  assert.equal(result.length, CATEGORIES.length, "expected one row per active slug")
+  const slugs = new Set(result.map((r) => r.category.slug))
+  for (const cat of CATEGORIES) {
+    assert.ok(slugs.has(cat.slug), `missing slug ${cat.slug}`)
+  }
+})
+
+test("computeRealtimeInsights: lead story is the row with highest urgencyScore", () => {
+  // Stability invariant: the lead-story / followers split contract reads
+  // result[0] as the lead. The sort must put the highest-urgency row there
+  // regardless of how many rows survive the filter.
+  const now = new Date("2026-04-28T12:00:00.000Z")
+  const cat = (slug: string) => CATEGORIES.find((c) => c.slug === slug)!
+
+  const issues: RealtimeIssueInput[] = [
+    // bug: 5 hot recent observations
+    obsAt("b1", cat("bug"), 1, now, 8),
+    obsAt("b2", cat("bug"), 2, now, 8),
+    obsAt("b3", cat("bug"), 3, now, 8),
+    obsAt("b4", cat("bug"), 4, now, 8),
+    obsAt("b5", cat("bug"), 5, now, 8),
+    // security: 1 quiet recent observation
+    obsAt("s1", cat("security"), 24, now, 5),
+  ]
+
+  const result = computeRealtimeInsights(issues, now, 72)
+  const maxUrgency = Math.max(...result.map((r) => r.urgencyScore))
+  assert.equal(result[0]?.urgencyScore, maxUrgency)
+  assert.equal(result[0]?.category.slug, "bug")
+})
+
+test("computeRealtimeInsights: prior-window-only categories surface with zeroed display metrics", () => {
+  // Empty-bucket policy: a slug with activity 73-144h ago but none in the
+  // last 72h is still reachable, so reviewers can see the category exists
+  // and is decaying. Display fields (avgImpact, negativeRatio) are zero
+  // rather than NaN; urgencyScore ranks below every active bucket.
+  const now = new Date("2026-04-28T12:00:00.000Z")
+  const cat = (slug: string) => CATEGORIES.find((c) => c.slug === slug)!
+
+  const issues: RealtimeIssueInput[] = [
+    obsAt("b1", cat("bug"), 1, now, 8),
+    obsAt("b2", cat("bug"), 2, now, 8),
+    // documentation: only in the prior window
+    obsAt("d1", cat("documentation"), 100, now, 5),
+    obsAt("d2", cat("documentation"), 110, now, 5),
+  ]
+
+  const result = computeRealtimeInsights(issues, now, 72)
+  const docs = result.find((r) => r.category.slug === "documentation")
+
+  assert.ok(docs, "documentation must surface even with 0 nowCount")
+  assert.equal(docs!.nowCount, 0)
+  assert.equal(docs!.previousCount, 2)
+  assert.equal(docs!.avgImpact, 0)
+  assert.equal(docs!.negativeRatio, 0)
+  assert.ok(docs!.urgencyScore < (result.find((r) => r.category.slug === "bug")!.urgencyScore))
+})
+
+test("computeRealtimeInsights: low-volume slugs reach the panel within their 72h window", () => {
+  // Reachability test mirroring the 2026-04-28 production data point —
+  // a single observation in `model-quality` plus high-volume churn in
+  // other slugs must still surface model-quality so the topic-chip filter
+  // can find it (computeHeroInsight reads result[i] by slug match).
+  const now = new Date("2026-04-28T12:00:00.000Z")
+  const cat = (slug: string) => CATEGORIES.find((c) => c.slug === slug)!
+
+  const issues: RealtimeIssueInput[] = []
+  // 18 integration observations
+  for (let i = 0; i < 18; i++) {
+    issues.push(obsAt(`i${i}`, cat("integration"), 1 + i, now, 8))
+  }
+  // 11 bug
+  for (let i = 0; i < 11; i++) {
+    issues.push(obsAt(`b${i}`, cat("bug"), 1 + i, now, 8))
+  }
+  // 1 model-quality
+  issues.push(obsAt("mq1", cat("model-quality"), 60, now, 5))
+
+  const result = computeRealtimeInsights(issues, now, 72)
+  const mq = result.find((r) => r.category.slug === "model-quality")
+  assert.ok(mq, "model-quality with 1 obs in 72h must reach the result")
+  assert.equal(mq!.nowCount, 1)
+})

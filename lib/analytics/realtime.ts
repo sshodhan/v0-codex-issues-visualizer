@@ -47,6 +47,11 @@ export interface RealtimeInsight {
  * and source diversity. Newer issues inside the "now" window get a mild
  * recency boost so a story that broke 12h ago counts more than one that
  * broke 70h ago.
+ *
+ * Returns every category with activity in either the "now" window or the
+ * prior window of the same length. Sorted by `urgencyScore` desc; the caller
+ * partitions the result for display (e.g. hot vs quiet). See
+ * `docs/reviews/hot-themes-coverage-proposal.md`.
  */
 export function computeRealtimeInsights(
   issues: RealtimeIssueInput[],
@@ -131,11 +136,15 @@ export function computeRealtimeInsights(
   }
 
   return Array.from(buckets.values())
-    .filter((b) => b.nowCount > 0)
+    .filter((b) => b.nowCount > 0 || b.previousCount > 0)
     .map((b) => {
       const momentum = b.nowCount - b.previousCount
-      const avgImpact = b.impactTotal / b.nowCount
-      const negativeRatio = b.negativeCount / b.nowCount
+      // Guard div-by-zero for buckets with prior-window-only activity:
+      // those land in the "quiet" partition with avgImpact / negativeRatio
+      // = 0 and a negative urgencyScore (sourceDiversity = 0 → -0.8 from
+      // the source bonus), so they sort below every active bucket.
+      const avgImpact = b.nowCount > 0 ? b.impactTotal / b.nowCount : 0
+      const negativeRatio = b.nowCount > 0 ? b.negativeCount / b.nowCount : 0
       const sourceDiversity = b.sources.size
 
       const urgencyScore = Number(
@@ -168,5 +177,4 @@ export function computeRealtimeInsights(
       }
     })
     .sort((a, b) => b.urgencyScore - a.urgencyScore)
-    .slice(0, 6)
 }
