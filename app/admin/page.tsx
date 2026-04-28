@@ -226,6 +226,7 @@ interface ObservationTraceResponse {
     capture: { captured_at: string | null; published_at: string | null; source_id: string | null }
     fingerprint: { latest_computed_at: string | null; algorithm_version: string | null; total_versions: number; rows: Array<Record<string, unknown>> }
     embedding: { latest_computed_at: string | null; algorithm_version: string | null; model: string | null; dimensions: number | null; total_versions: number; rows: Array<Record<string, unknown>> }
+    category: { latest_computed_at: string | null; algorithm_version: string | null; winner_slug: string | null; confidence: number | null; evidence: unknown; total_versions: number; rows: Array<Record<string, unknown>> }
     clustering: { active_cluster_id: string | null; active_cluster_key: string | null; active_cluster_size: number | null; memberships: Array<Record<string, unknown>> }
     classification: { latest_created_at: string | null; latest_algorithm_version: string | null; latest_model_used: string | null; total_versions: number; chain_head_id: string | null; lineage: Array<Record<string, unknown>> }
     review: { total_reviews: number; latest_reviewed_at: string | null }
@@ -948,6 +949,23 @@ function ObservationTracePanel({ secret }: { secret: string }) {
                 ["latest_computed_at", trace.stages.embedding.latest_computed_at],
               ]}
             />
+            <TraceStage
+              title="Topic (regex_topic)"
+              available={trace.availability.category}
+              meta={[
+                ["algorithm_version", trace.stages.category.algorithm_version],
+                ["winner_slug", trace.stages.category.winner_slug],
+                ["confidence", trace.stages.category.confidence === null ? null : trace.stages.category.confidence.toFixed(2)],
+                ["latest_computed_at", trace.stages.category.latest_computed_at],
+                ["versions", String(trace.stages.category.total_versions)],
+              ]}
+            >
+              {trace.stages.category.evidence ? (
+                <pre className="overflow-x-auto rounded bg-muted p-2 text-[10px]">
+                  {JSON.stringify(trace.stages.category.evidence, null, 2)}
+                </pre>
+              ) : null}
+            </TraceStage>
             <TraceStage
               title="Cluster membership"
               available={trace.availability.clustering}

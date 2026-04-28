@@ -577,7 +577,7 @@ function scoreSegment(
 //   - Scrapers write `?.categoryId` onto the raw observation row as a
 //     convenience initial classification. No evidence is stored there.
 //   - Canonical, auditable topic assignments live in `category_assignments`
-//     with full v5 evidence, written by the derivation/backfill path via
+//     with full v5+ evidence, written by the derivation/backfill path via
 //     recordCategory() in lib/storage/derivations.ts.
 //
 // v5 changes (scripts/025_topic_classifier_v5_bump.sql + 026):
@@ -590,6 +590,20 @@ function scoreSegment(
 //   - Returns structured TopicResult { categoryId, slug, confidenceProxy,
 //     evidence } where evidence is a self-describing JSONB object persisted
 //     into category_assignments.evidence for SQL-side classification audits.
+//
+// v6 changes (scripts/027_topic_classifier_v6_bump.sql):
+//   - CATEGORY_PATTERNS phrase-table maintenance only — no mechanism
+//     changes. Title/body 4× split, template-prefix stripping, structured
+//     evidence emission, and the (still-empty) SLUG_THRESHOLD override
+//     mechanism all carry over from v5 unchanged. Bounded phrase additions
+//     for developerInstructions, merge/branch conflicts, progress-log
+//     visibility, higher-limits/priority-processing, workspace-write /
+//     bubblewrap sandbox + device passthrough, ANSI escape injection, and
+//     additionalContext / PreToolUse intent distinctions; weak `how to`
+//     documentation phrase removed. Evidence shape is unchanged from v5
+//     — only the algorithm_version discriminator string shifts to "v6".
+//     See docs/SCORING.md for the full changelog and the additionalContext
+//     classification rule.
 export function categorizeIssue(
   title: string,
   body: string,

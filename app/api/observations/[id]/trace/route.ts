@@ -34,6 +34,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
     embeddingRes,
     clusterMemberRes,
     classificationsRes,
+    categoryAssignmentsRes,
   ] = await Promise.all([
     supabase
       .from("bug_fingerprints")
@@ -59,14 +60,42 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       )
       .eq("observation_id", observationId)
       .order("created_at", { ascending: false }),
+    // Topic / regex_topic classifier (Layer 0). Joins categories.slug so the
+    // trace page can show "model-quality" instead of the bare category UUID;
+    // the PostgREST embed inflates as a single object at runtime even though
+    // Supabase typings model it as an array (same cast pattern as
+    // app/api/admin/cluster/route.ts).
+    supabase
+      .from("category_assignments")
+      .select(
+        "id, observation_id, algorithm_version, category_id, confidence, evidence, computed_at, categories:category_id(slug)",
+      )
+      .eq("observation_id", observationId)
+      .order("computed_at", { ascending: false }),
   ])
 
   const fingerprints = fingerprintRes.data ?? []
   const embeddings = embeddingRes.data ?? []
   const clusterMemberships = clusterMemberRes.data ?? []
   const classifications = classificationsRes.data ?? []
+  const categoryAssignments = (categoryAssignmentsRes.data ?? []) as unknown as Array<{
+    id: string
+    observation_id: string
+    algorithm_version: string | null
+    category_id: string | null
+    confidence: number | null
+    evidence: unknown
+    computed_at: string | null
+    categories: { slug: string } | null
+  }>
 
-  if (fingerprintRes.error || embeddingRes.error || clusterMemberRes.error || classificationsRes.error) {
+  if (
+    fingerprintRes.error ||
+    embeddingRes.error ||
+    clusterMemberRes.error ||
+    classificationsRes.error ||
+    categoryAssignmentsRes.error
+  ) {
     return NextResponse.json(
       {
         error: "Failed to compose trace",
@@ -75,6 +104,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
           embeddingRes.error?.message ||
           clusterMemberRes.error?.message ||
           classificationsRes.error?.message ||
+          categoryAssignmentsRes.error?.message ||
           "unknown",
       },
       { status: 500 },
@@ -148,6 +178,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       capture: true,
       fingerprint: fingerprints.length > 0,
       embedding: embeddings.length > 0,
+      category: categoryAssignments.length > 0,
       clustering: clusterMemberships.length > 0,
       classification: classifications.length > 0,
       review: (reviewsRes.data ?? []).length > 0,
@@ -171,6 +202,21 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
         dimensions: embeddings[0]?.dimensions ?? null,
         total_versions: embeddings.length,
         rows: embeddings,
+      },
+      // Topic (regex_topic, Layer 0). `winner_slug` is the categories.slug
+      // joined from the latest category_assignments row, equivalent to
+      // evidence.scoring.winner. `confidence` is confidence_proxy — a
+      // deterministic score-margin ratio (margin / (winner + runnerUp)),
+      // not a calibrated probability. `evidence` is the full TopicEvidence
+      // JSONB (or null on pre-v5 rows); see docs/SCORING.md for the shape.
+      category: {
+        latest_computed_at: categoryAssignments[0]?.computed_at ?? null,
+        algorithm_version: categoryAssignments[0]?.algorithm_version ?? null,
+        winner_slug: categoryAssignments[0]?.categories?.slug ?? null,
+        confidence: categoryAssignments[0]?.confidence ?? null,
+        evidence: categoryAssignments[0]?.evidence ?? null,
+        total_versions: categoryAssignments.length,
+        rows: categoryAssignments,
       },
       clustering: {
         active_cluster_id: observation.cluster_id,
