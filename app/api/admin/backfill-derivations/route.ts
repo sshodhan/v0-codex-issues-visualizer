@@ -182,7 +182,7 @@ export async function POST(request: NextRequest) {
     const sentimentResult = analyzeSentiment(text)
     const topicResult = categorizeIssue(title, content, categories)
     const categoryId = topicResult?.categoryId ?? null
-    const categoryConfidence = topicResult?.confidence ?? 0
+    const categoryConfidence = topicResult?.confidenceProxy ?? 0
     const categoryEvidence = topicResult?.evidence ?? null
     const engagement = latestEngagement.get(id) ?? { upvotes: 0, comments_count: 0 }
     const impact = calculateImpactScore(

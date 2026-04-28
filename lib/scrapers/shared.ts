@@ -433,43 +433,62 @@ const TITLE_TEMPLATE_PREFIX_RE = /^\s*\[(?:bug|feature|feat|request|question|doc
 // One title hit at weight 2 ≥ eight body hits at weight 1.
 const TITLE_WEIGHT_MULTIPLIER = 4
 
-// v5: Per-slug threshold overrides. Most slugs keep the v3/v4 floor of 2.
-// Precision-critical slugs that bled false positives historically (pricing
-// dragging in any "plan" mention; model-quality at risk of catching anything
-// with "wrong") are tuned upward.
-const SLUG_THRESHOLD: Partial<Record<string, number>> = {
-  "model-quality": 3,
-  pricing: 4,
-}
+// v5: Per-slug threshold overrides. The mechanism ships in v5 but overrides
+// are intentionally left empty — title/body weighting and template stripping
+// already fix the model-quality=0 recall issue. Threshold tuning should wait
+// until golden-set / backfill evidence shows a concrete false-positive need
+// for a specific slug.
+const SLUG_THRESHOLD: Partial<Record<string, number>> = {}
 
 function thresholdFor(slug: string): number {
   return SLUG_THRESHOLD[slug] ?? 2
 }
 
 export interface TopicEvidenceMatch {
+  slug: string
   phrase: string
-  weight: number
-  in: "title" | "body"
+  pattern_weight: number
+  effective_weight: number
+  location: "title" | "body"
+  raw_hits: number
+  weighted_score: number
+  whole_word?: boolean
 }
 
 export interface TopicEvidence {
+  algorithm_version: "v5"
+  classifier_type: "regex_topic"
+  input: {
+    title_present: boolean
+    body_present: boolean
+    template_prefix: string | null
+    template_stripped: boolean
+  }
+  scoring: {
+    title_multiplier: number
+    body_multiplier: number
+    default_threshold: number
+    slug_thresholds: Record<string, number>
+    scores: Record<string, number>
+    winner: string
+    runner_up: string | null
+    margin: number
+    threshold: number
+    confidence_proxy: number
+  }
   matched_phrases: TopicEvidenceMatch[]
-  scores: Record<string, number>
-  margin: number
-  runner_up: string | null
-  threshold: number
 }
 
 export interface TopicResult {
   categoryId: string
   slug: string
-  confidence: number
+  confidenceProxy: number
   evidence: TopicEvidence
 }
 
 function scoreSegment(
   text: string,
-  segmentLabel: "title" | "body",
+  location: "title" | "body",
   weightMultiplier: number,
 ): { perSlug: Record<string, number>; matches: TopicEvidenceMatch[] } {
   const perSlug: Record<string, number> = {}
@@ -479,22 +498,29 @@ function scoreSegment(
   for (const [slug, patterns] of Object.entries(CATEGORY_PATTERNS)) {
     let total = 0
     for (const pattern of patterns) {
-      const hits = countMatches(text, pattern.phrase, pattern.wholeWord)
-      if (hits === 0) continue
-      const weighted = hits * pattern.weight * weightMultiplier
-      total += weighted
-      matches.push({
+      const rawHits = countMatches(text, pattern.phrase, pattern.wholeWord)
+      if (rawHits === 0) continue
+      const effectiveWeight = pattern.weight * weightMultiplier
+      const weightedScore = rawHits * effectiveWeight
+      total += weightedScore
+      const match: TopicEvidenceMatch = {
+        slug,
         phrase: pattern.phrase,
-        weight: pattern.weight * weightMultiplier,
-        in: segmentLabel,
-      })
+        pattern_weight: pattern.weight,
+        effective_weight: effectiveWeight,
+        location,
+        raw_hits: rawHits,
+        weighted_score: weightedScore,
+      }
+      if (pattern.wholeWord !== undefined) match.whole_word = pattern.wholeWord
+      matches.push(match)
     }
     if (total > 0) perSlug[slug] = total
   }
   return { perSlug, matches }
 }
 
-// Heuristic top-level "topic" classifier. Returns a slug from the
+// Heuristic top-level "topic" classifier. Returns a TopicResult from the
 // `categories` SQL table (bug, feature-request, performance, ux-ui, …).
 // In the UI this value is surfaced as "Topic" — deliberately disjoint
 // from the LLM `category` enum produced by lib/classification/pipeline.ts
@@ -502,22 +528,36 @@ function scoreSegment(
 // parameter are kept for legacy reasons; the user-facing noun is "Topic".
 // See docs/ARCHITECTURE.md §6.0 — Glossary.
 //
+// Two-tier category_id boundary:
+//   - Scrapers write `?.categoryId` directly onto the raw observation row
+//     as a convenience initial classification. No evidence is stored there.
+//   - Canonical, auditable topic assignments live in `category_assignments`
+//     with full v5 evidence (matched phrases, scores, margin). These are
+//     written by the derivation/backfill path via recordCategory() in
+//     lib/storage/derivations.ts, which persists the full TopicResult.
+//   - Reads (dashboard, API) join through mv_observation_current which
+//     picks up category_assignments rows; scraper-level category_id is an
+//     interim fallback until derivation runs.
+//
 // v5 changes (scripts/025_topic_classifier_v5_bump.sql + 026):
 //   - title and body are scored separately, then merged with the title
 //     contribution multiplied by TITLE_WEIGHT_MULTIPLIER (=4).
 //   - Title template prefixes ([BUG], [FEATURE], …) are stripped before
-//     scoring.
-//   - Per-slug thresholds via SLUG_THRESHOLD; default remains 2.
-//   - Returns structured TopicResult with evidence (matched phrases, scores,
-//     margin, runner-up) for persistence into category_assignments.evidence.
+//     scoring; the stripped prefix is captured in evidence.input.
+//   - Per-slug threshold override mechanism (SLUG_THRESHOLD) ships empty;
+//     tuning waits for backfill evidence. Default threshold remains 2.
+//   - Returns structured TopicResult { categoryId, slug, confidenceProxy,
+//     evidence } where evidence is a self-describing JSONB object persisted
+//     into category_assignments.evidence for SQL-side classification audits.
 export function categorizeIssue(
   title: string,
   body: string,
   categories: Category[],
 ): TopicResult | null {
-  const normalizedTitle = (title ?? "")
-    .toLowerCase()
-    .replace(TITLE_TEMPLATE_PREFIX_RE, "")
+  const rawTitle = title ?? ""
+  const templateMatch = rawTitle.match(TITLE_TEMPLATE_PREFIX_RE)
+  const templatePrefix = templateMatch ? templateMatch[0].trim() : null
+  const normalizedTitle = rawTitle.toLowerCase().replace(TITLE_TEMPLATE_PREFIX_RE, "")
   const normalizedBody = (body ?? "").toLowerCase()
 
   const titleSeg = scoreSegment(normalizedTitle, "title", TITLE_WEIGHT_MULTIPLIER)
@@ -539,18 +579,39 @@ export function categorizeIssue(
   const matched_phrases = [...titleSeg.matches, ...bodySeg.matches]
   const otherCategoryId = categories.find((c) => c.slug === "other")?.id
 
+  const baseInput = {
+    title_present: normalizedTitle.length > 0,
+    body_present: normalizedBody.length > 0,
+    template_prefix: templatePrefix,
+    template_stripped: templatePrefix !== null,
+  }
+  const baseScoring = {
+    title_multiplier: TITLE_WEIGHT_MULTIPLIER,
+    body_multiplier: 1,
+    default_threshold: 2,
+    slug_thresholds: SLUG_THRESHOLD as Record<string, number>,
+  }
+
   if (ranked.length === 0) {
     if (!otherCategoryId) return null
     return {
       categoryId: otherCategoryId,
       slug: "other",
-      confidence: 0,
+      confidenceProxy: 0,
       evidence: {
+        algorithm_version: "v5",
+        classifier_type: "regex_topic",
+        input: baseInput,
+        scoring: {
+          ...baseScoring,
+          scores,
+          winner: "other",
+          runner_up: null,
+          margin: 0,
+          threshold: thresholdFor("other"),
+          confidence_proxy: 0,
+        },
         matched_phrases,
-        scores,
-        margin: 0,
-        runner_up: null,
-        threshold: thresholdFor("other"),
       },
     }
   }
@@ -559,7 +620,7 @@ export function categorizeIssue(
   const runnerUp = ranked[1] ?? null
   const margin = winnerScore - (runnerUp?.[1] ?? 0)
   const denom = winnerScore + (runnerUp?.[1] ?? 0)
-  const confidence = denom > 0 ? Math.min(margin / denom, 1) : 0
+  const confidenceProxy = denom > 0 ? Math.min(margin / denom, 1) : 0
 
   const winnerCategory = categories.find((c) => c.slug === winnerSlug)
   if (!winnerCategory) {
@@ -567,13 +628,21 @@ export function categorizeIssue(
     return {
       categoryId: otherCategoryId,
       slug: "other",
-      confidence: 0,
+      confidenceProxy: 0,
       evidence: {
+        algorithm_version: "v5",
+        classifier_type: "regex_topic",
+        input: baseInput,
+        scoring: {
+          ...baseScoring,
+          scores,
+          winner: "other",
+          runner_up: runnerUp?.[0] ?? null,
+          margin,
+          threshold: thresholdFor("other"),
+          confidence_proxy: 0,
+        },
         matched_phrases,
-        scores,
-        margin,
-        runner_up: runnerUp?.[0] ?? null,
-        threshold: thresholdFor("other"),
       },
     }
   }
@@ -581,13 +650,21 @@ export function categorizeIssue(
   return {
     categoryId: winnerCategory.id,
     slug: winnerSlug,
-    confidence,
+    confidenceProxy,
     evidence: {
+      algorithm_version: "v5",
+      classifier_type: "regex_topic",
+      input: baseInput,
+      scoring: {
+        ...baseScoring,
+        scores,
+        winner: winnerSlug,
+        runner_up: runnerUp?.[0] ?? null,
+        margin,
+        threshold: thresholdFor(winnerSlug),
+        confidence_proxy: confidenceProxy,
+      },
       matched_phrases,
-      scores,
-      margin,
-      runner_up: runnerUp?.[0] ?? null,
-      threshold: thresholdFor(winnerSlug),
     },
   }
 }

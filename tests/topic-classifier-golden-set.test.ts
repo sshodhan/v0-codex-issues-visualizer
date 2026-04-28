@@ -89,8 +89,8 @@ test("topic-classifier v5: identical phrase has 4× more weight in the title tha
   const bodyHit = categorizeIssue("", "hallucinates", CATEGORIES)
   assert.ok(titleHit, "title-only run must classify")
   assert.ok(bodyHit, "body-only run must classify")
-  const titleScore = titleHit!.evidence.scores["model-quality"] ?? 0
-  const bodyScore = bodyHit!.evidence.scores["model-quality"] ?? 0
+  const titleScore = titleHit!.evidence.scoring.scores["model-quality"] ?? 0
+  const bodyScore = bodyHit!.evidence.scoring.scores["model-quality"] ?? 0
   assert.ok(
     titleScore === bodyScore * 4,
     `expected title 4× body; got title=${titleScore} body=${bodyScore}`,
@@ -108,10 +108,11 @@ test("topic-classifier v5: [BUG] template prefix is stripped before scoring", ()
   )
 })
 
-test("topic-classifier v5: per-slug thresholds — model-quality requires score >= 3", () => {
-  // "wrong file" alone in body has weight 3 in CATEGORY_PATTERNS (no title
-  // multiplier because we put it in the body). In v5 model-quality requires
-  // score >= 3 — exactly at threshold.
+test("topic-classifier v5: global threshold=2 — model-quality classifies when body score meets threshold", () => {
+  // "wrong file" alone in body has pattern_weight 3 in CATEGORY_PATTERNS,
+  // no title multiplier. Score 3 >= global threshold 2, so model-quality wins.
+  // Per-slug threshold overrides are intentionally empty in v5 — threshold
+  // tuning waits for backfill evidence.
   const atThreshold = categorizeIssue("", "wrong file in the diff", CATEGORIES)
   assert.equal(atThreshold?.slug, "model-quality")
 })
@@ -124,24 +125,40 @@ test("topic-classifier v5: evidence object carries matched phrases, scores, marg
   )
   assert.ok(r)
   const ev = r!.evidence
+  assert.equal(ev.algorithm_version, "v5")
+  assert.equal(ev.classifier_type, "regex_topic")
   assert.ok(Array.isArray(ev.matched_phrases) && ev.matched_phrases.length > 0)
-  assert.equal(typeof ev.scores, "object")
-  assert.equal(typeof ev.margin, "number")
-  assert.equal(typeof ev.threshold, "number")
-  // Title hit (hallucinates) must be tagged with "title".
-  const titleHits = ev.matched_phrases.filter((m) => m.in === "title")
+  assert.equal(typeof ev.scoring.scores, "object")
+  assert.equal(typeof ev.scoring.margin, "number")
+  assert.equal(typeof ev.scoring.threshold, "number")
+  assert.equal(typeof ev.scoring.confidence_proxy, "number")
+  // Title hit (hallucinates) must be tagged with location "title".
+  const titleHits = ev.matched_phrases.filter((m) => m.location === "title")
   assert.ok(titleHits.length >= 1, "expected at least one title-segment match")
+  // Each match must have slug, pattern_weight, effective_weight, raw_hits, weighted_score.
+  for (const m of ev.matched_phrases) {
+    assert.equal(typeof m.slug, "string")
+    assert.equal(typeof m.pattern_weight, "number")
+    assert.equal(typeof m.effective_weight, "number")
+    assert.equal(typeof m.raw_hits, "number")
+    assert.equal(typeof m.weighted_score, "number")
+  }
 })
 
 test("topic-classifier v5: returns Other (with evidence) when no slug clears its threshold", () => {
   const r = categorizeIssue("hello world", "thanks everyone", CATEGORIES)
   assert.equal(r?.slug, "other")
-  assert.equal(r?.confidence, 0)
+  assert.equal(r?.confidenceProxy, 0)
   assert.equal(r?.evidence.matched_phrases.length, 0)
 })
 
-// Type-level reachability: ensures TopicResult is exported.
+// Type-level reachability: ensures TopicResult is exported and confidenceProxy is present.
 test("topic-classifier v5: TopicResult shape is exported and well-formed", () => {
   const r: TopicResult | null = categorizeIssue("test", "", CATEGORIES)
-  assert.ok(r === null || (typeof r.categoryId === "string" && typeof r.slug === "string"))
+  assert.ok(
+    r === null ||
+      (typeof r.categoryId === "string" &&
+        typeof r.slug === "string" &&
+        typeof r.confidenceProxy === "number"),
+  )
 })
