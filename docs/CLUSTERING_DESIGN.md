@@ -378,6 +378,120 @@ If any of the following occur:
 
 then the observation still gets attached through deterministic title hashing (`attachToCluster` with `buildClusterKey`).
 
+### 4.6 Cluster topic metadata (Layer-A explanatory signal)
+
+Layer 0 (the heuristic Topic classifier in `lib/scrapers/shared.ts`)
+writes per-observation evidence — `evidence.scoring.{winner,
+runner_up, margin, confidence_proxy, scores}` plus
+`evidence.matched_phrases[]` — into the JSONB column on
+`category_assignments` (scripts/026). Those rows stay
+observation-level; nothing about Layer 0 changes here.
+
+`scripts/028_cluster_topic_metadata.sql` adds a *read-only* MV,
+`mv_cluster_topic_metadata`, that **aggregates** that evidence onto the
+embedding-built clusters. Per cluster the MV emits:
+
+| Column | Meaning |
+|--------|---------|
+| `observation_count` | Active members (`cluster_members.detached_at IS NULL`). |
+| `classified_count` | Subset with a v5 evidence row. |
+| `other_count` | Members without a v5 evidence row (`observation_count − classified_count`). |
+| `topic_distribution` | `JSONB {slug → count}`. Includes an `unclassified` bucket so values sum to `observation_count`. |
+| `dominant_topic_slug` | Lex-tiebroken mode of `topic_distribution`, excluding `unclassified` unless that is the only bucket. Matches the `mode()` `lib/storage/cluster-label-fallback.ts → composeDeterministicLabel` already uses. |
+| `dominant_topic_count` | Bucket count for the dominant slug. |
+| `dominant_topic_share` | `dominant_topic_count / observation_count` (NUMERIC(5,4)). |
+| `runner_up_distribution` | `JSONB {slug → count}` over `evidence.scoring.runner_up`. |
+| `avg_confidence_proxy` | Mean of `evidence.scoring.confidence_proxy`. NULL when no member has v5 evidence. |
+| `avg_topic_margin` | Mean of `evidence.scoring.margin`. NULL when no member has v5 evidence. |
+| `low_margin_count` | Members with `margin <= 2` (the v5 default threshold; close calls between Topics). |
+| `mixed_topic_score` | Shannon entropy of `topic_distribution`, normalised to `[0, 1]` by `ln(bucket_count)`. 0 = single-topic Family, 1 = uniform across observed buckets. |
+| `common_matched_phrases` | Top 10 phrases by frequency from `evidence.matched_phrases`, ordered count-desc / phrase-asc. |
+
+The MV is wired into the existing `refresh_materialized_views()` hook
+so the same cron tick that refreshes `mv_observation_current` /
+`mv_cluster_health_current` keeps it fresh. The unique index on
+`cluster_id` gates `REFRESH MATERIALIZED VIEW CONCURRENTLY` for the
+non-first refresh.
+
+#### Architectural contract
+
+- **Layer 0 stays observation-level.** This MV is a downstream read
+  model; it does not write to `category_assignments` and does not
+  alter `CATEGORY_PATTERNS`, the LLM tiebreaker plan, or the
+  embedding pipeline.
+- **Layer A stays embedding-first.** Cluster membership is decided by
+  cosine similarity in `lib/storage/semantic-clusters.ts`
+  (§4.1–4.3). `dominant_topic_slug` and `mixed_topic_score` are
+  *labels on what the embedding pass already produced* — never
+  inputs back into the clustering decision.
+- **`mixed_topic_score` is a hint, not a gate.** A high value flags
+  a Family for human review (genuinely multi-causal vs.
+  split-needed). Auto-splitting on entropy is deferred until we have
+  a labelled eval set (§10 Future Improvements).
+- **`dominant_topic_slug` is consistent with the labeller's
+  fallback.** Both pick the lex-tiebroken mode, so the deterministic
+  cluster name and the cluster's dominant Topic agree by
+  construction (no separate source of truth).
+- **The family-name prompt is unchanged.** The labeller still
+  receives the topic slug computed in-process from member rows; it
+  does not read this MV. (A future pass may swap in the MV's
+  `dominant_topic_slug` once it has been steady-state for one
+  refresh cycle, but that is a separate change.)
+- **No manual override UI yet.** The MV is read-only — no
+  reviewer-mutable columns. Adding a reviewer override would live on
+  `clusters` (alongside `label_human` per §10.4), not here.
+
+#### Read path
+
+`lib/storage/cluster-topic-metadata.ts` exposes:
+
+```ts
+getClusterTopicMetadata(supabase, clusterId): Promise<ClusterTopicMetadata | null>
+listClusterTopicMetadata(supabase, {
+  clusterIds?, minObservationCount?, minMixedTopicScore?,
+  dominantTopicSlug?, limit?,
+}): Promise<ClusterTopicMetadata[]>
+```
+
+Both helpers do NUMERIC-string → JS-number coercion at the boundary
+(Postgres NUMERIC arrives as a string via supabase-js) and preserve
+the NULL-vs-0 distinction for averages so "no v5 evidence yet" stays
+distinguishable from "computed average is zero". A pure `rowToMetadata`
+plus the coercion helpers are exported via `__testing` for unit
+coverage in `tests/cluster-topic-metadata.test.ts`.
+
+There is intentionally no admin/debug route in this pass: the existing
+`/api/clusters` chip-strip surface composes
+`mv_cluster_health_current` and the `clusters` label row, and adding
+a third join here without a UI consumer would be premature
+abstraction. When a Family-detail panel surfaces topic distribution
+to reviewers, it can call `getClusterTopicMetadata(...)` directly
+from the server component.
+
+#### Example queries
+
+```sql
+-- Families dominated by a single Topic (likely homogeneous,
+-- low-review priority).
+select cluster_id, dominant_topic_slug, dominant_topic_share, observation_count
+from mv_cluster_topic_metadata
+where dominant_topic_share >= 0.8
+  and observation_count >= 5
+order by observation_count desc;
+
+-- Mixed Families that may need a split-review.
+select cluster_id, mixed_topic_score, observation_count, topic_distribution
+from mv_cluster_topic_metadata
+where mixed_topic_score >= 0.6
+  and observation_count >= 5
+order by mixed_topic_score desc, observation_count desc;
+
+-- Phrases that recur across a specific Family's evidence.
+select common_matched_phrases
+from mv_cluster_topic_metadata
+where cluster_id = '<uuid>';
+```
+
 ---
 
 ## 5) Classification Integration
