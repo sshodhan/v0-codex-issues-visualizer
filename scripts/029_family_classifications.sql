@@ -150,6 +150,7 @@ alter table algorithm_versions
     'classification',
     'observation_embedding',
     'semantic_cluster_label',
+    'bug_fingerprint',
     'family_classification'
   ));
 
