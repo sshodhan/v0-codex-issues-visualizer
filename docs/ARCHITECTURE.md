@@ -192,6 +192,7 @@ A scrape run is structured as three sequential passes over the captured records.
 - **Exactly one active canonical per cluster.** Enforced by `UNIQUE INDEX ON clusters(cluster_key)` plus a `canonical_observation_id` NOT NULL constraint. Canonical selection is a cluster property, not a flag on an observation.
 - **Cluster membership is append-only per attach/detach event.** `detached_at IS NULL` is the active set; history is preserved.
 - **`cluster_key` normalization lives in TypeScript only.** Since SQL never writes to `clusters`/`cluster_members` directly (only via the storage module), the former TS-vs-SQL hash parity requirement is obsolete.
+- **Layer-A cluster topic metadata is a downstream read model, never a clustering gate.** `mv_cluster_topic_metadata` (`scripts/028`) aggregates Layer-0 per-observation evidence (`category_assignments.evidence`) onto each cluster — `topic_distribution`, `dominant_topic_slug`, `dominant_topic_share`, `avg_topic_margin`, `low_margin_count`, `runner_up_distribution`, `mixed_topic_score`, `common_matched_phrases`. It does not feed back into membership: Layer A stays embedding-first, Layer 0 stays observation-level, and `mixed_topic_score` is a hint for human split-review, not an auto-split signal. Read helpers in `lib/storage/cluster-topic-metadata.ts`. See `docs/CLUSTERING_DESIGN.md` §4.6.
 
 ### 3.2 LLM classification flow
 

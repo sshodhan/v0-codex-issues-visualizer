@@ -120,9 +120,16 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "mv_fingerprint_daily",
     // 016.
     "mv_cluster_health_current",
+    // 028.
+    "mv_cluster_topic_metadata",
   ],
   functions: [
     // 007 — write/read RPCs the scraper pipeline depends on.
+    // refresh_materialized_views is redefined by 016 and 028 to add
+    // each new MV to the central refresh hook. The verifier only
+    // checks function existence, not body, so a partial apply (MV
+    // exists but the hook still refers to the old set) is invisible
+    // here — track that via the post-deploy migration runbook.
     "refresh_materialized_views",
     "record_observation",
     "record_observation_revision",
@@ -196,6 +203,10 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // ---- mv_cluster_health_current (016) ----
     "idx_mv_cluster_health_current_cluster",
     "idx_mv_cluster_health_current_size",
+    // ---- mv_cluster_topic_metadata (028) ----
+    "idx_mv_cluster_topic_metadata_cluster",
+    "idx_mv_cluster_topic_metadata_mixed",
+    "idx_mv_cluster_topic_metadata_dominant",
     // ---- algorithm registry (007) ----
     "idx_algorithm_versions_one_current",
     // ---- scrape logs (002 + hand-added status filter) ----
@@ -399,12 +410,16 @@ function tableGroup(name: string): string {
     name === "observation_embeddings" ||
     name === "cluster_frequency" ||
     name === "v_cluster_source_diversity" ||
+    name === "mv_cluster_health_current" ||
+    name === "mv_cluster_topic_metadata" ||
     name === "attach_to_cluster" ||
     name === "detach_from_cluster" ||
     name === "set_cluster_label" ||
     name === "record_observation_embedding" ||
     name.startsWith("idx_cluster_members") ||
-    name.startsWith("idx_observation_embeddings")
+    name.startsWith("idx_observation_embeddings") ||
+    name.startsWith("idx_mv_cluster_health_current") ||
+    name.startsWith("idx_mv_cluster_topic_metadata")
   ) {
     return "clustering"
   }
