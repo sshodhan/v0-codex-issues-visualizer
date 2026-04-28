@@ -61,26 +61,75 @@ bodies were overwhelming title-level model-quality cues):
     hits at weight 1.
   - **Template prefix stripping.** `[BUG]`, `[FEATURE]`, `[FEAT]`,
     `[REQUEST]`, `[QUESTION]`, `[DOCS]`, `[RFC]` are stripped from the
-    title before matching. Stops the bracket tag from consuming title
-    real estate (`[BUG] Claude forgets context` should classify on
-    "forgets context", not on the bracket).
-  - **Per-slug thresholds.** `SLUG_THRESHOLD` overrides the global floor
-    of 2 for precision-critical slugs: `model-quality` requires 3,
-    `pricing` requires 4. All other slugs keep 2.
+    title before matching so the bracket tag does not consume scoring
+    budget. The stripped prefix is preserved in `evidence.input` for
+    audit.
+  - **Per-slug threshold mechanism.** `SLUG_THRESHOLD` is wired up but
+    intentionally left empty in v5 — the default floor of 2 applies to
+    all slugs. Threshold tuning is deferred until the backfill evidence
+    column shows concrete false-positive patterns for specific slugs.
   - **Structured evidence emission.** `categorizeIssue` returns
-    `TopicResult { categoryId, slug, confidence, evidence }` where
-    `evidence = { matched_phrases[{phrase, weight, in}], scores, margin,
-    runner_up, threshold }`. The backfill route + scrapers consume
-    `.categoryId`; the backfill also persists the full `evidence` JSONB
-    into `category_assignments.evidence` (new column added in `scripts/
-    026`), so admin debugging can answer "why did this row classify as
-    X?" via a single SQL query.
-  - **Regression guard.** `tests/fixtures/topic-golden-set.jsonl` is the
-    new labelled corpus seeded with the misclassified production posts
-    surfaced via diagnostic SQL. `tests/topic-classifier-golden-set.test
-    .ts` enforces per-row precision + an aggregate accuracy floor; the
-    `scripts/eval-topic-patterns.ts` CLI runs the same set against
-    candidate phrase tweaks in <1s with no DB.
+    `TopicResult { categoryId, slug, confidenceProxy, evidence }`.
+    `confidenceProxy` is a deterministic score-margin ratio (`margin /
+    (winner + runnerUp)`, clamped to [0,1]) — not a calibrated model
+    probability. The full `evidence` JSONB (see shape below) is persisted
+    into `category_assignments.evidence` (new column in `scripts/026`) so
+    admin debugging can answer "why did this row classify as X?" with a
+    single SQL query.
+  - **Regression guard.** `tests/fixtures/topic-golden-set.jsonl` is a
+    35-row labelled corpus covering all 11 topic slugs, seeded from
+    misclassified production posts surfaced via diagnostic SQL.
+    `tests/topic-classifier-golden-set.test.ts` enforces per-row
+    precision + ≥90% accuracy floor + v5 structural invariants.
+    `scripts/eval-topic-patterns.ts` prints precision/recall/F1 per slug
+    in <1s with no DB (`npx tsx scripts/eval-topic-patterns.ts --verbose`).
+
+`evidence` shape stored in `category_assignments.evidence`:
+
+```jsonc
+{
+  "algorithm_version": "v5",
+  "classifier_type": "regex_topic",
+  "input": {
+    "title_present": true,
+    "body_present": true,
+    "template_prefix": "[BUG]",   // null if no prefix was stripped
+    "template_stripped": true
+  },
+  "scoring": {
+    "title_multiplier": 4,
+    "body_multiplier": 1,
+    "default_threshold": 2,
+    "slug_thresholds": {},         // empty in v5; per-slug overrides added later
+    "scores": { "model-quality": 16, "bug": 4 },
+    "winner": "model-quality",
+    "runner_up": "bug",
+    "margin": 12,
+    "threshold": 2,
+    "confidence_proxy": 0.6        // margin / (winner + runnerUp)
+  },
+  "matched_phrases": [
+    {
+      "slug": "model-quality",
+      "phrase": "hallucinates",
+      "pattern_weight": 4,         // weight in CATEGORY_PATTERNS
+      "effective_weight": 16,      // pattern_weight × title_multiplier
+      "location": "title",
+      "raw_hits": 1,
+      "weighted_score": 16,
+      "whole_word": false
+    }
+  ]
+}
+```
+
+Two-tier `category_id` boundary:
+- **Scrapers** write `?.categoryId` onto the raw `observations` row as a
+  convenience initial classification. No evidence is stored at ingest.
+- **Canonical assignments** live in `category_assignments` with full v5
+  evidence, written by the derivation/backfill path via `recordCategory()`
+  in `lib/storage/derivations.ts`. Dashboard reads join through
+  `mv_observation_current` which picks up `category_assignments` rows.
 
 v1–v4 derivation rows remain in `sentiment_scores` / `category_assignments` /
 `impact_scores` for replay comparison; the MV picks the newest per-observation
