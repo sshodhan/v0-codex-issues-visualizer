@@ -120,11 +120,16 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "mv_fingerprint_daily",
     // 016.
     "mv_cluster_health_current",
-    // 027.
+    // 028.
     "mv_cluster_topic_metadata",
   ],
   functions: [
     // 007 — write/read RPCs the scraper pipeline depends on.
+    // refresh_materialized_views is redefined by 016 and 028 to add
+    // each new MV to the central refresh hook. The verifier only
+    // checks function existence, not body, so a partial apply (MV
+    // exists but the hook still refers to the old set) is invisible
+    // here — track that via the post-deploy migration runbook.
     "refresh_materialized_views",
     "record_observation",
     "record_observation_revision",
@@ -198,7 +203,7 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // ---- mv_cluster_health_current (016) ----
     "idx_mv_cluster_health_current_cluster",
     "idx_mv_cluster_health_current_size",
-    // ---- mv_cluster_topic_metadata (027) ----
+    // ---- mv_cluster_topic_metadata (028) ----
     "idx_mv_cluster_topic_metadata_cluster",
     "idx_mv_cluster_topic_metadata_mixed",
     "idx_mv_cluster_topic_metadata_dominant",

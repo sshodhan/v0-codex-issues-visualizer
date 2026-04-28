@@ -152,15 +152,29 @@ dominant_topic as (
     slug asc
 ),
 topic_aggregates as (
-  -- Per-cluster numeric aggregates over the v5 evidence fields.
+  -- Per-cluster numeric aggregates over the v5+ evidence fields.
   -- AVG ignores NULLs natively; rows without an evidence margin
   -- (pre-v5 or unclassified observations) simply don't contribute.
+  --
+  -- Precision sizing notes:
+  --   * confidence_proxy is clamped to [0, 1] in
+  --     lib/scrapers/shared.ts (`Math.min(margin/denom, 1)`),
+  --     so numeric(6,4) is comfortable.
+  --   * topic_margin is `winnerScore - runnerUp.score` where
+  --     `winnerScore = Σ(raw_hits × pattern_weight × multiplier)`
+  --     with no upper bound on raw_hits and a 4× title multiplier
+  --     on top of pattern weights up to 5. A single observation
+  --     with several w4 title phrases easily produces margin ≥ 100.
+  --     Use numeric(12,4) so the AVG cannot overflow on heavy
+  --     evidence (max 99,999,999.9999 — way past any plausible
+  --     per-observation cumulative weight). Do NOT shrink without
+  --     re-deriving the worst-case score budget.
   select
     cluster_id,
     count(*)::int as observation_count,
     count(topic_slug)::int as classified_count,
     avg(confidence_proxy)::numeric(6,4) as avg_confidence_proxy,
-    avg(topic_margin)::numeric(6,4) as avg_topic_margin,
+    avg(topic_margin)::numeric(12,4) as avg_topic_margin,
     count(*) filter (where topic_margin is not null and topic_margin <= 2)::int as low_margin_count
   from member_topic
   group by cluster_id

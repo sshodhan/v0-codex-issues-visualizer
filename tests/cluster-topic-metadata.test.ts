@@ -116,6 +116,39 @@ test("rowToMetadata maps the full MV row including NUMERIC strings", () => {
   ])
 })
 
+// Regression for the `avg_topic_margin numeric(6,4)` overflow that
+// would have crashed `refresh_materialized_views()` when a cluster
+// contained a member with several heavily-weighted title phrases.
+// `evidence.scoring.margin = winnerScore − runnerUpScore` is in raw
+// weighted-phrase units (NOT [0, 1]) — pattern weights up to 5,
+// title multiplier 4, and unbounded raw_hits make 100+ realistic.
+// The SQL column is now `numeric(12,4)`; the boundary helper here
+// must accept and round-trip those values.
+test("rowToMetadata accepts large avg_topic_margin without truncation", () => {
+  const row = {
+    cluster_id: "c-3",
+    cluster_key: "semantic:abc",
+    cluster_path: "semantic",
+    observation_count: 5,
+    classified_count: 5,
+    unclassified_count: 0,
+    classification_coverage_share: "1.0000",
+    topic_distribution: { bug: 5 },
+    runner_up_distribution: {},
+    dominant_topic_slug: "bug",
+    dominant_topic_count: 5,
+    dominant_topic_share: "1.0000",
+    avg_confidence_proxy: "0.9000",
+    avg_topic_margin: "187.5000",
+    low_margin_count: 0,
+    mixed_topic_score: "0.0000",
+    common_matched_phrases: [],
+    computed_at: "2026-04-28T00:00:00Z",
+  }
+  const out = rowToMetadata(row)
+  assert.equal(out.avg_topic_margin, 187.5)
+})
+
 test("rowToMetadata falls back to fallback path when cluster_path is missing", () => {
   const row = {
     cluster_id: "c-2",

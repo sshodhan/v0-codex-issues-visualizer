@@ -411,11 +411,11 @@ must rev this view in the same migration. Per cluster the MV emits:
 | `dominant_topic_count` | Bucket count for the dominant slug. |
 | `dominant_topic_share` | `dominant_topic_count / observation_count` (NUMERIC(5,4)). |
 | `runner_up_distribution` | `JSONB {slug → count}` over `evidence.scoring.runner_up`. |
-| `avg_confidence_proxy` | Mean of `evidence.scoring.confidence_proxy`. NULL when no member has current-version evidence. |
-| `avg_topic_margin` | Mean of `evidence.scoring.margin`. NULL when no member has current-version evidence. |
+| `avg_confidence_proxy` | Mean of `evidence.scoring.confidence_proxy` (each member's value is clamped to `[0, 1]` by Layer 0). NULL when no member has current-version evidence. |
+| `avg_topic_margin` | Mean of `evidence.scoring.margin` — i.e. `winnerScore − runnerUpScore` in raw weighted-phrase units. **Not bounded to `[0, 1]`**: a single observation with several w4 title phrases routinely produces margin ≥ 100, so the column is `numeric(12,4)` to absorb realistic AVG values. NULL when no member has current-version evidence. |
 | `low_margin_count` | Members with `margin <= 2` (the v5/v6 default threshold; close calls between Topics). |
 | `mixed_topic_score` | Shannon entropy of `topic_distribution`, normalised to `[0, 1]` by `ln(bucket_count)` and clamped at 1 to absorb FP epsilon on the cast. **Includes the `unclassified` bucket**, so a half-classified Family can read as "mixed" even when its classified half is one Topic — pair with `classification_coverage_share` to tell the two apart. |
-| `common_matched_phrases` | Top 10 `(slug, phrase)` tuples by frequency across all members' `evidence.matched_phrases`, ordered count-desc / slug-asc / phrase-asc. The same surface phrase can score for more than one slug, so the slug is part of the unique unit of evidence. |
+| `common_matched_phrases` | Top 10 `(slug, phrase)` tuples by frequency across all members' `evidence.matched_phrases`, ordered count-desc / slug-asc / phrase-asc. The same surface phrase can score for more than one slug, so the slug is part of the unique unit of evidence. Phrase rows whose `slug` field is missing/empty/non-string from the evidence JSONB are bucketed under the literal slug `unknown` (matched at both layers — `028:178` and `cluster-topic-metadata.ts:142`). The taxonomy in `scripts/002` does not contain a real `unknown` slug, so the bucket cannot collide with a real Topic decision. |
 
 The MV is wired into the existing `refresh_materialized_views()` hook
 so the same cron tick that refreshes `mv_observation_current` /

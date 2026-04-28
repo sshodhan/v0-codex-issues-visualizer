@@ -54,7 +54,14 @@ export interface ClusterTopicMetadata {
   /** dominant_topic_count / observation_count, NUMERIC(5,4). 0 when
    *  observation_count is 0. */
   dominant_topic_share: number
+  /** Mean of evidence.scoring.confidence_proxy across members. Each
+   *  member's value is clamped to [0, 1] by Layer 0. NULL when no
+   *  member has current-version evidence. */
   avg_confidence_proxy: number | null
+  /** Mean of evidence.scoring.margin (winnerScore − runnerUpScore in
+   *  raw weighted-phrase units). NOT bounded to [0, 1] — a single
+   *  observation with several w4 title phrases routinely produces
+   *  margin ≥ 100. NULL when no member has current-version evidence. */
   avg_topic_margin: number | null
   /** Members whose evidence.scoring.margin <= 2 (the v5 default
    *  threshold; close calls between Topics). */
@@ -69,6 +76,10 @@ export interface ClusterTopicMetadata {
    *  evidence.matched_phrases across all members. Already ordered
    *  count-desc, slug-asc, phrase-asc. */
   common_matched_phrases: ClusterTopicPhrase[]
+  /** Statement time of the last `refresh_materialized_views()`
+   *  invocation that touched this MV. Useful as a freshness
+   *  indicator on admin/debug surfaces — anything older than the
+   *  cron cadence suggests the refresh hook is stuck. */
   computed_at: string
 }
 
