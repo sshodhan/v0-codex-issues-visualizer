@@ -55,7 +55,17 @@ export async function GET(request: NextRequest) {
     asOf = parsed
   }
 
-  const source = searchParams.get("source")
+  // Comma-separated list of source slugs. Single slug remains supported
+  // (the previous contract); multiple slugs let the table's multi-select
+  // source pills filter server-side instead of slicing the already-paged
+  // result client-side.
+  const sourceParam = searchParams.get("source")
+  const sourceSlugs = sourceParam
+    ? sourceParam
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    : []
   const category = searchParams.get("category")
   const sentiment = searchParams.get("sentiment")
   const llmCategory = searchParams.get("llm_category")?.trim() || null
@@ -96,11 +106,11 @@ export async function GET(request: NextRequest) {
   const offset = Math.max(parseInt(searchParams.get("offset") || "0"), 0)
 
   let sourceIds: string[] | null = null
-  if (source) {
+  if (sourceSlugs.length > 0) {
     const { data: srcRows } = await supabase
       .from("sources")
       .select("id")
-      .eq("slug", source)
+      .in("slug", sourceSlugs)
     sourceIds = (srcRows || []).map((r: { id: string }) => r.id)
     if (sourceIds.length === 0) {
       return NextResponse.json({ data: [], count: 0 })
