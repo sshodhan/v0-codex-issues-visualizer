@@ -12,9 +12,13 @@ import {
 
 function makeRow(overrides: Partial<QualityRow> = {}): QualityRow {
   return {
+    classification_id: null,
     cluster_id: "cluster-1",
     quality_bucket: "needs_review",
     family_kind: null,
+    family_title: null,
+    family_summary: null,
+    confidence: null,
     recommended_action: "",
     review_reasons: [],
     quality_reasons: [],

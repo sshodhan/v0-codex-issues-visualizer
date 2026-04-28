@@ -4,9 +4,17 @@
 export type QualityBucket = "safe_to_trust" | "needs_review" | "input_problem"
 
 export interface QualityRow {
+  /** PK of the latest `family_classifications` row for the cluster
+   *  (the view's `id`). Null when normalising older API responses
+   *  that didn't surface it. The review form requires it before
+   *  POST /api/admin/family-classification/review is enabled. */
+  classification_id: string | null
   cluster_id: string
   quality_bucket: QualityBucket
   family_kind: string | null
+  family_title: string | null
+  family_summary: string | null
+  confidence: number | null
   recommended_action: string
   review_reasons: string[]
   quality_reasons: string[]
@@ -92,9 +100,17 @@ export function normalizeQualityRow(input: unknown): QualityRow | null {
   const cluster_id = asString(r.cluster_id) ?? asString(r.clusterId)
   if (!cluster_id) return null
   return {
+    classification_id:
+      asString(r.classification_id) ??
+      asString(r.classificationId) ??
+      asString(r.id) ??
+      null,
     cluster_id,
     quality_bucket: normalizeBucket(r.quality_bucket ?? r.qualityBucket),
     family_kind: asString(r.family_kind) ?? asString(r.familyKind),
+    family_title: asString(r.family_title) ?? asString(r.familyTitle),
+    family_summary: asString(r.family_summary) ?? asString(r.familySummary),
+    confidence: asNumber(r.confidence),
     recommended_action:
       asString(r.recommended_action) ?? asString(r.recommendedAction) ?? "",
     review_reasons: asStringArray(r.review_reasons ?? r.reviewReasons),

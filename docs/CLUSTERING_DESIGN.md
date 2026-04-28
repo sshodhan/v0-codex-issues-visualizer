@@ -814,9 +814,10 @@ New tab "Family Classification" in `/admin`:
 
 ### Architectural contract
 
-- **No feedback loop yet** — the admin panel classifies, the view surfaces
-  latest, but no approve/reject workflow. A future PR can add
-  `family_classifications_reviews` if reviewers need to override.
+- **Reviewer feedback loop is a separate read-side surface** — reviewers can
+  mark a classification correct/incorrect/unclear via §5.2 below. Reviews are
+  append-only and never mutate `family_classifications` or
+  `quality_bucket`; they exist purely to feed precision/recall analysis.
 - **Latest-only by default** — `family_classification_current` view hides
   older classifications, but older rows stay queryable via the table directly
   for audit queries like "how did this family's classification change over
@@ -827,6 +828,118 @@ New tab "Family Classification" in `/admin`:
 - **Severity_rollup is a placeholder** — stored as `unknown` in v1; a future
   pass can infer it from `danger level` in the LLM response or map
   family_kind → severity heuristically.
+
+## 5.2) Family Classification Quality Reviews
+
+`family_classification_reviews` (migration 030) captures reviewer feedback
+on whether a Family Classification row got the answer right. It is the
+evaluation loop for the classification system, **not** a ticketing or
+routing workflow.
+
+### What this is
+
+- An **append-only** table of reviewer verdicts per `family_classifications`
+  row. One row per review event; older reviews stay queryable for audit.
+- A small **inline form** inside the existing Family Quality Dashboard row
+  detail. Reviewers see the same evidence (title, summary, representatives,
+  matched phrases, LLM rationale, quality bucket) the dashboard renders, then
+  pick Correct / Incorrect / Unclear.
+- A **directional precision/recall summary** card at the top of the Family
+  Quality section. Tiles include `safe_to_trust_precision`,
+  `needs_review_correct`, `input_problem_confirmed`, top error_layer, top
+  error_reason. Marked as not statistically significant until enough rows
+  exist.
+
+### What this is NOT
+
+- **Not ticketing.** No file/dismiss/defer/dedupe state. No `ticket_url`.
+  No external-issue mirror.
+- **Not approve/reject.** Reviews never mutate `family_classifications`,
+  never change `quality_bucket`, never re-run classification, never split
+  or merge clusters, never touch Layer 0 evidence or
+  `category_assignments`.
+- **Not a routing surface.** No PR automation, no GitHub issue creation,
+  no automatic fixes downstream.
+- **Not a queue.** Rows do not disappear from the dashboard after review.
+
+### Schema sketch
+
+`family_classification_reviews` (append-only):
+- `id`, `classification_id` (FK → `family_classifications.id`),
+  `cluster_id` (FK → `clusters.id`),
+- `review_verdict` ∈ `correct | incorrect | unclear`,
+- `expected_family_kind` (nullable; required when
+  `error_reason = wrong_family_kind`),
+- `actual_family_kind` (snapshot of the classifier's `family_kind` at
+  review time),
+- `quality_bucket` (snapshot of the dashboard bucket at review time),
+- `error_layer` ∈ `layer_0_topic | layer_a_cluster | family_classification |
+  representatives | llm_enrichment | data_quality | unknown`,
+- `error_reason` ∈ `wrong_family_kind | bad_family_title | bad_family_summary
+  | bad_representatives | bad_cluster_membership | low_layer0_coverage |
+  wrong_layer0_topic_distribution | llm_hallucinated | llm_too_generic |
+  singleton_not_recurring | mixed_cluster_should_split | false_safe_to_trust
+  | false_needs_review | false_input_problem | other`,
+- `notes`, `reviewed_by`, `reviewed_at`,
+- `evidence_snapshot` JSONB — bounded freeze of what the reviewer saw
+  (family_title, family_summary, family_kind, quality_bucket,
+  quality_reasons, representative_preview, common_matched_phrase_preview,
+  llm.status / suggested_family_kind / rationale, cluster_topic_metadata
+  fields).
+
+`family_classification_review_current` view: `distinct on (classification_id)
+order by reviewed_at desc` — latest verdict per classification, mirrors the
+`family_classification_current` pattern from §5.1.
+
+### Validation
+
+- `correct`: `error_layer` and `error_reason` are forced to null on the
+  way in.
+- `incorrect`: requires `error_layer` AND `error_reason`.
+- `incorrect` AND `error_reason = wrong_family_kind`: also requires
+  `expected_family_kind`.
+- `unclear`: notes recommended but not required.
+
+The validator (`lib/admin/family-classification-review.ts →
+validateFamilyClassificationReviewInput`) is shared between the API
+route and the UI form so the 400 response messages match the form
+guards exactly.
+
+### How errors map to follow-up work
+
+The summary tiles surface trends, not tickets. A spike in any single
+`error_reason` means a specific layer needs work:
+
+- repeated `wrong_family_kind` → revisit Family Classification heuristic
+  (`lib/storage/family-classification.ts`); consider a v2 bump.
+- repeated `bad_representatives` → fix representative-selection in the
+  family classifier (`mv_cluster_topic_metadata` consumers).
+- repeated `layer_0_topic` (any reason in this layer) → tighten Layer 0
+  guardrails / add to the topic-classifier eval set.
+- repeated `bad_cluster_membership` → revisit clustering threshold or
+  split-review work (Layer A, `lib/storage/semantic-clusters.ts`).
+- repeated `llm_hallucinated` / `llm_too_generic` → bump the family
+  prompt template version; consider a stricter strict-mode schema.
+- repeated `false_safe_to_trust` → tighten the strict criteria in
+  `computeFamilyQualityBucket`.
+- repeated `false_needs_review` → relax the bucket criteria or improve
+  the upstream signals being used to flag.
+
+These are *guidance*, not automatic actions. The reviews surface the
+trend; the actual fix is a deliberate code change in a follow-up PR.
+
+### API + admin panel surfaces
+
+- `POST /api/admin/family-classification/review` — admin-secret gated.
+  Inserts one append-only row. Returns `{ ok: true, review }`.
+- `GET /api/admin/family-classification/review` — admin-secret gated.
+  Returns `{ rows, summary }`. Filters: `classificationId`, `clusterId`,
+  `verdict`, `qualityBucket`, `errorLayer`, `errorReason`, `limit`
+  (default 50, max 200).
+- The Family Quality Dashboard expanded row includes a "Review
+  classification quality" form with Correct / Incorrect / Unclear
+  buttons. The current row also shows a small pill with the latest
+  verdict (or `—` when never reviewed).
 
 ---
 

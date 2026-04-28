@@ -7,7 +7,7 @@ const DEFAULT_LIMIT = 50
 const MAX_LIMIT = 200
 const SORT_OPTIONS = new Set(["updated_at_desc", "updated_at_asc", "observation_count_desc", "observation_count_asc", "coverage_desc", "coverage_asc", "mixedness_desc", "mixedness_asc"])
 type LlmStatus = "success" | "needs_review" | "needs_human_review" | "error" | "auth_error" | null
-interface QualityRow { cluster_id: string; family_kind: string | null; llm_status: LlmStatus; observation_count: number; classification_coverage_share: number | null; mixed_topic_score: number | null; quality_bucket: FamilyQualityBucket; quality_reasons: string[]; recommended_action: string; review_reasons: string[]; needs_human_review: boolean; representative_count: number; representative_preview: string[]; common_matched_phrase_count: number; common_matched_phrase_preview: string[]; algorithm_version: string | null; llm_model: string | null; llm_classified_at: string | null; classified_at: string | null; updated_at: string | null }
+interface QualityRow { classification_id: string | null; cluster_id: string; family_kind: string | null; family_title: string | null; family_summary: string | null; confidence: number | null; llm_status: LlmStatus; observation_count: number; classification_coverage_share: number | null; mixed_topic_score: number | null; quality_bucket: FamilyQualityBucket; quality_reasons: string[]; recommended_action: string; review_reasons: string[]; needs_human_review: boolean; representative_count: number; representative_preview: string[]; common_matched_phrase_count: number; common_matched_phrase_preview: string[]; algorithm_version: string | null; llm_model: string | null; llm_classified_at: string | null; classified_at: string | null; updated_at: string | null }
 
 const toFiniteNumber = (value: unknown): number | null => {
   if (typeof value === "number") return Number.isFinite(value) ? value : null
@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
   const sort = SORT_OPTIONS.has(sortRaw) ? sortRaw : "updated_at_desc"
 
   const supabase = createAdminClient()
-  const { data, error } = await supabase.from("family_classification_current").select("cluster_id,family_kind,observation_count,classification_coverage_share,mixed_topic_score,cluster_path,needs_human_review,review_reasons,evidence,llm_status,llm_model,llm_classified_at,algorithm_version,classified_at,updated_at").limit(5000)
+  const { data, error } = await supabase.from("family_classification_current").select("id,cluster_id,family_kind,family_title,family_summary,confidence,observation_count,classification_coverage_share,mixed_topic_score,cluster_path,needs_human_review,review_reasons,evidence,llm_status,llm_model,llm_classified_at,algorithm_version,classified_at,updated_at").limit(5000)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   let rows: QualityRow[] = ((data ?? []) as Record<string, unknown>[]).map((row) => {
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
     const phrases = asStringArray(evidence?.common_matched_phrases)
     const quality = computeFamilyQualityBucket(row)
     return {
-      cluster_id: String(row.cluster_id ?? ""), family_kind: typeof row.family_kind === "string" ? row.family_kind : null, llm_status: normalizeLlmStatus(row, evidence), observation_count: toFiniteNumber(row.observation_count) ?? 0,
+      classification_id: typeof row.id === "string" ? row.id : null, cluster_id: String(row.cluster_id ?? ""), family_kind: typeof row.family_kind === "string" ? row.family_kind : null, family_title: typeof row.family_title === "string" ? row.family_title : null, family_summary: typeof row.family_summary === "string" ? row.family_summary : null, confidence: toFiniteNumber(row.confidence), llm_status: normalizeLlmStatus(row, evidence), observation_count: toFiniteNumber(row.observation_count) ?? 0,
       classification_coverage_share: toFiniteNumber(row.classification_coverage_share), mixed_topic_score: toFiniteNumber(row.mixed_topic_score), quality_bucket: quality.bucket, quality_reasons: quality.reasons, recommended_action: quality.recommendedAction,
       review_reasons: asStringArray(row.review_reasons), needs_human_review: row.needs_human_review === true, representative_count: representatives.length, representative_preview: representatives.slice(0, 3), common_matched_phrase_count: phrases.length, common_matched_phrase_preview: phrases.slice(0, 5), algorithm_version: typeof row.algorithm_version === "string" ? row.algorithm_version : null, llm_model: typeof row.llm_model === "string" ? row.llm_model : null, llm_classified_at: typeof row.llm_classified_at === "string" ? row.llm_classified_at : null, classified_at: typeof row.classified_at === "string" ? row.classified_at : null, updated_at: typeof row.updated_at === "string" ? row.updated_at : null,
     }
