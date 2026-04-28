@@ -293,6 +293,8 @@ export function useIssues(filters?: {
   asOf?: string
   /** Cap rows returned by the API; useful for drawer previews. */
   limit?: number
+  /** Skip N rows for offset-based pagination. Pairs with `limit`. */
+  offset?: number
   /**
    * When false, SWR skips the fetch entirely. Use for hooks that mount before
    * a key is known (e.g. an issue drawer for an issue that has no cluster).
@@ -313,6 +315,7 @@ export function useIssues(filters?: {
   if (filters?.llm_category) params.set("llm_category", filters.llm_category)
   if (filters?.asOf) params.set("as_of", filters.asOf)
   if (filters?.limit && filters.limit > 0) params.set("limit", String(filters.limit))
+  if (filters?.offset && filters.offset > 0) params.set("offset", String(filters.offset))
 
   const { data, error, isLoading, mutate } = useSWR<{
     data: Issue[]

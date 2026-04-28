@@ -120,6 +120,31 @@ function DashboardContentInner() {
     return raw
   }, [searchParams])
 
+  /**
+   * Source slug filter from `?sources=`. `null` (param absent) means
+   * "all sources" — no `source` query is sent to /api/issues. Comma-
+   * separated value lets the table's multi-select pills filter
+   * server-side instead of slicing the page client-side.
+   */
+  const sourcesFromUrl = useMemo(() => {
+    if (!searchParams.has("sources")) return null
+    const raw = searchParams.get("sources") ?? ""
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+  }, [searchParams])
+
+  /** 1-based page index for the Triage tab issues table. */
+  const ISSUES_PAGE_SIZE = 100
+  const issuesPageFromUrl = useMemo(() => {
+    const raw = searchParams.get("issues_page")
+    if (!raw) return 1
+    const parsed = parseInt(raw, 10)
+    if (!Number.isFinite(parsed) || parsed < 1) return 1
+    return parsed
+  }, [searchParams])
+
   const applyIssueSearchParams = useCallback(
     (patch: { clusterId?: string | null; compoundKey?: string | null; llmCategory?: string | null }) => {
       const next = new URLSearchParams(searchParams.toString())
@@ -135,6 +160,9 @@ function DashboardContentInner() {
         if (patch.llmCategory) next.set("llm_category", patch.llmCategory)
         else next.delete("llm_category")
       }
+      // Any drill-down filter change resets pagination — otherwise the
+      // user could land on page 7 of a much smaller filtered result.
+      next.delete("issues_page")
       const qs = next.toString()
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
     },
@@ -146,7 +174,7 @@ function DashboardContentInner() {
     category: globalCategory === "all" ? undefined : globalCategory,
     asOf: asOf || undefined,
   })
-  const { issues, isLoading: issuesLoading, refresh: refreshIssues } = useIssues({
+  const { issues, count: issuesCount, isLoading: issuesLoading, refresh: refreshIssues } = useIssues({
     sentiment: issueFilters.sentiment,
     sortBy: issueFilters.sortBy,
     order: issueFilters.order,
@@ -156,6 +184,10 @@ function DashboardContentInner() {
     days: globalDays || undefined,
     category: globalCategory === "all" ? undefined : globalCategory,
     asOf: asOf || undefined,
+    source:
+      sourcesFromUrl && sourcesFromUrl.length > 0 ? sourcesFromUrl.join(",") : undefined,
+    limit: ISSUES_PAGE_SIZE,
+    offset: (issuesPageFromUrl - 1) * ISSUES_PAGE_SIZE,
   })
   const { data: clusterRollup } = useClusterRollup({
     days: globalDays > 0 ? globalDays : undefined,
@@ -218,6 +250,15 @@ function DashboardContentInner() {
     const { compound_key, cluster_id, llm_category, ...tableOnly } = newFilters
     if (Object.keys(tableOnly).length > 0) {
       setIssueFilters((prev) => ({ ...prev, ...tableOnly }))
+      // Sentiment changes the result count and can leave the user on an
+      // out-of-bounds page; sort/order doesn't change the count, so leave
+      // pagination alone for those.
+      if (tableOnly.sentiment !== undefined) {
+        const next = new URLSearchParams(searchParams.toString())
+        next.delete("issues_page")
+        const qs = next.toString()
+        router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+      }
     }
 
     if (compound_key !== undefined || cluster_id !== undefined || llm_category !== undefined) {
@@ -245,6 +286,8 @@ function DashboardContentInner() {
           next.delete("llm_category")
         }
       }
+      // Drill-down filter changes invalidate the current page index.
+      next.delete("issues_page")
       const qs = next.toString()
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
     }
@@ -261,6 +304,44 @@ function DashboardContentInner() {
       })
     }
   }
+
+  const handleIssueSourceSelectionChange = useCallback(
+    (slugs: string[] | null) => {
+      const next = new URLSearchParams(searchParams.toString())
+      if (slugs == null) {
+        next.delete("sources")
+      } else {
+        next.set("sources", slugs.join(","))
+      }
+      // Source filter change invalidates the current page index.
+      next.delete("issues_page")
+      const qs = next.toString()
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams],
+  )
+
+  const handleIssuesPageChange = useCallback(
+    (page: number) => {
+      const next = new URLSearchParams(searchParams.toString())
+      if (page <= 1) {
+        next.delete("issues_page")
+      } else {
+        next.set("issues_page", String(page))
+      }
+      const qs = next.toString()
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+      if (typeof window !== "undefined") {
+        requestAnimationFrame(() => {
+          document.getElementById("issues-table-anchor")?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
+        })
+      }
+    },
+    [pathname, router, searchParams],
+  )
 
   const handleNavigateToCategory = (slug: string) => {
     // Stay on Dashboard tab and scroll to issues table with category filter
@@ -862,14 +943,16 @@ const handleHeroLlmCategoryDrill = (
   isLoading={issuesLoading}
   globalTimeLabel={globalTimeLabel}
   globalCategoryLabel={globalCategoryLabel}
-  observationCount={issues.length}
-  canonicalCount={stats?.totalIssues || issues.length}
+  observationCount={issuesCount}
+  canonicalCount={stats?.totalIssues || issuesCount}
   onFilterChange={handleFilterChange}
   activeCompoundKey={compoundKeyFromUrl}
   activeClusterId={clusterIdFromUrl ?? undefined}
   activeClusterLabel={activeClusterLabel ?? undefined}
   activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
   onClearGlobalCategory={() => setGlobalCategory("all")}
+  selectedSourceSlugs={sourcesFromUrl}
+  onSourceSelectionChange={handleIssueSourceSelectionChange}
   />
 </div>
 </TabsContent>
@@ -921,13 +1004,21 @@ const handleHeroLlmCategoryDrill = (
                   isLoading={issuesLoading}
                   globalTimeLabel={globalTimeLabel}
                   globalCategoryLabel={globalCategoryLabel}
-                  observationCount={issues.length}
-                  canonicalCount={stats?.totalIssues || issues.length}
+                  observationCount={issuesCount}
+                  canonicalCount={stats?.totalIssues || issuesCount}
                   onFilterChange={handleFilterChange}
                   activeCompoundKey={compoundKeyFromUrl}
                   activeClusterId={clusterIdFromUrl ?? undefined}
                   activeClusterLabel={activeClusterLabel ?? undefined}
                   onClearGlobalCategory={() => setGlobalCategory("all")}
+                  selectedSourceSlugs={sourcesFromUrl}
+                  onSourceSelectionChange={handleIssueSourceSelectionChange}
+                  pagination={{
+                    page: issuesPageFromUrl,
+                    pageSize: ISSUES_PAGE_SIZE,
+                    totalCount: issuesCount,
+                    onPageChange: handleIssuesPageChange,
+                  }}
                 />
               </div>
             </TabsContent>

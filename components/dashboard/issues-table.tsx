@@ -23,6 +23,15 @@ import { cn } from "@/lib/utils"
 import { formatDistanceToNow } from "date-fns"
 import type { Issue } from "@/hooks/use-dashboard-data"
 import { SignalLayers } from "@/components/dashboard/signal-layers"
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination"
 
 interface IssuesTableProps {
   issues: Issue[]
@@ -51,6 +60,27 @@ interface IssuesTableProps {
   activeLlmCategory?: string
   /** Callback to clear the global category (heuristic topic) filter */
   onClearGlobalCategory?: () => void
+  /**
+   * Selected source slugs (controlled). `null` means "all available
+   * sources" (no filter sent to /api/issues). `[]` is normalized to `null`
+   * by the toggle handler — deselecting the last pill resets to "all".
+   * When omitted, the pills behave uncontrolled (all-selected default,
+   * no callbacks fired).
+   */
+  selectedSourceSlugs?: string[] | null
+  onSourceSelectionChange?: (slugs: string[] | null) => void
+  /**
+   * Server-side pagination. When provided, renders a pager below the
+   * table. `totalCount` is the unpaged match count (from /api/issues
+   * response `count`); pageSize must match the API `limit` so page math
+   * lines up.
+   */
+  pagination?: {
+    page: number
+    pageSize: number
+    totalCount: number
+    onPageChange: (page: number) => void
+  }
 }
 
 // Issues table with filters and clickable links
@@ -67,13 +97,16 @@ export function IssuesTable({
   activeClusterLabel,
   activeLlmCategory,
   onClearGlobalCategory,
+  selectedSourceSlugs,
+  onSourceSelectionChange,
+  pagination,
 }: IssuesTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState("impact_score")
   const [order, setOrder] = useState("desc")
   const [sentimentFilter, setSentimentFilter] = useState("all")
   const [llmSubcategoryFilter, setLlmSubcategoryFilter] = useState("all")
-  
+
   // Extract unique sources from issues
   const allSources = Array.from(
     new Map(
@@ -82,7 +115,7 @@ export function IssuesTable({
         .map((issue) => [issue.source!.slug, issue.source!])
     ).values()
   ).sort((a, b) => a.name.localeCompare(b.name))
-  
+
   // Extract unique LLM subcategories from issues
   const allLlmSubcategories = Array.from(
     new Set(
@@ -91,28 +124,34 @@ export function IssuesTable({
         .map((issue) => issue.llm_subcategory!)
     )
   ).sort()
-  
-  // Start with empty set, then sync when sources load
-  const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
-  
-  // Sync selectedSources when allSources changes (e.g., after data loads)
-  // This ensures all sources are selected by default once data is available
+
+  // Uncontrolled fallback so the component still works without source-state
+  // wired up. Source filter is otherwise applied server-side by the parent.
+  const [uncontrolledSelectedSources, setUncontrolledSelectedSources] = useState<Set<string>>(
+    new Set(),
+  )
+  const isSourceControlled = onSourceSelectionChange !== undefined
+  const allSourceSlugSet = new Set(allSources.map((s) => s.slug))
+  // `null` from the controlled prop = "all available selected".
+  const selectedSources = isSourceControlled
+    ? selectedSourceSlugs == null
+      ? allSourceSlugSet
+      : new Set(selectedSourceSlugs)
+    : uncontrolledSelectedSources
+
   useEffect(() => {
+    if (isSourceControlled) return
     const allSourceSlugs = allSources.map((s) => s.slug)
-    // Only auto-select all if we have sources and none are currently selected
-    // (avoids overwriting user's manual selections when data refreshes)
-    if (allSourceSlugs.length > 0 && selectedSources.size === 0) {
-      setSelectedSources(new Set(allSourceSlugs))
+    if (allSourceSlugs.length > 0 && uncontrolledSelectedSources.size === 0) {
+      setUncontrolledSelectedSources(new Set(allSourceSlugs))
     }
-    // Also add any new sources that weren't in the previous set
-    // (handles case where new source data appears after initial load)
-    if (allSourceSlugs.length > 0 && selectedSources.size > 0) {
-      const newSources = allSourceSlugs.filter((slug) => !selectedSources.has(slug))
+    if (allSourceSlugs.length > 0 && uncontrolledSelectedSources.size > 0) {
+      const newSources = allSourceSlugs.filter((slug) => !uncontrolledSelectedSources.has(slug))
       if (newSources.length > 0) {
-        setSelectedSources((prev) => new Set([...prev, ...newSources]))
+        setUncontrolledSelectedSources((prev) => new Set([...prev, ...newSources]))
       }
     }
-  }, [allSources.map((s) => s.slug).join(",")])
+  }, [allSources.map((s) => s.slug).join(","), isSourceControlled])
 
   const handleSort = (column: string) => {
     const newOrder = sortBy === column && order === "desc" ? "asc" : "desc"
@@ -141,11 +180,27 @@ export function IssuesTable({
     } else {
       newSelected.add(sourceSlug)
     }
-    setSelectedSources(newSelected)
+    if (isSourceControlled) {
+      // Deselecting the last pill snaps back to "all selected" (`null`)
+      // so the URL stays clean and the user can never end up with an
+      // empty result by accident. Selecting all available pills also
+      // collapses to `null` for the same reason.
+      const newArr = Array.from(newSelected)
+      const isAll =
+        newArr.length === 0 ||
+        (allSourceSlugSet.size > 0 && newArr.length === allSourceSlugSet.size)
+      onSourceSelectionChange!(isAll ? null : newArr)
+    } else {
+      setUncontrolledSelectedSources(newSelected)
+    }
   }
 
+  // Source filter is applied server-side when controlled (parent passes
+  // `source` to /api/issues). Client-side filtering remains as a fallback
+  // for the uncontrolled path so legacy callers keep their behavior.
   const filteredIssues = issues.filter((issue) => {
-    const sourceMatch = !issue.source || selectedSources.has(issue.source.slug)
+    const sourceMatch =
+      isSourceControlled || !issue.source || selectedSources.has(issue.source.slug)
     const sentimentMatch = sentimentFilter === "all" || issue.sentiment === sentimentFilter
     const llmMatch = llmSubcategoryFilter === "all" || issue.llm_subcategory === llmSubcategoryFilter
     return sourceMatch && sentimentMatch && llmMatch
@@ -555,7 +610,92 @@ export function IssuesTable({
             </Table>
           </div>
         )}
+        {pagination && pagination.totalCount > pagination.pageSize && (
+          <PagerBar
+            page={pagination.page}
+            pageSize={pagination.pageSize}
+            totalCount={pagination.totalCount}
+            onPageChange={pagination.onPageChange}
+          />
+        )}
       </CardContent>
     </Card>
   )
+}
+
+function PagerBar({
+  page,
+  pageSize,
+  totalCount,
+  onPageChange,
+}: {
+  page: number
+  pageSize: number
+  totalCount: number
+  onPageChange: (page: number) => void
+}) {
+  const pageCount = Math.max(1, Math.ceil(totalCount / pageSize))
+  const current = Math.min(Math.max(1, page), pageCount)
+  const pages = computePagerPages(current, pageCount)
+  const start = (current - 1) * pageSize + 1
+  const end = Math.min(current * pageSize, totalCount)
+
+  const go = (p: number) => (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault()
+    if (p < 1 || p > pageCount || p === current) return
+    onPageChange(p)
+  }
+
+  return (
+    <div className="mt-4 flex flex-col items-center gap-2">
+      <Pagination>
+        <PaginationContent>
+          <PaginationItem>
+            <PaginationPrevious
+              href="#"
+              onClick={go(current - 1)}
+              aria-disabled={current === 1}
+              className={cn(current === 1 && "pointer-events-none opacity-50")}
+            />
+          </PaginationItem>
+          {pages.map((p, i) =>
+            p === "ellipsis" ? (
+              <PaginationItem key={`e-${i}`}>
+                <PaginationEllipsis />
+              </PaginationItem>
+            ) : (
+              <PaginationItem key={p}>
+                <PaginationLink href="#" onClick={go(p)} isActive={p === current}>
+                  {p}
+                </PaginationLink>
+              </PaginationItem>
+            ),
+          )}
+          <PaginationItem>
+            <PaginationNext
+              href="#"
+              onClick={go(current + 1)}
+              aria-disabled={current === pageCount}
+              className={cn(current === pageCount && "pointer-events-none opacity-50")}
+            />
+          </PaginationItem>
+        </PaginationContent>
+      </Pagination>
+      <p className="text-xs text-muted-foreground">
+        Showing {start}–{end} of {totalCount}
+      </p>
+    </div>
+  )
+}
+
+function computePagerPages(current: number, total: number): Array<number | "ellipsis"> {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const pages: Array<number | "ellipsis"> = [1]
+  const left = Math.max(2, current - 1)
+  const right = Math.min(total - 1, current + 1)
+  if (left > 2) pages.push("ellipsis")
+  for (let p = left; p <= right; p += 1) pages.push(p)
+  if (right < total - 1) pages.push("ellipsis")
+  pages.push(total)
+  return pages
 }
