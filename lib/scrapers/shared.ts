@@ -529,15 +529,11 @@ function scoreSegment(
 // See docs/ARCHITECTURE.md §6.0 — Glossary.
 //
 // Two-tier category_id boundary:
-//   - Scrapers write `?.categoryId` directly onto the raw observation row
-//     as a convenience initial classification. No evidence is stored there.
+//   - Scrapers write `?.categoryId` onto the raw observation row as a
+//     convenience initial classification. No evidence is stored there.
 //   - Canonical, auditable topic assignments live in `category_assignments`
-//     with full v5 evidence (matched phrases, scores, margin). These are
-//     written by the derivation/backfill path via recordCategory() in
-//     lib/storage/derivations.ts, which persists the full TopicResult.
-//   - Reads (dashboard, API) join through mv_observation_current which
-//     picks up category_assignments rows; scraper-level category_id is an
-//     interim fallback until derivation runs.
+//     with full v5 evidence, written by the derivation/backfill path via
+//     recordCategory() in lib/storage/derivations.ts.
 //
 // v5 changes (scripts/025_topic_classifier_v5_bump.sql + 026):
 //   - title and body are scored separately, then merged with the title

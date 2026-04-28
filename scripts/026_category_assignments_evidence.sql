@@ -40,9 +40,10 @@ begin;
 alter table category_assignments
   add column if not exists evidence jsonb;
 
--- Create the new 5-arg form that persists evidence. The old 4-arg form is
--- kept as a compatibility wrapper (see below) so any old code path that
--- runs before app code is deployed does not 500.
+-- Replace the 4-arg record_category with the new 5-arg form that persists
+-- evidence. Apply code + migration together (no live traffic to protect).
+drop function if exists record_category(uuid, text, uuid, numeric) cascade;
+
 create or replace function record_category(
   obs_id uuid,
   ver    text,
@@ -67,26 +68,5 @@ end;
 $$;
 
 grant execute on function record_category(uuid, text, uuid, numeric, jsonb) to service_role;
-
--- Backward-compatible 4-arg wrapper. Delegates to the 5-arg form with
--- ev = null. Prevents deployment-order failures: old app code that calls
--- the 4-arg form continues to work after this migration, and new app
--- code that calls the 5-arg form works both before and after.
-create or replace function record_category(
-  obs_id uuid,
-  ver    text,
-  cat_id uuid,
-  conf   numeric
-)
-returns uuid
-language plpgsql
-security definer
-as $$
-begin
-  return record_category(obs_id, ver, cat_id, conf, null::jsonb);
-end;
-$$;
-
-grant execute on function record_category(uuid, text, uuid, numeric) to service_role;
 
 commit;
