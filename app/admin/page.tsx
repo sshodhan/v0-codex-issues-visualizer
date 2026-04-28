@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
+import { FamilyClassificationPanel } from "@/components/admin/family-classification-panel"
 import { WhatToKnowCard } from "@/components/admin/what-to-know-card"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
@@ -243,7 +244,7 @@ interface ProcessingEventItem {
   created_at: string
 }
 
-const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema", "cluster-labels"] as const
+const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema", "cluster-labels", "family-classification"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
 // `useSearchParams()` bails out of static prerender in Next.js 15 and
@@ -322,6 +323,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="trace">Observation trace</TabsTrigger>
             <TabsTrigger value="schema">Schema verification</TabsTrigger>
             <TabsTrigger value="cluster-labels">Cluster-label backfill</TabsTrigger>
+            <TabsTrigger value="family-classification">Family classification</TabsTrigger>
           </TabsList>
           <TabsContent value="backfill" className="space-y-4">
             <WhatToKnowCard
@@ -831,6 +833,104 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               }
             />
             <ClusterLabelBackfillPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="family-classification" className="space-y-4">
+            <WhatToKnowCard
+              title="Family Classification"
+              summary="Interpret each cluster into family_kind (coherent, mixed, low-evidence, etc.) with optional LLM-generated title/summary. Layer A interpretation, not a clustering change."
+              purpose={
+                <p>
+                  Generates a per-cluster family classification record that
+                  summarizes what the semantic family represents, how
+                  coherent it is, and whether it needs human review.
+                  Heuristic-first (always deterministic) with optional
+                  LLM refinement for title/summary. See{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    docs/CLUSTERING_DESIGN.md
+                  </code>{" "}
+                  §4.7.
+                </p>
+              }
+              pipelineFit={
+                <p>
+                  Append-only interpretation layer on top of Layer A
+                  (cluster membership) and{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    mv_cluster_topic_metadata
+                  </code>
+                  . Writes to{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    family_classifications
+                  </code>
+                  . Reads from{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    lib/storage/family-classification.ts
+                  </code>{" "}
+                  (heuristic rules + optional LLM). Does NOT mutate
+                  cluster membership, embeddings, or{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    clusters.label
+                  </code>
+                  .
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    After the first ingest to interpret existing clusters.
+                  </li>
+                  <li>
+                    After a significant clustering rebuild to get fresh
+                    interpretations.
+                  </li>
+                  <li>
+                    Periodically to flag clusters that may have changed
+                    composition and need review.
+                  </li>
+                </ul>
+              }
+              impact={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Inserts one{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      family_classifications
+                    </code>{" "}
+                    row per cluster (not a mutation — older classifications are kept for audit).
+                  </li>
+                  <li>
+                    Heuristic rules are always applied (deterministic).
+                    LLM title generation is optional and fails gracefully.
+                  </li>
+                  <li>
+                    Idempotent — re-running adds new rows alongside old
+                    ones; the{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      family_classification_current
+                    </code>{" "}
+                    view picks the latest per cluster.
+                  </li>
+                </ul>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Click <strong>Dry run</strong> to see how many clusters
+                    would be classified (read-only preview).
+                  </li>
+                  <li>
+                    Paste a single cluster UUID to classify just that one
+                    and see the result.
+                  </li>
+                  <li>
+                    Click <strong>Classify batch</strong> to process all
+                    unclassified clusters. Provide the admin secret in the
+                    header field.
+                  </li>
+                </ol>
+              }
+            />
+            <FamilyClassificationPanel secret={secret} />
           </TabsContent>
         </Tabs>
       </main>

@@ -688,6 +688,113 @@ The triage card surfaces the three layers explicitly so reviewers don't have to 
 
 ---
 
+## 5.1) Family Classification (Layer A interpretation, PR #152)
+
+After PR #150 added `mv_cluster_topic_metadata` (Layer A evidence aggregation)
+and PR #151 added review events, we now add a per-cluster *interpretation*
+layer: `family_classifications`. This is **not** a clustering change or a
+labelling override — it's a read-only interpretation record that sits on top
+of the semantic cluster and the per-cluster metadata.
+
+### What Family Classification does
+
+For each cluster, assign:
+- **family_kind** (heuristic-first, deterministic): one of:
+  - `coherent_single_issue` — dominant topic >= 75% (high confidence, single root)
+  - `mixed_multi_causal` — high entropy + high coverage (genuinely multi-causal)
+  - `needs_split_review` — high entropy + high coverage + (mixed_topic_score >= 0.6)
+  - `low_evidence` — coverage < 50% (too many unclassified members)
+  - `unclear` — mixed signals that don't fit the above rules
+- **needs_human_review** (boolean): whether the family should go into an
+  inbox for manual triage before being used for routing / deduplication
+- Optional **LLM-generated** title, summary, failure_mode, affected_surface,
+  likely_owner_area (if OpenAI is available and confident)
+- **Evidence JSONB snapshot**: the cluster_topic_metadata + representatives
+  that the classifier saw, for audit
+
+### What Family Classification does NOT do
+
+- Does not change `cluster_members` (membership is embedding-first, owned by
+  `lib/storage/semantic-clusters.ts`)
+- Does not overwrite `clusters.label` (cluster display name stays independent
+  of the family interpretation)
+- Does not split or merge clusters automatically (flagged for review only)
+- Does not mutate Layer 0 evidence or category_assignments
+- Does not become ground-truth by default (reviewer must accept it before
+  routing/dedup uses it)
+
+### Rules (heuristic-first)
+
+Run deterministically on every cluster:
+
+```
+if classification_coverage_share < 0.5:
+  family_kind = "low_evidence"
+  needs_human_review = true
+  review_reasons = ["low_classification_coverage"]
+else if mixed_topic_score >= 0.6 and classification_coverage_share >= 0.8:
+  family_kind = "needs_split_review"
+  needs_human_review = true
+  review_reasons = ["high_topic_mixedness"]
+else if dominant_topic_share >= 0.75:
+  family_kind = "coherent_single_issue"
+  needs_human_review = false
+  review_reasons = []
+else:
+  family_kind = "unclear"
+  needs_human_review = true
+  review_reasons = ["mixed_or_unclear_signals"]
+```
+
+If OpenAI is available (optional):
+- Call `callFamilyTitleModel(...)` with representative titles + topic distribution
+- Generate family_title, family_summary, primary_failure_mode, affected_surface,
+  likely_owner_area
+- On failure, fall back to deterministic: "{topic}: {top phrase}"
+
+### Table + View
+
+**family_classifications** (append-only, one row per classification):
+- `cluster_id`, `algorithm_version`, `family_title`, `family_summary`, `family_kind`,
+  `dominant_topic_slug`, `primary_failure_mode`, `affected_surface`,
+  `likely_owner_area`, `severity_rollup`, `confidence`, `needs_human_review`,
+  `review_reasons[]`, `evidence` (JSONB snapshot), `computed_at`
+
+**family_classification_current** (view picking latest per cluster):
+- Same columns, filtered by `distinct on (cluster_id) order by computed_at desc`
+
+### Admin panel
+
+New tab "Family classification" in `/admin`:
+- Stats: total clusters, clusters without classification
+- Single-cluster lookup: paste cluster UUID, see draft result
+- Dry-run: count candidates without running classifier
+- Batch: process top N unclassified clusters
+
+### Reads
+
+- `lib/storage/family-classification.ts` → `classifyClusterFamily(supabase, clusterId)`
+  Returns `FamilyClassificationDraft` (heuristic + optional LLM)
+- `/api/admin/family-classification` (POST) → runs classification + writes to DB
+
+### Architectural contract
+
+- **No feedback loop yet** — the admin panel classifies, the view surfaces
+  latest, but no approve/reject workflow. A future PR can add
+  `family_classifications_reviews` if reviewers need to override.
+- **Latest-only by default** — `family_classification_current` view hides
+  older classifications, but older rows stay queryable via the table directly
+  for audit queries like "how did this family's classification change over
+  time?"
+- **Never fed back into clustering** — the family_kind is a *label* on what
+  the embedding pass already created, never an input to the embedding pass
+  or member re-assignment.
+- **Severity_rollup is a placeholder** — stored as `unknown` in v1; a future
+  pass can infer it from `danger level` in the LLM response or map
+  family_kind → severity heuristically.
+
+---
+
 ## 11) Success Criteria
 
 The clustering redesign is successful when:
