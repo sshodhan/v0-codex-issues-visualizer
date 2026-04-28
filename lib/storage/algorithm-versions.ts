@@ -8,11 +8,13 @@
 
 export const CURRENT_VERSIONS = {
   sentiment: "v2",
-  // v3 (2026-04): adds the `model-quality` Topic slot and tightens Pricing
-  // (drops bare `plan`, adds multi-word tier phrases). See
-  // scripts/023_add_model_quality_category.sql and
+  // v4 (2026-04): expands Topic regex coverage for coding-agent reports
+  // (MCP/tool invocation/file-edit tooling, quota-vs-api disambiguation,
+  // loop/context-loss model-quality cues, and UX diff/approval/loading
+  // phrasing) and reweights noisy generic terms. See
+  // scripts/024_topic_classifier_v4_bump.sql and
   // lib/scrapers/shared.ts → CATEGORY_PATTERNS.
-  category: "v3",
+  category: "v4",
   impact: "v2",
   // competitor_mention shares the canonical lexicon (sentiment-lexicon.ts).
   // The sentiment v2 bump added words that are ALSO in NEGATORS (e.g.
