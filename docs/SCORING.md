@@ -91,12 +91,45 @@ vocabulary, progress-log visibility, `higher limits` / `priority
 processing`, `model does not appear` (bounded), `workspace-write` /
 `bubblewrap` sandbox + `device passthrough`, ANSI escape injection
 (bounded phrases only — no bare `code injection` or `ansi escape`),
-`additionalContext` / `PreToolUse` feature requests with `bypass the
-approval prompt` at w5 to outscore ux-ui `approval prompt` w4. Removed
-weak `how to` documentation phrase — questions are not docs-complaint
-language. No scoring-algorithm or threshold changes; `SLUG_THRESHOLD`
-stays `{}`. No LLM tiebreaker. No Layer A/B/C changes. Migration:
+`additionalContext` / `PreToolUse` intent distinctions (entity-vs-
+mechanism — see the rule below) with `bypass the approval prompt` at
+w5 to outscore ux-ui `approval prompt` w4. Removed weak `how to`
+documentation phrase — questions are not docs-complaint language. No
+scoring-algorithm or threshold changes; `SLUG_THRESHOLD` stays `{}`.
+No LLM tiebreaker. No Layer A/B/C changes. Migration:
 `scripts/027_topic_classifier_v6_bump.sql`.
+
+**`additionalContext` classification rule (the v6 anti-whack-a-mole
+guardrail).** `additionalContext` is an entity, not an intent. **Do
+not add bare `additionalcontext` as a Topic phrase.** Topic should
+come from the surrounding mechanism:
+
+- support/add `additionalContext` → `feature-request`
+- ignored/not used `additionalContext` → `model-quality`
+- missing/not passed `additionalContext` in hook payload → `integration`
+- crashes/fails with `additionalContext` → `bug`
+- `additionalContext` docs unclear / not documented → `documentation`
+
+The golden set carries one contrast row per slug (rows 51–53 plus the
+existing `Support additionalContext in PreToolUse hooks…` row) so a
+future broad `additionalcontext` phrase cannot silently collapse all
+four interpretations into one Topic. Same reasoning generalises to
+other entity-only nouns the classifier might be tempted to over-fit on
+(e.g. `sandbox`, `pretooluse`, `additionalContext`'s sibling fields):
+add the bounded mechanism phrase, not the entity.
+
+**v6 known limitations.**
+
+- **`The model "codex-mini-latest" does not appear`** is *not* fixed in
+  v6. The literal-substring matcher cannot safely express
+  "model … does not appear" with a model-name token interrupting the
+  phrase, and broad `does not appear` is deliberately rejected as too
+  cross-slug (UX/UI titles also use "menu does not appear", "icon does
+  not appear"). Re-evaluate if a token-skip matcher is added.
+- **`would be great`** is *not* added as a feature-request phrase. It
+  is too broad without stronger feature-request context — would
+  over-fire on negative reviews and general commentary. The existing
+  `it would be great` w2 already covers the high-precision case.
 
 **Post-v6 phrase-change policy.** Future `CATEGORY_PATTERNS` changes
 require, in the same PR: (1) a golden-set row in
@@ -107,8 +140,13 @@ description; (3) an evidence trace from `categorizeIssue` showing the
 new phrase fires on the target row and does not regress a control row
 from a competing slug; (4) a one-line justification of why the fix
 belongs in Layer 0 (deterministic Topic) rather than Layer A (semantic
-clustering) or Layer C (LLM taxonomy). Phrase additions without all
-four are out-of-scope for Layer 0.
+clustering) or Layer C (LLM taxonomy); (5) confirmation the phrase is
+mechanism-bound and not entity-only — bare nouns like
+`additionalcontext` / `sandbox` / `ansi escape` / `support` are
+rejected; bounded forms like `additionalcontext ignored` /
+`workspace-write sandbox` / `ansi escape code injection` /
+`support additionalcontext` are accepted. Phrase additions without
+all five are out-of-scope for Layer 0.
 
 `evidence` shape stored in `category_assignments.evidence`:
 

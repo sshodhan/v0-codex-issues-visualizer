@@ -201,6 +201,8 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "bring back", weight: 2 },
     { phrase: "support additionalcontext", weight: 4 },
     { phrase: "support additional context", weight: 4 },
+    { phrase: "add additionalcontext", weight: 4 },
+    { phrase: "add additional context", weight: 4 },
     { phrase: "pretooluse hooks", weight: 3 },
     // w5 (not w4) intentionally outranks the ux-ui "approval prompt" w4
     // when the title asks to bypass/disable the prompt — see scripts/027
@@ -302,6 +304,8 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "additional context missing from hook", weight: 4 },
     { phrase: "additionalcontext not passed", weight: 4 },
     { phrase: "additional context not passed", weight: 4 },
+    { phrase: "additionalcontext is not passed", weight: 4 },
+    { phrase: "additional context is not passed", weight: 4 },
     { phrase: "pretooluse hook missing context", weight: 4 },
   ],
   api: [

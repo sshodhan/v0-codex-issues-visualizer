@@ -13,9 +13,12 @@ export const CURRENT_VERSIONS = {
   // for developerInstructions, merge/branch conflicts, progress-log
   // visibility, higher-limits/priority-processing, model-not-appearing,
   // workspace-write/bubblewrap sandbox + device passthrough, ANSI escape
-  // injection, and additionalContext/PreToolUse feature requests; the
-  // weak "how to" documentation phrase is removed (a question prefix is
-  // not docs-complaint language). No scoring algorithm changes, no
+  // injection, and additionalContext/PreToolUse intent distinctions
+  // (entity-vs-mechanism: support/add → feature-request, ignored/not
+  // used → model-quality, missing/not passed in hook payload →
+  // integration, crashes → bug). The weak "how to" documentation
+  // phrase is removed (a question prefix is not docs-complaint
+  // language). No scoring algorithm changes, no
   // threshold changes — SLUG_THRESHOLD stays {}. See
   // scripts/027_topic_classifier_v6_bump.sql.
   category: "v6",

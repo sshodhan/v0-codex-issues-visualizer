@@ -17,10 +17,21 @@
 --   * pricing: higher-limits, priority-processing.
 --   * security: ANSI escape-code injection (bounded phrases only — no
 --     bare "code injection" or bare "ansi escape").
---   * feature-request: support-additionalContext, pretooluse-hooks,
+--   * feature-request: support/add additionalContext, pretooluse-hooks,
 --     bypass-the-approval-prompt at w5 (intentionally outscores ux-ui
 --     "approval prompt" w4 — see the row-46 no-tie test in
 --     tests/topic-classifier-golden-set.test.ts), wish-style phrases.
+--   * additionalContext / PreToolUse intent distinctions (the v6
+--     anti-whack-a-mole guardrail): "additionalContext" is an entity,
+--     not an intent — Topic comes from the surrounding mechanism.
+--     Bounded phrases route the four intents to four slugs:
+--       - support/add additionalContext         → feature-request
+--       - ignored/not used additionalContext    → model-quality
+--       - not passed/missing in hook payload    → integration
+--       - crashes with additionalContext        → bug (existing
+--         crash/crashes phrases carry it; no new bug phrase needed)
+--     The fixture carries one contrast row per slug so a future bare
+--     "additionalcontext" phrase cannot collapse all four into one.
 --   * documentation: removes weak "how to" w1 (a question prefix is
 --     not docs-complaint language).
 --
@@ -40,7 +51,7 @@ insert into algorithm_versions (kind, version, current_effective, notes) values
     'category',
     'v6',
     true,
-    'Layer 0 Topic classifier v6: targeted phrase maintenance after v5 evidence review. Adds coding-agent phrases for developerInstructions, merge conflicts, progress-log visibility, limits/priority processing, missing model, sandbox/passthrough, ANSI escape injection, additionalContext/PreToolUse feature requests; removes weak documentation "how to" match. No scoring architecture changes; threshold overrides remain empty.'
+    'Layer 0 Topic classifier v6: targeted phrase maintenance after v5 evidence review. Adds bounded coding-agent phrases for developerInstructions, merge conflicts, progress-log visibility, limits/priority processing, missing model, sandbox/passthrough, ANSI escape injection, and additionalContext/PreToolUse intent distinctions (support/add → feature-request, ignored/not used → model-quality, missing/not passed → integration, crashes → bug); removes weak documentation "how to" match. No scoring architecture changes; threshold overrides remain empty.'
   )
 on conflict (kind, version) do update
    set current_effective = excluded.current_effective,

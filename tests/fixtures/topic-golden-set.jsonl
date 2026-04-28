@@ -46,3 +46,6 @@
 {"title":"Missing docs for shell completion setup","body":"","expected":"documentation"}
 {"title":"README unclear about quickstart steps","body":"","expected":"documentation"}
 {"title":"Codex CLI troubleshooting guide is outdated","body":"","expected":"documentation"}
+{"title":"thread/resume ignores additionalContext on first resumed turn","body":"The additionalContext is provided but the model does not use it after resume.","expected":"model-quality"}
+{"title":"additionalContext is not passed to PreToolUse hook payload","body":"The hook receives the event but the additionalContext field is missing from the payload.","expected":"integration"}
+{"title":"additionalContext crashes PreToolUse hook execution","body":"When additionalContext is present, the hook crashes before the tool call completes.","expected":"bug"}
