@@ -65,6 +65,13 @@ interface RunSummary {
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>
+type SemanticCandidate = {
+  id: string
+  title: string
+  content: string | null
+  topicSlug: string | null
+  errorCode: string | null
+}
 
 /**
  * Persist one captured issue across the three layers:
@@ -274,18 +281,26 @@ async function refreshMaterializedViews(supabase: AdminClient): Promise<void> {
   if (error) console.error("[cron] refresh_materialized_views failed:", error)
 }
 
+export async function runPostLoopSemanticClustering(
+  supabase: AdminClient,
+  semanticCandidates: SemanticCandidate[],
+  context: string,
+  runBatch: typeof runSemanticClusteringForBatch = runSemanticClusteringForBatch,
+): Promise<void> {
+  if (semanticCandidates.length === 0) return
+  try {
+    await runBatch(supabase, semanticCandidates, { minClusterSize: 2 })
+  } catch (error) {
+    console.error(`[scrapers] semantic clustering failed (${context}):`, error)
+  }
+}
+
 export async function runAllScrapers(): Promise<RunSummary> {
   const supabase = createAdminClient()
   const errors: string[] = []
   const bySource: RunSummary["bySource"] = []
   const classificationCandidates: ClassificationCandidate[] = []
-  const semanticCandidates: Array<{
-    id: string
-    title: string
-    content: string | null
-    topicSlug: string | null
-    errorCode: string | null
-  }> = []
+  const semanticCandidates: SemanticCandidate[] = []
   let totalFound = 0
   let totalAdded = 0
 
@@ -382,9 +397,7 @@ export async function runAllScrapers(): Promise<RunSummary> {
   // 3.1c Aggregation — semantic clustering must run across a batch of
   // observations; running per-item guarantees singleton fallback when
   // minClusterSize is 2. Fingerprint sub-clustering remains read-time.
-  if (semanticCandidates.length > 0) {
-    await runSemanticClusteringForBatch(supabase, semanticCandidates, { minClusterSize: 2 })
-  }
+  await runPostLoopSemanticClustering(supabase, semanticCandidates, "runAllScrapers")
 
   errors.push(
     ...classificationResults.failures.map(
@@ -433,13 +446,7 @@ export async function runScraper(slug: string): Promise<RunSummary> {
   const issues = dedupeIssues(await scraper(source, categories))
   let added = 0
   const classificationCandidates: ClassificationCandidate[] = []
-  const semanticCandidates: Array<{
-    id: string
-    title: string
-    content: string | null
-    topicSlug: string | null
-    errorCode: string | null
-  }> = []
+  const semanticCandidates: SemanticCandidate[] = []
   for (const issue of issues) {
     const persisted = await persistIssueRecord(supabase, issue)
     if (persisted) {
@@ -455,9 +462,7 @@ export async function runScraper(slug: string): Promise<RunSummary> {
     supabase,
     classificationCandidates,
   )
-  if (semanticCandidates.length > 0) {
-    await runSemanticClusteringForBatch(supabase, semanticCandidates, { minClusterSize: 2 })
-  }
+  await runPostLoopSemanticClustering(supabase, semanticCandidates, `runScraper:${slug}`)
 
   await refreshMaterializedViews(supabase)
 
