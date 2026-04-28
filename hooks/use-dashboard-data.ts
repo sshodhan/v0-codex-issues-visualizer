@@ -135,6 +135,10 @@ export interface Issue {
   author: string
   sentiment: "positive" | "negative" | "neutral"
   sentiment_score: number
+  /** Topic-noun hits from sentiment v2 (NEGATIVE_KEYWORD_PATTERNS in lib/scrapers/shared.ts:6-17). Surfaced via mv_observation_current.sentiment_keyword_presence (script 019). Distinct from `fp_keyword_presence`, which comes from bug_fingerprints. */
+  sentiment_keyword_presence?: number | null
+  /** Algorithm version of the sentiment row surfaced by the MV. Useful for debugging stale-row issues — should equal CURRENT_VERSIONS.sentiment in lib/storage/algorithm-versions.ts whenever a v2 row exists. */
+  sentiment_algorithm_version?: string | null
   impact_score: number
   frequency_count: number
   upvotes: number

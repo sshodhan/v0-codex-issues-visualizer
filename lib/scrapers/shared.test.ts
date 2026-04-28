@@ -169,6 +169,38 @@ test("sentiment lexicon: positive and negative sets are disjoint", () => {
   }
 })
 
+test("analyzeSentiment: factual bug-report body is neutral with keyword_presence > 0 (microsoft/vscode#312633 regression)", () => {
+  // User-reported regression: this row rendered with a green "Positive"
+  // badge on the dashboard. Root cause was an MV staleness bug surfacing
+  // a v1 sentiment row instead of v2 (fixed in scripts/019_…sql). This
+  // test pins the v2 heuristic itself: the body has zero polarity hits
+  // (no "terrible", no "doesn't work", etc.) so polarity is correctly
+  // neutral; the topic nouns "bug" / "issue" / "terminal bug" feed
+  // keyword_presence instead. The issues-table renders a red "Issue"
+  // badge for this exact case (sentiment=neutral, keyword_presence>0)
+  // so factual bug reports never read as positive again.
+  const title = "VSCode Terminal bug"
+  const body = [
+    "Does this issue occur when all extensions are disabled?: Yes",
+    "VS Code Version: 1.117.0",
+    "OS Version: macOS 15.7.5 (aarch64)",
+    "Steps to Reproduce:",
+    "1. Open VSCode",
+    "2. Open Project in folder / workspace",
+    "3. Use Terminal and run codex",
+    "4. Try run some prompt",
+    "5. Switch to other window on your OS",
+    "6. Get back",
+    "7. IMPORTANT: This is appears sometimes, not always",
+    "Problem",
+    "Image Video Terminal bug",
+  ].join("\n")
+  const result = analyzeSentiment(`${title} ${body}`)
+  assert.equal(result.sentiment, "neutral", "no polarity adjectives → neutral polarity")
+  assert.equal(result.score, 0)
+  assert.ok(result.keyword_presence > 0, "topic nouns must drive keyword_presence so the UI can surface a topic-negative pill")
+})
+
 test("calculateImpactScore v2: PR #11 boost holds at every authority level", () => {
   // Earlier test covered only github. Lock the invariant for every
   // authority slug so a future tuning that, say, clamps too aggressively

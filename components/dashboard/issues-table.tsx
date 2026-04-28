@@ -151,7 +151,22 @@ export function IssuesTable({
     return sourceMatch && sentimentMatch && llmMatch
   })
 
-  const getSentimentBadge = (sentiment: string) => {
+  const getSentimentBadge = (sentiment: string, keywordPresence = 0) => {
+    // Polarity-neutral but topic-negative: the body matched one of the
+    // NEGATIVE_KEYWORD_PATTERNS in lib/scrapers/shared.ts:6-17 ("bug",
+    // "error", "crash", …) without using a polarity adjective. Render a
+    // distinct red "Issue" pill so factual bug reports don't read as a
+    // green "Positive" or plain gray "Neutral".
+    if (sentiment === "neutral" && keywordPresence > 0) {
+      return (
+        <Badge
+          variant="outline"
+          className="bg-red-500/20 text-red-400 border-red-500/30"
+        >
+          Issue
+        </Badge>
+      )
+    }
     const variants = {
       positive: "bg-green-500/20 text-green-400 border-green-500/30",
       negative: "bg-red-500/20 text-red-400 border-red-500/30",
@@ -476,7 +491,7 @@ export function IssuesTable({
                       <TableCell className="text-muted-foreground">
                         {issue.source?.name || "Unknown"}
                       </TableCell>
-                      <TableCell>{getSentimentBadge(issue.sentiment)}</TableCell>
+                      <TableCell>{getSentimentBadge(issue.sentiment, issue.sentiment_keyword_presence ?? 0)}</TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <div
