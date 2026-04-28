@@ -89,11 +89,16 @@ function main() {
   for (const s of slugs) { tp[s] = 0; fp[s] = 0; fn[s] = 0 }
 
   let correct = 0
-  const misses: Array<{ row: GoldenRow; got: string | null; evidence: unknown }> = []
+  const misses: Array<{ row: GoldenRow; got: string | null; evidence: unknown; runnerUpMatchesExpected: boolean }> = []
+  // All rows with their margin, regardless of correctness — used for the
+  // low-margin diagnostic. Ties / sub-threshold rows have margin 0.
+  const allRows: Array<{ row: GoldenRow; got: string | null; margin: number }> = []
 
   for (const row of rows) {
     const result = categorizeIssue(row.title, row.body, CATEGORIES)
     const got = result?.slug ?? null
+    const margin = result?.evidence.scoring.margin ?? 0
+    allRows.push({ row, got, margin })
 
     if (got === row.expected) {
       correct++
@@ -101,7 +106,9 @@ function main() {
     } else {
       if (got) fp[got]++
       fn[row.expected]++
-      misses.push({ row, got, evidence: result?.evidence ?? null })
+      const runnerUpMatchesExpected =
+        result?.evidence.scoring.runner_up === row.expected
+      misses.push({ row, got, evidence: result?.evidence ?? null, runnerUpMatchesExpected })
     }
   }
 
@@ -133,13 +140,30 @@ function main() {
   if (misses.length > 0) {
     console.log(`\n--- ${misses.length} misclassified row(s) ---`)
     for (const m of misses) {
+      const runnerUpFlag = m.runnerUpMatchesExpected ? " [runner_up=expected]" : ""
       console.log(
-        `  expected=${m.row.expected}  got=${m.got ?? "null"}  title="${m.row.title.slice(0, 80)}"`,
+        `  expected=${m.row.expected}  got=${m.got ?? "null"}${runnerUpFlag}  title="${m.row.title.slice(0, 80)}"`,
       )
       if (verbose) {
         console.log(`    evidence: ${JSON.stringify(m.evidence)}`)
       }
     }
+  }
+
+  // v6 diagnostic: top 10 lowest-margin rows. A small margin means the
+  // winner barely beat the runner-up, so these are the rows most likely
+  // to flip on the next phrase tweak — useful as the high-leverage
+  // candidates for golden-set additions or targeted phrase weight
+  // changes. Sort ascending by margin; ties broken by title for stable
+  // output.
+  console.log(`\n--- top 10 lowest-margin rows ---`)
+  const sortedByMargin = [...allRows].sort(
+    (a, b) => a.margin - b.margin || a.row.title.localeCompare(b.row.title),
+  )
+  for (const r of sortedByMargin.slice(0, 10)) {
+    console.log(
+      `  margin=${r.margin}  expected=${r.row.expected}  got=${r.got ?? "null"}  title="${r.row.title.slice(0, 80)}"`,
+    )
   }
 
   process.exit(misses.length === 0 ? 0 : 1)

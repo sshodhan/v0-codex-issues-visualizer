@@ -84,11 +84,37 @@ bodies were overwhelming title-level model-quality cues):
     `scripts/eval-topic-patterns.ts` prints precision/recall/F1 per slug
     in <1s with no DB (`npx tsx scripts/eval-topic-patterns.ts --verbose`).
 
+**v6 (2026-04) — phrase maintenance.** Targeted phrase additions in
+`CATEGORY_PATTERNS` for clusters surfaced by the v5 low-margin / manual
+review: `developerInstructions` camelCase, merge/branch-conflict
+vocabulary, progress-log visibility, `higher limits` / `priority
+processing`, `model does not appear` (bounded), `workspace-write` /
+`bubblewrap` sandbox + `device passthrough`, ANSI escape injection
+(bounded phrases only — no bare `code injection` or `ansi escape`),
+`additionalContext` / `PreToolUse` feature requests with `bypass the
+approval prompt` at w5 to outscore ux-ui `approval prompt` w4. Removed
+weak `how to` documentation phrase — questions are not docs-complaint
+language. No scoring-algorithm or threshold changes; `SLUG_THRESHOLD`
+stays `{}`. No LLM tiebreaker. No Layer A/B/C changes. Migration:
+`scripts/027_topic_classifier_v6_bump.sql`.
+
+**Post-v6 phrase-change policy.** Future `CATEGORY_PATTERNS` changes
+require, in the same PR: (1) a golden-set row in
+`tests/fixtures/topic-golden-set.jsonl` covering the production miss
+the change addresses; (2) before/after `npx tsx
+scripts/eval-topic-patterns.ts --verbose` output pasted into the PR
+description; (3) an evidence trace from `categorizeIssue` showing the
+new phrase fires on the target row and does not regress a control row
+from a competing slug; (4) a one-line justification of why the fix
+belongs in Layer 0 (deterministic Topic) rather than Layer A (semantic
+clustering) or Layer C (LLM taxonomy). Phrase additions without all
+four are out-of-scope for Layer 0.
+
 `evidence` shape stored in `category_assignments.evidence`:
 
 ```jsonc
 {
-  "algorithm_version": "v5",
+  "algorithm_version": "v6",
   "classifier_type": "regex_topic",
   "input": {
     "title_present": true,

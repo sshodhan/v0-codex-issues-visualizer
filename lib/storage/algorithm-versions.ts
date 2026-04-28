@@ -8,17 +8,17 @@
 
 export const CURRENT_VERSIONS = {
   sentiment: "v2",
-  // v5 (2026-04): structural fixes to categorizeIssue — title scored
-  // separately from body and weighted 4×, [BUG]/[FEATURE]/… template
-  // prefixes stripped before matching, per-slug thresholds (model-quality
-  // 3, pricing 4, others 2), and the matcher returns structured evidence
-  // (matched phrases + per-slug scores + margin + runner-up) which is
-  // persisted into the new category_assignments.evidence JSONB column for
-  // SQL-side classification audits. The CATEGORY_PATTERNS phrase table is
-  // unchanged from v4. See scripts/025_topic_classifier_v5_bump.sql,
-  // scripts/026_category_assignments_evidence.sql, and
-  // lib/scrapers/shared.ts → categorizeIssue.
-  category: "v5",
+  // v6 (2026-04): phrase-table maintenance pass after v5 low-margin
+  // evidence review. CATEGORY_PATTERNS gains coding-agent vocabulary
+  // for developerInstructions, merge/branch conflicts, progress-log
+  // visibility, higher-limits/priority-processing, model-not-appearing,
+  // workspace-write/bubblewrap sandbox + device passthrough, ANSI escape
+  // injection, and additionalContext/PreToolUse feature requests; the
+  // weak "how to" documentation phrase is removed (a question prefix is
+  // not docs-complaint language). No scoring algorithm changes, no
+  // threshold changes — SLUG_THRESHOLD stays {}. See
+  // scripts/027_topic_classifier_v6_bump.sql.
+  category: "v6",
   impact: "v2",
   // competitor_mention shares the canonical lexicon (sentiment-lexicon.ts).
   // The sentiment v2 bump added words that are ALSO in NEGATORS (e.g.

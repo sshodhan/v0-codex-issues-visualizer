@@ -33,3 +33,16 @@
 {"title":"Sandbox escape via tool invocation","body":"Path traversal in the file editing tool lets the agent read whole filesystem outside the project root.","expected":"security"}
 {"title":"hello world thanks everyone","body":"just saying hi to the community.","expected":"other"}
 {"title":"is this on the roadmap for q3?","body":"curious about the timeline.","expected":"other"}
+{"title":"OpenAi CODEX (Online) Merge Pull request - branch has conflicts","body":"","expected":"bug"}
+{"title":"Codex CLI stopped showing my progress logs at some point","body":"","expected":"ux-ui"}
+{"title":"Codex Updates: Mini Model, Higher Limits & Priority Processing","body":"","expected":"pricing"}
+{"title":"thread/resume and thread/fork ignore developerInstructions override on first resumed turn","body":"","expected":"model-quality"}
+{"title":"Full access session still launches in workspace-write sandbox without NVIDIA device passthrough","body":"","expected":"bug"}
+{"title":"ANSI Escape Code Injection in OpenAI's Codex CLI","body":"","expected":"security"}
+{"title":"Support additionalContext in PreToolUse hooks or clarify Claude-style hook parity","body":"","expected":"feature-request"}
+{"title":"A Project with OpenAI Codex CLI","body":"","expected":"other"}
+{"title":"How to start a new Codex session","body":"","expected":"other"}
+{"title":"Is there a way to bypass the approval prompt on trusted repos?","body":"","expected":"feature-request"}
+{"title":"Missing docs for shell completion setup","body":"","expected":"documentation"}
+{"title":"README unclear about quickstart steps","body":"","expected":"documentation"}
+{"title":"Codex CLI troubleshooting guide is outdated","body":"","expected":"documentation"}
