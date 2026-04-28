@@ -41,6 +41,13 @@ interface PendingCluster {
 interface BackfillStats {
   total_clusters: number | null
   without_classification: number | null
+  /** Count of current-version family_classifications whose cluster has
+   *  no active members (cluster_members.detached_at IS NULL). These are
+   *  orphans left behind by a prior cluster rebuild with redetach. The
+   *  classifications were valid when written but now point to a dead
+   *  cluster shape — operators should treat them as "needs re-classify
+   *  on the new shape." */
+  stale_classifications: number | null
   algorithm_version: string
   pending?: PendingCluster[]
 }
@@ -96,11 +103,35 @@ export async function GET(request: NextRequest) {
       .select("cluster_id", { count: "exact", head: true })
       .eq("algorithm_version", CURRENT_FAMILY_VERSION)
 
+    // Count classifications that point to dead clusters. Two queries
+    // because PostgREST has no anti-join helper:
+    //   1. cluster_ids that currently have at least one active member
+    //   2. classification cluster_ids NOT in (1)
+    // Used as a partial-algorithm signal: after a cluster rebuild with
+    // redetach the old `family_classifications` rows reference clusters
+    // that no longer have members. The number lets operators see "I
+    // need to re-classify N clusters because the upstream cluster shape
+    // moved on."
+    const { data: aliveMv, error: aliveErr } = await supabase
+      .from("mv_cluster_topic_metadata")
+      .select("cluster_id")
+      .gt("observation_count", 0)
+    const { data: classifiedRows, error: classifiedErr } = await supabase
+      .from("family_classification_current")
+      .select("cluster_id, algorithm_version")
+      .eq("algorithm_version", CURRENT_FAMILY_VERSION)
+
     if (totalErr) {
       logServerError("admin-family-classification", "count_total_failed", totalErr)
     }
     if (currentErr) {
       logServerError("admin-family-classification", "count_current_failed", currentErr)
+    }
+    if (aliveErr) {
+      logServerError("admin-family-classification", "count_alive_failed", aliveErr)
+    }
+    if (classifiedErr) {
+      logServerError("admin-family-classification", "count_classified_failed", classifiedErr)
     }
 
     const total = totalClusters ?? null
@@ -109,9 +140,20 @@ export async function GET(request: NextRequest) {
         ? Math.max(0, total - atCurrentVersion)
         : null
 
+    let stale: number | null = null
+    if (aliveMv && classifiedRows) {
+      const aliveSet = new Set(
+        (aliveMv as Array<{ cluster_id: string }>).map((r) => r.cluster_id),
+      )
+      stale = (classifiedRows as Array<{ cluster_id: string }>).filter(
+        (r) => !aliveSet.has(r.cluster_id),
+      ).length
+    }
+
     const response: BackfillStats = {
       total_clusters: total,
       without_classification: without,
+      stale_classifications: stale,
       algorithm_version: CURRENT_FAMILY_VERSION,
     }
 
@@ -141,6 +183,11 @@ export async function GET(request: NextRequest) {
         .select(
           "cluster_id, observation_count, dominant_topic_slug, classification_coverage_share, mixed_topic_score, cluster_path",
         )
+        // Skip dead clusters (observation_count = 0). They appear in the
+        // MV after a redetach + rebuild because the row is keyed by
+        // cluster_id; classifying them produces a junk low_evidence row
+        // that points to nothing.
+        .gt("observation_count", 0)
         .order("observation_count", { ascending: false })
         .limit(pendingLimit * 4)
 
@@ -303,9 +350,12 @@ export async function POST(request: NextRequest) {
 
     // Order by observation_count desc so the largest unclassified
     // clusters are processed first (matches the comment-stated intent).
+    // Skip dead clusters (observation_count = 0); see GET-handler comment
+    // — classifying them produces a junk low_evidence row.
     const { data: ranked, error: rankedErr } = await supabase
       .from("mv_cluster_topic_metadata")
       .select("cluster_id, observation_count")
+      .gt("observation_count", 0)
       .order("observation_count", { ascending: false })
       .limit(limit * 4) // generous so post-filter still has `limit` rows
 

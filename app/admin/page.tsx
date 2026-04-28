@@ -577,6 +577,16 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     switching modes or when the keying function changed.
                   </li>
                   <li>
+                    <strong>Downstream: family classifications go stale.</strong>{" "}
+                    A re-detach rebuild creates new cluster_ids for the
+                    same observations; existing{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">family_classifications</code>{" "}
+                    still reference the old (now empty) cluster_ids and
+                    surface as &ldquo;Pointing to dead clusters&rdquo; in
+                    the Family Classification tab. Re-classify on the new
+                    cluster_ids to reconcile.
+                  </li>
+                  <li>
                     Inserts attach/detach rows into{" "}
                     <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_members</code>{" "}
                     and may insert new{" "}
@@ -926,8 +936,13 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     After the first ingest to interpret existing clusters.
                   </li>
                   <li>
-                    After a significant clustering rebuild to get fresh
-                    interpretations.
+                    After a clustering rebuild with{" "}
+                    <strong>Re-detach first</strong> ticked. The rebuild
+                    moves observations to new cluster_ids; existing
+                    family_classifications still point to the old shape
+                    and surface as <em>Pointing to dead clusters</em> in
+                    the stats. Re-classify on the new cluster_ids to
+                    reconcile.
                   </li>
                   <li>
                     Periodically to flag clusters that may have changed
