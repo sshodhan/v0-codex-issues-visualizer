@@ -14,6 +14,13 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 
@@ -493,52 +500,567 @@ function FamilyEvidenceCard({ draft, dryRun }: { draft: FamilyDraft; dryRun: boo
 
 const QUALITY_ROUTE = "/api/admin/family-classification/quality?limit=200"
 
-interface QualityResponse {
-  summary?: {
-    bucket_counts?: Record<string, number>
-  }
-  rows: QualityRow[]
-}
+type QualityBucket = "safe_to_trust" | "needs_review" | "input_problem"
 
 interface QualityRow {
   cluster_id: string
-  quality_bucket: "safe_to_trust" | "needs_review" | "input_problem"
-  family_title?: string | null
+  quality_bucket: QualityBucket
   family_kind: string | null
-  confidence?: number | null
   recommended_action: string
   review_reasons: string[]
   quality_reasons: string[]
   classification_coverage_share: number | null
   mixed_topic_score: number | null
-  cluster_path?: string | null
+  observation_count: number
   llm_status: string | null
+  llm_model: string | null
   representative_count: number
-  family_summary?: string | null
-  llm_rationale?: string | null
-  evidence?: unknown
-  cluster_metadata?: unknown
-  topic_distribution?: unknown
-  representatives?: Array<{
-    is_canonical?: boolean
-    observation_id?: string
-    topic_slug?: string | null
-    title?: string
-    body_snippet?: string | null
-  }>
-  common_matched_phrases?: Array<{ phrase?: string; slug?: string; count?: number }>
+  representative_preview: string[]
+  common_matched_phrase_count: number
+  common_matched_phrase_preview: string[]
+  needs_human_review: boolean
+  algorithm_version: string | null
+  classified_at: string | null
+  llm_classified_at: string | null
+  updated_at: string | null
 }
 
-const QUALITY_BUCKET_STYLES: Record<string, string> = {
+interface QualitySummary {
+  bucket_counts: Record<string, number>
+}
+
+interface QualityResponse {
+  summary?: Partial<QualitySummary>
+  rows?: unknown[]
+}
+
+const QUALITY_BUCKET_STYLES: Record<QualityBucket, string> = {
   input_problem: "bg-red-50/70 border-red-300 dark:bg-red-950/20",
   needs_review: "bg-amber-50/70 border-amber-300 dark:bg-amber-950/20",
   safe_to_trust: "bg-green-50/50 border-green-300 dark:bg-green-950/20",
 }
 
-function bucketLabel(bucket: QualityRow["quality_bucket"]): string {
-  if (bucket === "safe_to_trust") return "Safe to trust"
-  if (bucket === "input_problem") return "Input problem"
-  return "Needs review"
+const BUCKET_LABELS: Record<QualityBucket, string> = {
+  safe_to_trust: "Safe to trust",
+  needs_review: "Needs review",
+  input_problem: "Input problem",
+}
+
+function bucketLabel(bucket: string | null | undefined): string {
+  if (bucket === "safe_to_trust" || bucket === "needs_review" || bucket === "input_problem") {
+    return BUCKET_LABELS[bucket]
+  }
+  return "—"
+}
+
+// LLM statuses that indicate the LLM step did NOT cleanly succeed. We
+// accept multiple vocabularies because the source-of-truth has shifted
+// over time: the route's typed enum uses "success"/"error"/"auth_error"/
+// "needs_review"/"needs_human_review", but earlier writers used
+// "succeeded"/"failed"/"skipped_*"/"low_confidence_fallback". Any
+// status not in BAD_LLM_STATUSES and not equal to a success keyword
+// counts as a clean run.
+const BAD_LLM_STATUSES = new Set<string>([
+  "failed",
+  "error",
+  "auth_error",
+  "skipped_missing_api_key",
+  "skipped_no_representatives",
+  "low_confidence_fallback",
+  "needs_review",
+  "needs_human_review",
+])
+
+function isBadLlmStatus(status: string | null | undefined): boolean {
+  if (!status) return false
+  return BAD_LLM_STATUSES.has(status)
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null
+  if (typeof value === "string") {
+    const n = Number(value.trim())
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((v): v is string => typeof v === "string")
+}
+
+function normalizeBucket(value: unknown): QualityBucket {
+  if (value === "safe_to_trust" || value === "needs_review" || value === "input_problem") {
+    return value
+  }
+  return "needs_review"
+}
+
+// Tolerate both the current API shape and any near-miss field renames
+// (qualityBucket vs quality_bucket, etc.) so the dashboard does not
+// silently zero out if the endpoint gets reshaped.
+function normalizeQualityRow(input: unknown): QualityRow | null {
+  if (!input || typeof input !== "object") return null
+  const r = input as Record<string, unknown>
+  const cluster_id = asString(r.cluster_id) ?? asString(r.clusterId)
+  if (!cluster_id) return null
+  return {
+    cluster_id,
+    quality_bucket: normalizeBucket(r.quality_bucket ?? r.qualityBucket),
+    family_kind: asString(r.family_kind) ?? asString(r.familyKind),
+    recommended_action:
+      asString(r.recommended_action) ?? asString(r.recommendedAction) ?? "",
+    review_reasons: asStringArray(r.review_reasons ?? r.reviewReasons),
+    quality_reasons: asStringArray(r.quality_reasons ?? r.qualityReasons),
+    classification_coverage_share: asNumber(
+      r.classification_coverage_share ?? r.classificationCoverageShare,
+    ),
+    mixed_topic_score: asNumber(r.mixed_topic_score ?? r.mixedTopicScore),
+    observation_count: asNumber(r.observation_count ?? r.observationCount) ?? 0,
+    llm_status: asString(r.llm_status) ?? asString(r.llmStatus),
+    llm_model: asString(r.llm_model) ?? asString(r.llmModel),
+    representative_count: asNumber(r.representative_count ?? r.representativeCount) ?? 0,
+    representative_preview: asStringArray(r.representative_preview ?? r.representativePreview),
+    common_matched_phrase_count:
+      asNumber(r.common_matched_phrase_count ?? r.commonMatchedPhraseCount) ?? 0,
+    common_matched_phrase_preview: asStringArray(
+      r.common_matched_phrase_preview ?? r.commonMatchedPhrasePreview,
+    ),
+    needs_human_review: r.needs_human_review === true || r.needsHumanReview === true,
+    algorithm_version: asString(r.algorithm_version) ?? asString(r.algorithmVersion),
+    classified_at: asString(r.classified_at) ?? asString(r.classifiedAt),
+    llm_classified_at: asString(r.llm_classified_at) ?? asString(r.llmClassifiedAt),
+    updated_at: asString(r.updated_at) ?? asString(r.updatedAt),
+  }
+}
+
+// Falls back to recomputing bucket counts from rows when the server
+// summary is missing or partial. Empty cards driven by a schema
+// mismatch are worse than no dashboard.
+function deriveBucketCounts(
+  summary: Partial<QualitySummary> | undefined,
+  rows: QualityRow[],
+): Record<string, number> {
+  const fromServer = summary?.bucket_counts
+  if (fromServer && typeof fromServer === "object") {
+    const hasAny = Object.values(fromServer).some((v) => typeof v === "number")
+    if (hasAny) return fromServer
+  }
+  const counts: Record<string, number> = {}
+  for (const r of rows) {
+    counts[r.quality_bucket] = (counts[r.quality_bucket] ?? 0) + 1
+  }
+  return counts
+}
+
+type BucketFilter = "all" | QualityBucket
+
+const TABLE_COLUMN_COUNT = 9
+
+interface FamilyQualityDashboardProps {
+  rows: QualityRow[]
+  summary: Partial<QualitySummary>
+  loading: boolean
+  error: string | null
+  bucketFilter: BucketFilter
+  onBucketFilterChange: (next: BucketFilter) => void
+  expandedRows: Set<string>
+  onToggleRow: (clusterId: string) => void
+  onRetry: () => void
+}
+
+function FamilyQualityDashboard({
+  rows,
+  summary,
+  loading,
+  error,
+  bucketFilter,
+  onBucketFilterChange,
+  expandedRows,
+  onToggleRow,
+  onRetry,
+}: FamilyQualityDashboardProps) {
+  const bucketCounts = deriveBucketCounts(summary, rows)
+  const llmFailedCount = rows.filter((r) => isBadLlmStatus(r.llm_status)).length
+  const llmDisagreementCount = rows.filter((r) =>
+    r.review_reasons.includes("llm_disagrees_with_heuristic"),
+  ).length
+  const lowCoverageCount = rows.filter((r) =>
+    r.quality_reasons.includes("low_classification_coverage"),
+  ).length
+  const highMixednessCount = rows.filter((r) =>
+    r.quality_reasons.includes("high_topic_mixedness"),
+  ).length
+  const fallbackPathCount = rows.filter((r) =>
+    r.quality_reasons.includes("fallback_cluster_path"),
+  ).length
+
+  const filteredRows =
+    bucketFilter === "all"
+      ? rows
+      : rows.filter((r) => r.quality_bucket === bucketFilter)
+
+  return (
+    <Card className="border-dashed">
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Read-only quality dashboard</CardTitle>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                read-only
+              </Badge>
+            </div>
+            <CardDescription>
+              Inspect-only diagnostics for already-classified families. This
+              section does not run classification or mutate data — it consumes
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 text-[11px]">
+                GET /api/admin/family-classification/quality
+              </code>
+              and groups rows into buckets so you can decide what to review
+              before relying on a family for routing or product insight.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-muted-foreground">Bucket</span>
+            <Select
+              value={bucketFilter}
+              onValueChange={(value) => onBucketFilterChange(value as BucketFilter)}
+            >
+              <SelectTrigger className="h-8 w-[160px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All buckets</SelectItem>
+                <SelectItem value="safe_to_trust">Safe to trust</SelectItem>
+                <SelectItem value="needs_review">Needs review</SelectItem>
+                <SelectItem value="input_problem">Input problem</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error ? (
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertTitle>Could not load family quality data</AlertTitle>
+            <AlertDescription className="space-y-2 text-xs">
+              <div>{error}</div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onRetry}
+                disabled={loading}
+                className="h-7 px-2 text-xs"
+              >
+                {loading ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-1 h-3 w-3" />
+                )}
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <StatTile
+            label="Safe to trust"
+            value={bucketCounts.safe_to_trust ?? 0}
+            hint="Signals look coherent and coverage is acceptable."
+          />
+          <StatTile
+            label="Needs review"
+            value={bucketCounts.needs_review ?? 0}
+            hint="Usable with caution; inspect rationale before routing."
+            emphasis
+          />
+          <StatTile
+            label="Input problem"
+            value={bucketCounts.input_problem ?? 0}
+            hint="Underlying inputs are likely degraded or sparse."
+            emphasis
+          />
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-5">
+          <StatTile label="LLM failed/skipped" value={llmFailedCount} />
+          <StatTile label="LLM disagreement" value={llmDisagreementCount} />
+          <StatTile label="Low coverage" value={lowCoverageCount} />
+          <StatTile label="High mixedness" value={highMixednessCount} />
+          <StatTile label="Fallback cluster" value={fallbackPathCount} />
+        </div>
+
+        {!error && !loading && rows.length === 0 ? (
+          <div className="rounded-md border border-dashed bg-background/50 p-4 text-center text-xs text-muted-foreground">
+            No family quality rows found. Run Family Classification backfill
+            first, then refresh this dashboard.
+          </div>
+        ) : null}
+
+        {!error && !loading && rows.length > 0 && filteredRows.length === 0 ? (
+          <div className="rounded-md border border-dashed bg-background/50 p-4 text-center text-xs text-muted-foreground">
+            No rows match the current bucket filter
+            <span className="mx-1 font-medium">{bucketLabel(bucketFilter)}</span>
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              onClick={() => onBucketFilterChange("all")}
+              className="h-auto px-1 py-0 text-xs"
+            >
+              Show all
+            </Button>
+          </div>
+        ) : null}
+
+        {filteredRows.length > 0 ? (
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Quality bucket</TableHead>
+                  <TableHead>Cluster ID</TableHead>
+                  <TableHead>Family kind</TableHead>
+                  <TableHead>LLM status</TableHead>
+                  <TableHead>Coverage</TableHead>
+                  <TableHead>Mixedness</TableHead>
+                  <TableHead>Observations</TableHead>
+                  <TableHead>Reps</TableHead>
+                  <TableHead>Recommended action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredRows.map((row) => {
+                  const expanded = expandedRows.has(row.cluster_id)
+                  return (
+                    <Fragment key={row.cluster_id}>
+                      <TableRow
+                        className={
+                          (QUALITY_BUCKET_STYLES[row.quality_bucket] ?? "") +
+                          " cursor-pointer"
+                        }
+                        onClick={() => onToggleRow(row.cluster_id)}
+                      >
+                        <TableCell className="font-medium">
+                          {bucketLabel(row.quality_bucket)}
+                        </TableCell>
+                        <TableCell>
+                          <code className="rounded bg-muted/60 px-1 py-0.5 text-[11px]">
+                            {row.cluster_id.length > 12
+                              ? `${row.cluster_id.slice(0, 8)}…`
+                              : row.cluster_id}
+                          </code>
+                        </TableCell>
+                        <TableCell>{row.family_kind ?? "—"}</TableCell>
+                        <TableCell>{row.llm_status ?? "—"}</TableCell>
+                        <TableCell>
+                          {formatPct(row.classification_coverage_share)}
+                        </TableCell>
+                        <TableCell>
+                          {row.mixed_topic_score?.toFixed(3) ?? "—"}
+                        </TableCell>
+                        <TableCell className="tabular-nums">
+                          {formatNumber(row.observation_count)}
+                        </TableCell>
+                        <TableCell className="tabular-nums">
+                          {row.representative_count}
+                        </TableCell>
+                        <TableCell
+                          className="max-w-[16rem] truncate"
+                          title={row.recommended_action}
+                        >
+                          {row.recommended_action || "—"}
+                        </TableCell>
+                      </TableRow>
+                      {expanded ? (
+                        <TableRow>
+                          <TableCell
+                            colSpan={TABLE_COLUMN_COUNT}
+                            className="bg-muted/20 text-xs"
+                          >
+                            <FamilyQualityRowDetails row={row} />
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading family quality data…
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function FamilyQualityRowDetails({ row }: { row: QualityRow }) {
+  return (
+    <div className="grid gap-4 py-3 md:grid-cols-2">
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          Why this bucket
+        </div>
+        <div className="space-y-1">
+          <MetricRow label="Bucket" value={bucketLabel(row.quality_bucket)} />
+          <MetricRow
+            label="Recommended action"
+            value={row.recommended_action || "—"}
+          />
+          <MetricRow
+            label="Needs human review"
+            value={row.needs_human_review ? "yes" : "no"}
+          />
+        </div>
+        {row.quality_reasons.length > 0 ? (
+          <div className="space-y-1">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Quality reasons
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {row.quality_reasons.map((reason) => (
+                <Badge
+                  key={reason}
+                  variant="secondary"
+                  className="text-[11px] font-normal"
+                >
+                  {reason}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {row.review_reasons.length > 0 ? (
+          <div className="space-y-1">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Review reasons
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {row.review_reasons.map((reason) => (
+                <Badge
+                  key={reason}
+                  variant={
+                    reason === "llm_disagrees_with_heuristic"
+                      ? "destructive"
+                      : "outline"
+                  }
+                  className="text-[11px] font-normal"
+                >
+                  {humanizeMachineCode(reason, REVIEW_REASON_LABELS)}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          Cluster signals
+        </div>
+        <div className="grid gap-x-4 gap-y-0 sm:grid-cols-2">
+          <MetricRow label="Cluster ID" value={row.cluster_id} />
+          <MetricRow label="Family kind" value={row.family_kind ?? "—"} />
+          <MetricRow
+            label="Coverage"
+            value={formatPct(row.classification_coverage_share)}
+          />
+          <MetricRow
+            label="Mixed-topic score"
+            value={
+              typeof row.mixed_topic_score === "number"
+                ? row.mixed_topic_score.toFixed(3)
+                : "—"
+            }
+          />
+          <MetricRow
+            label="Observations"
+            value={formatNumber(row.observation_count)}
+          />
+          <MetricRow
+            label="Representatives"
+            value={formatNumber(row.representative_count)}
+          />
+          <MetricRow
+            label="Phrases"
+            value={formatNumber(row.common_matched_phrase_count)}
+          />
+          <MetricRow
+            label="Algorithm version"
+            value={row.algorithm_version ?? "—"}
+          />
+          <MetricRow label="LLM status" value={row.llm_status ?? "—"} />
+          <MetricRow label="LLM model" value={row.llm_model ?? "—"} />
+        </div>
+      </section>
+
+      {row.representative_preview.length > 0 ? (
+        <section className="space-y-1.5 md:col-span-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Representatives ({row.representative_preview.length} of{" "}
+            {row.representative_count})
+          </div>
+          <ul className="space-y-1">
+            {row.representative_preview.map((rep, idx) => (
+              <li
+                key={`${row.cluster_id}-rep-${idx}`}
+                className="rounded-md border bg-background/60 px-2 py-1 text-xs"
+              >
+                {rep}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {row.common_matched_phrase_preview.length > 0 ? (
+        <section className="space-y-1.5 md:col-span-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Common matched phrases ({row.common_matched_phrase_preview.length}{" "}
+            of {row.common_matched_phrase_count})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {row.common_matched_phrase_preview.map((phrase, idx) => (
+              <Badge
+                key={`${row.cluster_id}-phrase-${idx}`}
+                variant="outline"
+                className="text-[11px] font-normal"
+              >
+                {phrase}
+              </Badge>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="md:col-span-2">
+        <details className="rounded-md border bg-background/60 px-2 py-1">
+          <summary className="cursor-pointer text-[11px] text-muted-foreground">
+            Raw row JSON
+          </summary>
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-snug">
+            {JSON.stringify(row, null, 2)}
+          </pre>
+        </details>
+      </section>
+    </div>
+  )
 }
 
 export function FamilyClassificationPanel({ secret }: { secret: string }) {
@@ -563,9 +1085,11 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const [runError, setRunError] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<BackfillResult | null>(null)
   const [qualityRows, setQualityRows] = useState<QualityRow[]>([])
-  const [qualitySummary, setQualitySummary] = useState<Record<string, number>>({})
+  const [qualitySummary, setQualitySummary] = useState<Partial<QualitySummary>>({})
   const [qualityLoading, setQualityLoading] = useState(false)
   const [qualityError, setQualityError] = useState<string | null>(null)
+  const [qualityBucketFilter, setQualityBucketFilter] = useState<BucketFilter>("all")
+  const [expandedQualityRows, setExpandedQualityRows] = useState<Set<string>>(new Set())
 
   const loadStats = async () => {
     setStatsLoading(true)
@@ -600,10 +1124,16 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
       const res = await fetch(QUALITY_ROUTE, { headers: authHeaders(secret) })
       if (!res.ok) throw new Error(await explainAdminFailure(res))
       const data = (await res.json()) as QualityResponse
-      setQualityRows(data.rows ?? [])
-      setQualitySummary(data.summary?.bucket_counts ?? {})
+      const rawRows = Array.isArray(data.rows) ? data.rows : []
+      const normalized = rawRows
+        .map(normalizeQualityRow)
+        .filter((r): r is QualityRow => r !== null)
+      setQualityRows(normalized)
+      setQualitySummary(data.summary ?? {})
     } catch (e) {
-      setQualityError(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setQualityError(message)
+      logClientError(e, "admin-family-classification-quality-failed")
     } finally {
       setQualityLoading(false)
     }
@@ -802,10 +1332,13 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => { loadStats(); loadQuality() }}
-              disabled={statsLoading}
+              onClick={() => {
+                loadStats()
+                loadQuality()
+              }}
+              disabled={statsLoading || qualityLoading}
             >
-              {statsLoading ? (
+              {statsLoading || qualityLoading ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="mr-1 h-4 w-4" />
@@ -1061,74 +1594,24 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
 
 
 
-          <Card className="border-dashed">
-            <CardHeader>
-              <CardTitle className="text-base">Quality buckets</CardTitle>
-              <CardDescription>
-                Family Classification is an interpretation layer, not ground truth. The quality bucket is diagnostic only. Use it to decide what to inspect before relying on a family for routing or product insight.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {qualityError ? <Alert variant="destructive"><AlertDescription>{qualityError}</AlertDescription></Alert> : null}
-              <div className="grid gap-3 md:grid-cols-3">
-                <StatTile label="Safe to trust" value={qualitySummary.safe_to_trust ?? 0} hint="Signals look coherent and coverage is acceptable." />
-                <StatTile label="Needs review" value={qualitySummary.needs_review ?? 0} hint="Usable with caution; inspect rationale before routing." emphasis />
-                <StatTile label="Input problem" value={qualitySummary.input_problem ?? 0} hint="Underlying inputs are likely degraded or sparse." emphasis />
-              </div>
-              <div className="grid gap-3 md:grid-cols-5">
-                <StatTile label="LLM failed/skipped" value={qualityRows.filter((r) => r.llm_status && r.llm_status !== "success").length} />
-                <StatTile label="LLM disagreement" value={qualityRows.filter((r) => r.quality_reasons.includes("llm_disagrees_with_heuristic")).length} />
-                <StatTile label="Low coverage" value={qualityRows.filter((r) => r.quality_reasons.includes("low_classification_coverage")).length} />
-                <StatTile label="Fallback cluster" value={qualityRows.filter((r) => (r.cluster_path ?? "") === "fallback").length} />
-                <StatTile label="Low confidence" value={qualityRows.filter((r) => (r.confidence ?? 1) < 0.55).length} />
-              </div>
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader><TableRow>
-                    <TableHead>Quality bucket</TableHead><TableHead>Family title</TableHead><TableHead>Family kind</TableHead><TableHead>Confidence</TableHead><TableHead>Recommended action</TableHead><TableHead>Review reasons</TableHead><TableHead>Coverage</TableHead><TableHead>Mixedness</TableHead><TableHead>Cluster path</TableHead><TableHead>LLM status</TableHead><TableHead>Representative count</TableHead>
-                  </TableRow></TableHeader>
-                  <TableBody>
-                    {qualityRows.map((row) => (
-                      <Fragment key={row.cluster_id}>
-                        <TableRow className={QUALITY_BUCKET_STYLES[row.quality_bucket] ?? ""}>
-                          <TableCell>{bucketLabel(row.quality_bucket)}</TableCell>
-                          <TableCell>{row.family_title ?? row.cluster_id}</TableCell>
-                          <TableCell>{row.family_kind ?? "—"}</TableCell>
-                          <TableCell>{formatPct(row.confidence)}</TableCell>
-                          <TableCell className="max-w-48 truncate" title={row.recommended_action}>{row.recommended_action}</TableCell>
-                          <TableCell>{row.review_reasons.join(", ") || "—"}</TableCell>
-                          <TableCell>{formatPct(row.classification_coverage_share)}</TableCell>
-                          <TableCell>{row.mixed_topic_score?.toFixed(3) ?? "—"}</TableCell>
-                          <TableCell>{row.cluster_path ?? "—"}</TableCell>
-                          <TableCell>{row.llm_status ?? "—"}</TableCell>
-                          <TableCell>{row.representative_count}</TableCell>
-                        </TableRow>
-                        <TableRow>
-                          <TableCell colSpan={11} className="text-xs">
-                            <details>
-                              <summary className="cursor-pointer">Details</summary>
-                              <div className="mt-2 space-y-1">
-                                <div><strong>family_summary:</strong> {row.family_summary ?? "—"}</div>
-                                <div><strong>recommended_action:</strong> {row.recommended_action}</div>
-                                <div><strong>quality_reasons:</strong> {row.quality_reasons.join(", ") || "—"}</div>
-                                <div><strong>llm_rationale:</strong> {row.llm_rationale ?? "—"}</div>
-                                <div><strong>cluster metadata:</strong> <code>{JSON.stringify(row.cluster_metadata ?? null)}</code></div>
-                                <div><strong>topic distribution:</strong> <code>{JSON.stringify(row.topic_distribution ?? null)}</code></div>
-                                <div><strong>representative observations:</strong> <code>{JSON.stringify(row.representatives ?? [], null, 2)}</code></div>
-                                <div><strong>common matched phrases:</strong> <code>{JSON.stringify(row.common_matched_phrases ?? [], null, 2)}</code></div>
-                                <div><strong>raw evidence JSON fallback:</strong> <code>{JSON.stringify(row.evidence ?? row, null, 2)}</code></div>
-                              </div>
-                            </details>
-                          </TableCell>
-                        </TableRow>
-                      </Fragment>
-                    ))}
-                  </TableBody>
-                </Table>
-                {qualityLoading ? <div className="p-3 text-xs text-muted-foreground">Loading…</div> : null}
-              </div>
-            </CardContent>
-          </Card>
+          <FamilyQualityDashboard
+            rows={qualityRows}
+            summary={qualitySummary}
+            loading={qualityLoading}
+            error={qualityError}
+            bucketFilter={qualityBucketFilter}
+            onBucketFilterChange={setQualityBucketFilter}
+            expandedRows={expandedQualityRows}
+            onToggleRow={(clusterId) => {
+              setExpandedQualityRows((current) => {
+                const next = new Set(current)
+                if (next.has(clusterId)) next.delete(clusterId)
+                else next.add(clusterId)
+                return next
+              })
+            }}
+            onRetry={loadQuality}
+          />
 
           {lastResult ? (
             <div className="space-y-3">
