@@ -116,6 +116,8 @@ type CategoryPattern = {
 
 const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
   bug: [
+    { phrase: "error", weight: 2, wholeWord: true },
+    { phrase: "errored", weight: 3, wholeWord: true },
     { phrase: "panic", weight: 4, wholeWord: true },
     { phrase: "segfault", weight: 4 },
     { phrase: "traceback", weight: 4 },
@@ -137,7 +139,9 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "doesn't work", weight: 3 },
     { phrase: "doesn’t work", weight: 3 },
     { phrase: "does not work", weight: 3 },
-    { phrase: "regress", weight: 3 },
+    { phrase: "regress", weight: 3, wholeWord: true },
+    { phrase: "regression", weight: 3, wholeWord: true },
+    { phrase: "regressed", weight: 3, wholeWord: true },
     { phrase: "fails to", weight: 2 },
     { phrase: "failed to", weight: 2 },
     { phrase: "failed with", weight: 2 },
@@ -161,6 +165,8 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "frozen", weight: 3 },
     { phrase: "freezing", weight: 3 },
     { phrase: "unresponsive", weight: 3 },
+    { phrase: "timed out", weight: 2 },
+    { phrase: "timeout", weight: 2, wholeWord: true },
     { phrase: "stuck on loading", weight: 4 },
     { phrase: "loading forever", weight: 4 },
     { phrase: "takes forever", weight: 4 },
@@ -195,6 +201,8 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "outdated docs", weight: 3 },
     { phrase: "unclear docs", weight: 3 },
     { phrase: "not documented", weight: 3 },
+    { phrase: "hands-on", weight: 2 },
+    { phrase: "hands-on review", weight: 2 },
     { phrase: "guide", weight: 2, wholeWord: true },
     { phrase: "walkthrough", weight: 2, wholeWord: true },
     { phrase: "how to", weight: 1 },
@@ -206,7 +214,7 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "loading icon", weight: 4 },
     { phrase: "flicker", weight: 4 },
     { phrase: "flickering", weight: 4 },
-    { phrase: "sidebar", weight: 3 },
+    { phrase: "sidebar", weight: 2 },
     { phrase: "picker", weight: 3 },
     { phrase: "tui", weight: 2, wholeWord: true },
     { phrase: "ui", weight: 2, wholeWord: true },
@@ -235,7 +243,8 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "model context protocol", weight: 4 },
     { phrase: "tool invocation", weight: 4 },
     { phrase: "tool call", weight: 3 },
-    { phrase: "function call", weight: 3 },
+    { phrase: "function call output", weight: 4 },
+    { phrase: "function call with call_id", weight: 4 },
     { phrase: "plugin", weight: 3, wholeWord: true },
     { phrase: "extension", weight: 3, wholeWord: true },
     { phrase: "vscode", weight: 3, wholeWord: true },
@@ -325,7 +334,7 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "rate limit", weight: 2 },
     { phrase: "rate-limits", weight: 2 },
     { phrase: "monthly fee", weight: 3 },
-    { phrase: "per token", weight: 3 },
+    { phrase: "per token", weight: 2 },
     { phrase: "per month", weight: 2 },
     { phrase: "expensive", weight: 3, wholeWord: true },
     { phrase: "cost", weight: 2, wholeWord: true },
@@ -441,12 +450,11 @@ export function categorizeIssue(
     return categories.find((c) => c.slug === "other")?.id
   }
 
-  // Threshold stays at 2: v2 expands phrase lists and reweights strong
-  // signals (e.g. `github auth` weight 3, `open-source llms` weight 3,
-  // `hands-on`+`review` sum to 4) so that eye-test rows now classify
-  // without needing the floor to drop. Lowering to 1 let single weight-1
-  // hits (`roadmap`, `example`, `connect`) wrongly pull posts out of Other
-  // on thin evidence — a regression the pre-merge review caught.
+  // Threshold stays at 2: stronger phrase lists and reweights mean
+  // high-signal cues clear the floor on their own (e.g. `mcp server` weight 4,
+  // `quota exceeded` weight 4, `hands-on`+`hands-on review` sum to 4) without
+  // lowering the baseline. Lowering to 1 let single weak hits wrongly pull
+  // posts out of Other on thin evidence — a regression the pre-merge review caught.
   if (top.score < 2) {
     return categories.find((c) => c.slug === "other")?.id
   }

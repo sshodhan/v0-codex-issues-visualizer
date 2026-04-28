@@ -115,6 +115,34 @@ test("categorizeIssue v2: 'OpenAI Codex hands-on review' becomes Documentation",
   assert.equal(categoryId, "cat-docs")
 })
 
+test("categorizeIssue v4: 'mcp timeout' is Integration (not Performance)", () => {
+  const categoryId = categorizeIssue("mcp timeout after provider update", CATEGORIES)
+  assert.equal(categoryId, "cat-int")
+})
+
+test("categorizeIssue v4: quota exceeded + billing details is Pricing (not API)", () => {
+  const categoryId = categorizeIssue("quota exceeded. check your plan and billing details.", CATEGORIES)
+  assert.equal(categoryId, "cat-price")
+})
+
+test("categorizeIssue v4: looping complaint is Model Quality", () => {
+  const categoryId = categorizeIssue("cursor keeps looping on same message", CATEGORIES)
+  assert.equal(categoryId, "cat-mq")
+})
+
+test("categorizeIssue v4: approval prompt + diff details is UX/UI", () => {
+  const categoryId = categorizeIssue("subagent patch approval prompt omits diff/file details", CATEGORIES)
+  assert.equal(categoryId, "cat-ux")
+})
+
+test("categorizeIssue v4: replace_in_file mismatch is Integration", () => {
+  const categoryId = categorizeIssue(
+    "replace_in_file says code was modified but no file changes",
+    CATEGORIES,
+  )
+  assert.equal(categoryId, "cat-int")
+})
+
 test("categorizeIssue v2: 'Unable to connect GitHub Auth' lands in a non-Other bucket", () => {
   // Row 15 from the eye test. The title legitimately has both Bug markers
   // (`unable to`, weight 2) and Integration markers (`github auth`, weight
