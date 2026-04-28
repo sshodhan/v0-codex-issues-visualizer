@@ -52,6 +52,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
 import { FamilyClassificationPanel } from "@/components/admin/family-classification-panel"
+import { TopicReviewPanel } from "@/components/admin/topic-review-panel"
 import { WhatToKnowCard } from "@/components/admin/what-to-know-card"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
@@ -245,7 +246,7 @@ interface ProcessingEventItem {
   created_at: string
 }
 
-const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema", "cluster-labels", "family-classification"] as const
+const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "topic-review", "schema", "cluster-labels", "family-classification"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
 // `useSearchParams()` bails out of static prerender in Next.js 15 and
@@ -393,13 +394,15 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                 <li>
                   <strong>Stage 5 — Human-in-the-loop improvement.</strong>{" "}
                   Reviewer labels, overrides, and automation feedback
-                  captured in append-only review tables (e.g.{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>;
-                  additional review surfaces may write to their own
-                  tables). Stage 5 is the canonical learning signal back
-                  into Stages 1–4: structured error reasons inform regex
-                  tuning, threshold sweeps, prompt edits, and family
-                  taxonomy revisions.
+                  captured in append-only review tables — the legacy{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>{" "}
+                  surface for Stage 4 LLM output, plus the new{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">topic_review_events</code>{" "}
+                  surface for Stage 1 Topic decisions (admin tab:{" "}
+                  <em>Stage 5: Topic Review</em>). Stage 5 is the
+                  canonical learning signal back into Stages 1–4:
+                  structured error reasons inform regex tuning, threshold
+                  sweeps, prompt edits, and family taxonomy revisions.
                 </li>
               </ul>
               <p className="text-xs text-muted-foreground">
@@ -454,6 +457,17 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                 labeller was weak or unavailable.
               </li>
               <li>
+                <strong>Stage 5: Topic Review</strong> →{" "}
+                <strong>Stage 5</strong>: structured reviewer feedback on
+                Stage 1 Topic decisions (append-only{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">topic_review_events</code>),
+                with optional manual topic overrides on{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">category_assignments</code>.
+                Sibling of{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>{" "}
+                for Stage 4 LLM output.
+              </li>
+              <li>
                 <strong>Cross-layer Trace</strong> → diagnostic walk
                 through every stage for a single observation: raw evidence
                 → Stage 1 signals → Stage 2 embedding → Stage 3 cluster
@@ -465,11 +479,6 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                 guardrail; validates schema and algorithm-version
                 contracts every stage depends on. Not a stage; no
                 backfill semantics.
-              </li>
-              <li>
-                <strong>(future) Reviewer panels</strong> →{" "}
-                <strong>Stage 5</strong>: HITL improvement signals back
-                into Stages 1–4.
               </li>
             </ul>
           }
@@ -499,6 +508,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="classify-backfill">Layer C Backfill</TabsTrigger>
             <TabsTrigger value="clustering">Layer A Clustering</TabsTrigger>
             <TabsTrigger value="trace">Cross-layer Trace</TabsTrigger>
+            <TabsTrigger value="topic-review">Stage 5: Topic Review</TabsTrigger>
             <TabsTrigger value="schema">Schema / Contracts</TabsTrigger>
             <TabsTrigger value="cluster-labels">Layer A Labels</TabsTrigger>
             <TabsTrigger value="family-classification">Family Classification</TabsTrigger>
@@ -984,6 +994,258 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               }
             />
             <ObservationTracePanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="topic-review" className="space-y-4">
+            <WhatToKnowCard
+              title="Stage 5: Topic Review — Reviewer Feedback for Stage 1"
+              summary="Stage 5 capture surface for Stage 1 (the deterministic regex Topic classifier). Reviewers inspect Stage 1 evidence, record structured review events, and optionally apply append-only manual topic overrides. Append-only; the classifier itself is unchanged — events and overrides are learning signals for future Stage 1 / golden-set / taxonomy edits."
+              purpose={
+                <p>
+                  Stage 5: Topic Review answers: did Stage 1 get this
+                  observation&apos;s Topic right, and if not, where does
+                  the mistake belong (Stage 1 phrases, Stage 3 cluster
+                  shape, Stage 4 LLM taxonomy, data quality, or the
+                  review workflow itself)? Generates per-observation
+                  review-event records with a structured reason code
+                  (phrase false-positive,
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">belongs_to_clustering</code>,{" "}
+                  ambiguous entity, …), a suggested stage and action,
+                  and an optional candidate phrase or rationale. Manual
+                  topic overrides are optional — reviewers can record a
+                  structured signal without correcting the topic, and
+                  the same submission can carry both. See{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    docs/SCORING.md
+                  </code>{" "}
+                  §11.
+                </p>
+              }
+              pipelineFit={
+                <div className="space-y-2">
+                  <p>
+                    <strong>Stage 5 — Human-in-the-loop improvement
+                    (Stage 1 surface).</strong> Sibling of the existing
+                    Stage 5 surface for Stage 4 LLM output (
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      classification_reviews
+                    </code>
+                    ). Reads Stage 1 evidence (the{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">evidence</code>{" "}
+                    JSONB on{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      category_assignments
+                    </code>
+                    ) and produces append-only review rows; does not
+                    touch Stage 2 embeddings, Stage 3 membership, or
+                    Stage 4 family classification. Append-only into{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      topic_review_events
+                    </code>
+                    .
+                  </p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    <li>
+                      <strong>Consumes:</strong> the latest deterministic
+                      Stage 1 row from{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        category_assignments
+                      </code>{" "}
+                      (matched phrases, scores, margin, runner-up, confidence
+                      proxy, template-prefix metadata),{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        mv_cluster_topic_metadata
+                      </code>{" "}
+                      when available (dominant topic, mixed-topic score,
+                      common phrases), the observation&apos;s title /
+                      body / cluster id.
+                    </li>
+                    <li>
+                      <strong>Produces:</strong> a row in{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        topic_review_events
+                      </code>{" "}
+                      with{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">reason_code</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">suggested_layer</code>{" "}
+                      (column name kept for back-compat; values are
+                      stage-named — see §11.2),{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">suggested_action</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">phrase_candidate</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">rationale</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">evidence_snapshot</code>,
+                      and a copyable{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        golden_set_candidate
+                      </code>{" "}
+                      JSONB ({"{"} title, body, expected {"}"}). When the
+                      reviewer ticks <em>Apply manual topic override</em>,
+                      a second row is appended into{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        category_assignments
+                      </code>{" "}
+                      with{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        algorithm_version=&apos;manual&apos;
+                      </code>{" "}
+                      and full override evidence preserving the original
+                      deterministic verdict.
+                    </li>
+                    <li>
+                      <strong>Trigger model:</strong> Stage 5: Topic
+                      Review is admin-driven only — no cron, no
+                      post-classify hook. Reviewers find candidates via
+                      the <em>Queue</em> sub-tab (filter by margin,
+                      confidence, topic, cluster, review status — see
+                      the &quot;sampled, not exhaustive&quot; note on
+                      that tab) or by direct observation id from a
+                      dashboard deep link; the <em>Events</em> sub-tab
+                      lists all recorded events.
+                    </li>
+                    <li>
+                      <strong>Effective topic on read:</strong> a manual
+                      override wins immediately because{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        mv_observation_current
+                      </code>
+                      &apos;s{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">latest_category</code>{" "}
+                      CTE picks{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        max(computed_at)
+                      </code>
+                      , and the manual row is the freshest. A future
+                      full-corpus Stage-1 backfill (rare; only on
+                      algorithm-version bumps like v6 → v7) would write
+                      a newer deterministic row that supersedes the
+                      override on the dashboard — at which point the
+                      reviewer can re-record the override (one click,
+                      appends another manual row that becomes the
+                      freshest). The override row itself is never
+                      destroyed; the trace API still shows it. See
+                      §11.5 for the full ordering contract and the test
+                      that locks both branches.
+                    </li>
+                  </ul>
+                </div>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Triaging a dashboard row, alert, or Queue entry
+                    flagged as a likely Stage 1 misclassification (low
+                    margin, low confidence proxy, runner-up of interest,
+                    Topic = <code className="rounded bg-muted px-1 py-0.5">other</code>).
+                  </li>
+                  <li>
+                    Identifying systematic Stage 1 failure modes
+                    (recurring{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">phrase_false_positive</code>{" "}
+                    or{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">phrase_false_negative</code>)
+                    so a future PR can update CATEGORY_PATTERNS or the
+                    golden set. The Events sub-tab is the queryable
+                    backbone for that automation work.
+                  </li>
+                  <li>
+                    Building evidence for golden-set candidates that
+                    drive Stage 1 quality regression coverage.
+                  </li>
+                  <li>
+                    Recording <em>known limitations</em> — when an
+                    observation is genuinely ambiguous or belongs to a
+                    different layer (Layer A cluster issue, Stage 4 LLM
+                    taxonomy, data quality), a review event with{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">suggested_action=known_limitation_no_action</code>{" "}
+                    documents the decision without changing the
+                    classifier.
+                  </li>
+                </ul>
+              }
+              impact={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Inserts <strong>1 row per submission</strong> into{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">topic_review_events</code>,
+                    plus <strong>0 or 1 manual row</strong> into{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">category_assignments</code>{" "}
+                    when the override checkbox is ticked. Append-only;
+                    nothing is destroyed or overwritten.
+                  </li>
+                  <li>
+                    Refreshes{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">mv_observation_current</code>{" "}
+                    after a manual override so the dashboard reflects
+                    the corrected Topic immediately. No MV refresh when
+                    only a review event is recorded — review events
+                    aren&apos;t denormalized into the dashboard MV.
+                  </li>
+                  <li>
+                    <strong>No impact on the Stage 1 classifier
+                    itself.</strong>{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">CATEGORY_PATTERNS</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">SLUG_THRESHOLD</code>,
+                    title-multiplier, template stripping, and the v6
+                    algorithm version are all untouched. Review events
+                    are historical learning signals, not live
+                    configuration.
+                  </li>
+                  <li>
+                    Golden-set candidates are <strong>copyable JSONL
+                    only</strong> — never auto-written to{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">tests/fixtures/topic-golden-set.jsonl</code>.
+                    Promoting a candidate into the regression set is a
+                    separate, human-reviewed PR.
+                  </li>
+                  <li>
+                    Stage 5 is a learning signal, not a verdict — judge
+                    Stage 1 quality by aggregate review events plus
+                    Stage 1 evidence, not by any single override.
+                  </li>
+                </ul>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Open the <strong>Trace</strong> sub-tab, paste an
+                    observation UUID (or deep-link from the dashboard),
+                    and hit <strong>Load</strong>.
+                  </li>
+                  <li>
+                    Review the current Topic, confidence proxy, margin,
+                    matched phrases, and cluster context. If evidence is
+                    missing the panel says so explicitly.
+                  </li>
+                  <li>
+                    Fill in <code className="rounded bg-muted px-1 py-0.5 text-xs">reason_code</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">suggested_layer</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">suggested_action</code>{" "}
+                    (all required), plus optional{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">phrase_candidate</code>{" "}
+                    and free-text rationale.
+                  </li>
+                  <li>
+                    Optionally tick <strong>Apply manual topic
+                    override</strong> and pick the corrected slug — the
+                    override row is appended alongside the review event
+                    in the same submission.
+                  </li>
+                  <li>
+                    Submit. The panel returns the review event id and a
+                    copyable golden-set JSONL line you can paste into a
+                    future PR&apos;s fixture update.
+                  </li>
+                  <li>
+                    Use <strong>Queue</strong> to find candidates by
+                    Stage 1 weakness signals (margin ≤ 2, confidence
+                    proxy ≤ 0.25, Topic = <code className="rounded bg-muted px-1 py-0.5">other</code>,
+                    cluster id, dominant cluster topic, review status).
+                    Use <strong>Events</strong> to audit recent reviews
+                    by status, layer, action, or reason.
+                  </li>
+                </ol>
+              }
+            />
+            <TopicReviewPanel secret={secret} />
           </TabsContent>
           <TabsContent value="schema" className="space-y-4">
             <WhatToKnowCard
