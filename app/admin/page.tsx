@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
+import { WhatToKnowCard } from "@/components/admin/what-to-know-card"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
   CheckResult,
@@ -321,22 +322,513 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="schema">Schema verification</TabsTrigger>
             <TabsTrigger value="cluster-labels">Cluster-label backfill</TabsTrigger>
           </TabsList>
-          <TabsContent value="backfill">
+          <TabsContent value="backfill" className="space-y-4">
+            <WhatToKnowCard
+              title="Backfill derivations"
+              summary="Re-run the deterministic enrichment pass over every observation under the current algorithm versions. Append-only, idempotent."
+              purpose={
+                <p>
+                  Walks the entire <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code> table
+                  and recomputes the deterministic derivations — sentiment,
+                  category, impact score, and competitor mentions — under the
+                  registry versions currently configured in code. Each pass
+                  inserts new rows alongside the old ones rather than mutating
+                  anything, so prior readings stay reproducible.
+                </p>
+              }
+              pipelineFit={
+                <p>
+                  This is the same enrich pass described in
+                  {" "}<code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §3.1b
+                  that normally runs after every ingest. The admin button lets
+                  you replay it across the existing evidence layer when you
+                  bump an algorithm version, without waiting for new scrapes.
+                  Writes go through{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    lib/storage/derivations.ts
+                  </code>{" "}
+                  into{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">sentiment_scores</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">category_assignments</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">impact_scores</code>, and{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">competitor_mentions</code>.
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    After bumping a sentiment / category / impact / competitor
+                    algorithm version so the new version is stamped across the
+                    corpus.
+                  </li>
+                  <li>
+                    After fixing a regex or lexicon and you want the corrected
+                    output reflected in the dashboard.
+                  </li>
+                  <li>
+                    Not needed during normal operation — fresh scrapes already
+                    re-enrich every touched observation.
+                  </li>
+                </ul>
+              }
+              impact={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Inserts up to <strong>4 new rows per observation</strong>{" "}
+                    (one per derivation kind). Old rows are preserved.
+                  </li>
+                  <li>
+                    Refreshes <code className="rounded bg-muted px-1 py-0.5 text-xs">mv_observation_current</code>{" "}
+                    and <code className="rounded bg-muted px-1 py-0.5 text-xs">mv_trend_daily</code> at the end so
+                    the dashboard picks up the new versions.
+                  </li>
+                  <li>
+                    Idempotent — re-running just appends another version
+                    stamp; nothing is destroyed or overwritten.
+                  </li>
+                </ul>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Click <strong>Dry run</strong> first to preview a handful
+                    of sample diffs without touching the database.
+                  </li>
+                  <li>
+                    Click <strong>Apply</strong> to walk the corpus in
+                    500-row chunks. The progress bar and write counters update
+                    live; <strong>Stop</strong> aborts safely between chunks.
+                  </li>
+                  <li>
+                    No scope controls needed — it always processes every
+                    observation.
+                  </li>
+                </ol>
+              }
+            />
             <BackfillPanel secret={secret} />
           </TabsContent>
-          <TabsContent value="classify-backfill">
+          <TabsContent value="classify-backfill" className="space-y-4">
+            <WhatToKnowCard
+              title="Classify backfill (LLM)"
+              summary="Manual catch-up for the LLM classifier. Same orchestrator as the daily 03:00 UTC cron, just behind the admin secret."
+              purpose={
+                <p>
+                  Routes canonical observations that have never been
+                  classified through the OpenAI classifier (gpt-5-mini) so
+                  they pick up category, subcategory, severity, and mechanism
+                  labels. The dedupe guard skips already-classified rows.
+                </p>
+              }
+              pipelineFit={
+                <p>
+                  Shares{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    runClassifyBackfill
+                  </code>{" "}
+                  with the daily cron at{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    /api/cron/classify-backfill
+                  </code>{" "}
+                  (see §3.1d / §3.5). The cron's 10-row/day cap is sized for
+                  steady-state catch-up; this admin path is what you use to
+                  clear a real backlog. Writes land in{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classifications</code>;
+                  run summaries are recorded to{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    scrape_logs(source_id = NULL)
+                  </code>
+                  .
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    First time the classifier is enabled against an existing
+                    corpus — the cron alone would take years to clear it.
+                  </li>
+                  <li>
+                    After lowering the impact threshold or widening the
+                    window and you want the new candidates classified
+                    immediately.
+                  </li>
+                  <li>
+                    <strong>Avoid</strong> overlapping the 03:00 UTC cron
+                    tick — concurrent runs can race on the dedupe
+                    SELECT-then-INSERT (BUGS.md N-9).
+                  </li>
+                </ul>
+              }
+              impact={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Costs <strong>~$0.04/observation</strong> at gpt-5-mini
+                    rates. Dry run gives an exact budget preview with no
+                    model calls.
+                  </li>
+                  <li>
+                    Each call is ~3–5s; on Hobby keep per-batch limit
+                    {" "}<strong>≤ 15</strong>{" "}so wall-clock stays under
+                    the 60s function timeout.
+                  </li>
+                  <li>
+                    "Run until done" loops batches and refreshes MVs once
+                    at the end. Failures are isolated per observation —
+                    one bad row will not abort the run.
+                  </li>
+                </ul>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Set the <strong>impact threshold</strong> and{" "}
+                    <strong>days window</strong> to scope the run. The
+                    counts matrix shows what each combination would touch.
+                  </li>
+                  <li>
+                    Click <strong>Dry run</strong> for a count + budget
+                    preview.
+                  </li>
+                  <li>
+                    Click <strong>Run one batch</strong> to test, then
+                    {" "}<strong>Run until done</strong> to drain the
+                    backlog. Provide the admin secret in the header field.
+                  </li>
+                </ol>
+              }
+            />
             <ClassifyBackfillPanel secret={secret} />
           </TabsContent>
-          <TabsContent value="clustering">
+          <TabsContent value="clustering" className="space-y-4">
+            <WhatToKnowCard
+              title="Clustering"
+              summary="Live cluster stats and on-demand rebuild. Attach-only is safe to re-run; re-detach is only when buildClusterKey itself changed."
+              purpose={
+                <p>
+                  Shows live counts from the aggregation layer (observations,
+                  clusters, active memberships, orphans) and lets you trigger
+                  the same clustering pass that runs after every scrape —
+                  hooking any orphan observations into the right cluster, or
+                  creating one if no match exists.
+                </p>
+              }
+              pipelineFit={
+                <p>
+                  Implements §3.1c. Cluster membership is append-only via{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_members</code>{" "}
+                  (attaches and detaches both leave a row;{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">detached_at IS NULL</code>{" "}
+                  is the active set). Cluster shape is independent of the
+                  evidence layer — observations are never mutated by this
+                  step.
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    After running{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      scripts/013_backfill_fingerprints.ts
+                    </code>{" "}
+                    so the new fingerprints can drive cluster keys.
+                  </li>
+                  <li>
+                    Whenever the <strong>Orphans</strong> tile is non-zero —
+                    these are observations that ingest captured but missed
+                    the post-loop clustering call.
+                  </li>
+                  <li>
+                    Tick <strong>Re-detach first</strong> only when{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      buildClusterKey
+                    </code>{" "}
+                    has changed in code; existing memberships will be
+                    detached and re-attached under the new key.
+                  </li>
+                </ul>
+              }
+              impact={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Attach-only mode is a no-op for already-clustered
+                    observations — safe to re-run anytime.
+                  </li>
+                  <li>
+                    Inserts attach/detach rows into{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_members</code>{" "}
+                    and may insert new{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters</code>{" "}
+                    rows. Refreshes{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">mv_observation_current</code>{" "}
+                    and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">mv_trend_daily</code>{" "}
+                    at the end.
+                  </li>
+                  <li>
+                    Re-detach mode rewrites cluster shape — only use when
+                    the keying function itself has changed.
+                  </li>
+                </ul>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Check the <strong>Orphans</strong> count and the top-10
+                    cluster table.
+                  </li>
+                  <li>
+                    Click <strong>Rebuild clusters</strong> for the default
+                    attach-only pass.
+                  </li>
+                  <li>
+                    Watch the processed / attached / detached counters and
+                    sample cluster keys. <strong>Refresh</strong> reloads
+                    stats.
+                  </li>
+                </ol>
+              }
+            />
             <ClusteringPanel secret={secret} />
           </TabsContent>
-          <TabsContent value="trace">
+          <TabsContent value="trace" className="space-y-4">
+            <WhatToKnowCard
+              title="Observation trace"
+              summary="Read-only inspector for one observation's full lineage — capture, fingerprint, cluster, classification, review."
+              purpose={
+                <p>
+                  Walks a single observation backwards through every layer:
+                  the original capture and revisions, the regex bug
+                  fingerprint, the embedding, the cluster membership chain,
+                  every LLM classification attempt (including retries), and
+                  any reviewer overrides. The append-only processing event
+                  stream shows what happened to the row over time.
+                </p>
+              }
+              pipelineFit={
+                <p>
+                  Implements the analyst-grade traceability flow in §3.4. It
+                  is the operator-facing equivalent of joining{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">observation_revisions</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">bug_fingerprints</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_members</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classifications</code>,
+                  and{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>{" "}
+                  by hand.
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Debugging "why did this observation cluster here?" or
+                    "why did it get this label?".
+                  </li>
+                  <li>
+                    Reproducing a dashboard number from raw evidence for an
+                    audit.
+                  </li>
+                  <li>
+                    Triaging a row that a reviewer flagged as wrong — see
+                    every prior classification attempt with its confidence
+                    and prompt context.
+                  </li>
+                </ul>
+              }
+              impact={
+                <p>
+                  <strong>None.</strong> This panel only issues read-only
+                  GETs (<code className="rounded bg-muted px-1 py-0.5 text-xs">/api/observations/&#123;id&#125;/trace</code>{" "}
+                  and{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">/api/observations/&#123;id&#125;/classify</code>{" "}
+                  GET, no model call). Nothing is written and no MVs are
+                  refreshed.
+                </p>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Paste the observation UUID and click <strong>Load</strong>.
+                  </li>
+                  <li>
+                    Or deep-link from the dashboard with{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      ?observation=&lt;id&gt;
+                    </code>{" "}
+                    in the URL.
+                  </li>
+                  <li>
+                    Provide the admin secret if the observation is
+                    classification-gated.
+                  </li>
+                </ol>
+              }
+            />
             <ObservationTracePanel secret={secret} />
           </TabsContent>
-          <TabsContent value="schema">
+          <TabsContent value="schema" className="space-y-4">
+            <WhatToKnowCard
+              title="Schema verification"
+              summary="Diff the live database schema against the expected post-014 manifest. Read-only guardrail."
+              purpose={
+                <p>
+                  Compares the live{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">public</code>{" "}
+                  schema against the expected manifest and reports per-object
+                  pass/fail across tables, views, materialized views, indexes,
+                  functions, required columns, dropped objects, and
+                  algorithm-version registry rows.
+                </p>
+              }
+              pipelineFit={
+                <p>
+                  Out-of-band guardrail — sits next to the pipeline rather
+                  than inside it. Backed by{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    lib/schema/expected-manifest.ts
+                  </code>{" "}
+                  and the{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    /api/admin/verify-schema
+                  </code>{" "}
+                  endpoint. No pipeline writes happen.
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Right after applying a migration to confirm every
+                    expected object landed.
+                  </li>
+                  <li>
+                    Before flipping a feature on in production.
+                  </li>
+                  <li>
+                    Whenever the dashboard shows an unexplained shape change
+                    — drift here often explains why.
+                  </li>
+                </ul>
+              }
+              impact={
+                <p>
+                  <strong>None.</strong> Read-only catalog queries against{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">information_schema</code>{" "}
+                  / <code className="rounded bg-muted px-1 py-0.5 text-xs">pg_catalog</code>.
+                  Failing checks are diagnostic — fixing them means writing
+                  and applying a migration script, not clicking anything in
+                  this panel.
+                </p>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Click <strong>Re-check</strong>.
+                  </li>
+                  <li>
+                    Inspect the failing-check list; each row shows expected
+                    vs. actual for the object in question.
+                  </li>
+                  <li>
+                    For any failures, write a migration in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">scripts/</code>{" "}
+                    or update the manifest if the object is intentionally
+                    deprecated.
+                  </li>
+                </ol>
+              }
+            />
             <SchemaVerificationPanel secret={secret} />
           </TabsContent>
-          <TabsContent value="cluster-labels">
+          <TabsContent value="cluster-labels" className="space-y-4">
+            <WhatToKnowCard
+              title="Cluster-label backfill"
+              summary="Recompute deterministic cluster labels for clusters with weak or fallback labels. Idempotent."
+              purpose={
+                <p>
+                  Walks every cluster where{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">label IS NULL</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    label_confidence &lt; 0.6
+                  </code>
+                  , or{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    label_model = 'fallback:title'
+                  </code>{" "}
+                  and recomputes a deterministic label via the
+                  Topic+ErrorCode → Topic → ErrorCode → Title ladder shared
+                  with the live producer.
+                </p>
+              }
+              pipelineFit={
+                <p>
+                  Aggregation-layer cleanup over the{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters</code>{" "}
+                  table (§5.3). Calls the same{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    composeDeterministicLabel
+                  </code>{" "}
+                  helper used at cluster creation, so the corpus and the
+                  live producer cannot drift.
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    After a clustering rebuild that produced fallback titles
+                    instead of topic/error labels.
+                  </li>
+                  <li>
+                    After improving the deterministic label composer and
+                    you want existing weak labels relabelled.
+                  </li>
+                  <li>
+                    To clean up legacy{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      fallback:title
+                    </code>{" "}
+                    rows visible on the dashboard.
+                  </li>
+                </ul>
+              }
+              impact={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Updates{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters.label</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">label_model</code>, and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">label_confidence</code>{" "}
+                    for matching rows.
+                  </li>
+                  <li>
+                    <strong>Confident LLM labels are never touched</strong> —
+                    only sub-0.6-confidence rows are eligible.
+                  </li>
+                  <li>
+                    Idempotent — re-running only revisits rows still under
+                    the threshold.
+                  </li>
+                </ul>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Click <strong>Dry run</strong> to see how many clusters
+                    would change and which{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      label_model
+                    </code>{" "}
+                    rows are eligible.
+                  </li>
+                  <li>
+                    Click <strong>Apply</strong> to write the new labels.
+                  </li>
+                  <li>
+                    <strong>Refresh</strong> the stats panel afterwards to
+                    confirm the by-model distribution moved.
+                  </li>
+                </ol>
+              }
+            />
             <ClusterLabelBackfillPanel secret={secret} />
           </TabsContent>
         </Tabs>
