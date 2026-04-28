@@ -96,22 +96,18 @@ export async function GET(request: NextRequest) {
       .from("clusters")
       .select("id", { count: "exact", head: true })
 
-    // family_classification_current is one row per cluster (latest by
-    // computed_at). Count rows at the active version → "up to date".
-    const { count: atCurrentVersion, error: currentErr } = await supabase
-      .from("family_classification_current")
-      .select("cluster_id", { count: "exact", head: true })
-      .eq("algorithm_version", CURRENT_FAMILY_VERSION)
-
-    // Count classifications that point to dead clusters. Two queries
-    // because PostgREST has no anti-join helper:
-    //   1. cluster_ids that currently have at least one active member
-    //   2. classification cluster_ids NOT in (1)
-    // Used as a partial-algorithm signal: after a cluster rebuild with
-    // redetach the old `family_classifications` rows reference clusters
-    // that no longer have members. The number lets operators see "I
-    // need to re-classify N clusters because the upstream cluster shape
-    // moved on."
+    // Two non-count queries (PostgREST has no anti-join helper):
+    //   - aliveMv: cluster_ids with at least one active member; this is
+    //     the live-cluster set the pending list and batch ranking
+    //     iterate over.
+    //   - classifiedRows: family_classification_current rows at the
+    //     current algorithm version.
+    // From them we compute, in one place, both metrics the panel needs:
+    //   - without_classification: live clusters NOT in classifiedRows
+    //     ("eligible for backfill at current version"). Aligned with
+    //     the pending/batch filter so the tile and the list agree.
+    //   - stale_classifications: classifiedRows whose cluster_id is
+    //     NOT live. Surfaces orphans left by a prior cluster rebuild.
     const { data: aliveMv, error: aliveErr } = await supabase
       .from("mv_cluster_topic_metadata")
       .select("cluster_id")
@@ -124,9 +120,6 @@ export async function GET(request: NextRequest) {
     if (totalErr) {
       logServerError("admin-family-classification", "count_total_failed", totalErr)
     }
-    if (currentErr) {
-      logServerError("admin-family-classification", "count_current_failed", currentErr)
-    }
     if (aliveErr) {
       logServerError("admin-family-classification", "count_alive_failed", aliveErr)
     }
@@ -135,16 +128,21 @@ export async function GET(request: NextRequest) {
     }
 
     const total = totalClusters ?? null
-    const without =
-      total != null && atCurrentVersion != null
-        ? Math.max(0, total - atCurrentVersion)
-        : null
-
+    let without: number | null = null
     let stale: number | null = null
     if (aliveMv && classifiedRows) {
-      const aliveSet = new Set(
-        (aliveMv as Array<{ cluster_id: string }>).map((r) => r.cluster_id),
+      const aliveIds = (aliveMv as Array<{ cluster_id: string }>).map(
+        (r) => r.cluster_id,
       )
+      const aliveSet = new Set(aliveIds)
+      const classifiedSet = new Set(
+        (classifiedRows as Array<{ cluster_id: string }>).map((r) => r.cluster_id),
+      )
+      let unclassified = 0
+      for (const id of aliveIds) {
+        if (!classifiedSet.has(id)) unclassified++
+      }
+      without = unclassified
       stale = (classifiedRows as Array<{ cluster_id: string }>).filter(
         (r) => !aliveSet.has(r.cluster_id),
       ).length

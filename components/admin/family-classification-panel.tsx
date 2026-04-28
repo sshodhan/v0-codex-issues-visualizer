@@ -752,14 +752,14 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
             <StatTile
               label="Total clusters"
               value={stats?.total_clusters}
-              hint="Every row in the clusters table."
+              hint="All rows in the clusters table — includes historical/dead clusters with no active members. The two tiles to the right are scoped to live clusters only."
               emphasis={false}
             />
             <StatTile
               label="Without classification"
               value={stats?.without_classification}
               emphasis={(stats?.without_classification ?? 0) > 0}
-              hint="Eligible for backfill at the current algorithm version."
+              hint="Live clusters with no current-version classification. Same set the pending list and batch iterate over."
             />
             <StatTile
               label="Pointing to dead clusters"
