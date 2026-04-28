@@ -110,7 +110,7 @@ export async function scrapeReddit(
         issues.push({
           source_id: source.id,
           source_slug: source.slug,
-          category_id: categorizeIssue(content, categories),
+          category_id: categorizeIssue(normalizedTitle, normalizedContent, categories)?.categoryId,
           external_id: id,
           title: normalizedTitle.slice(0, 500),
           content: normalizedContent.slice(0, 2000),

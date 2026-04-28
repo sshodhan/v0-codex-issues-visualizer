@@ -22,6 +22,17 @@ const CATEGORIES: Category[] = [
   { id: "cat-other", slug: "other", name: "Other", color: "#6b7280", created_at: "" },
 ]
 
+// v5: categorizeIssue takes (title, body, categories) and returns a
+// TopicResult { categoryId, slug, confidence, evidence } | null. The
+// historical assertions in this file all pass a single string and compare
+// against a category id; this thin helper preserves that contract by
+// running the input as a title with empty body, then unwrapping the
+// categoryId. Helper is test-only — production code consumes the full
+// TopicResult to persist evidence.
+function classifyTitle(title: string): string | undefined {
+  return categorizeIssue(title, "", CATEGORIES)?.categoryId
+}
+
 test("bug vocabulary contributes to keyword_presence without forcing negative sentiment", () => {
   const text = "Codex CLI bug report: command crashes with an error stack trace after update."
   const result = analyzeSentiment(text)
@@ -99,46 +110,41 @@ test("categorizeIssue v2: 'Open Codex CLI with open-source LLMs' is Integration,
   // Row 5 from the eye test. v1 mislabeled this Pricing (likely via the bare
   // token 'open' triggering nothing and something else matching a Pricing
   // phrase). v2's `open-source llms` phrase locks Integration.
-  const categoryId = categorizeIssue(
+  const categoryId = classifyTitle(
     "show hn: open codex – openai codex cli with open-source llms",
-    CATEGORIES,
   )
   assert.equal(categoryId, "cat-int")
 })
 
 test("categorizeIssue v2: 'OpenAI Codex hands-on review' becomes Documentation", () => {
   // Row 4 from the eye test. v1 mislabeled this Other.
-  const categoryId = categorizeIssue(
-    "openai codex hands-on review",
-    CATEGORIES,
-  )
+  const categoryId = classifyTitle("openai codex hands-on review")
   assert.equal(categoryId, "cat-docs")
 })
 
 test("categorizeIssue v4: 'mcp timeout' is Integration (not Performance)", () => {
-  const categoryId = categorizeIssue("mcp timeout after provider update", CATEGORIES)
+  const categoryId = classifyTitle("mcp timeout after provider update")
   assert.equal(categoryId, "cat-int")
 })
 
 test("categorizeIssue v4: quota exceeded + billing details is Pricing (not API)", () => {
-  const categoryId = categorizeIssue("quota exceeded. check your plan and billing details.", CATEGORIES)
+  const categoryId = classifyTitle("quota exceeded. check your plan and billing details.")
   assert.equal(categoryId, "cat-price")
 })
 
 test("categorizeIssue v4: looping complaint is Model Quality", () => {
-  const categoryId = categorizeIssue("cursor keeps looping on same message", CATEGORIES)
+  const categoryId = classifyTitle("cursor keeps looping on same message")
   assert.equal(categoryId, "cat-mq")
 })
 
 test("categorizeIssue v4: approval prompt + diff details is UX/UI", () => {
-  const categoryId = categorizeIssue("subagent patch approval prompt omits diff/file details", CATEGORIES)
+  const categoryId = classifyTitle("subagent patch approval prompt omits diff/file details")
   assert.equal(categoryId, "cat-ux")
 })
 
 test("categorizeIssue v4: replace_in_file mismatch is Integration", () => {
-  const categoryId = categorizeIssue(
+  const categoryId = classifyTitle(
     "replace_in_file says code was modified but no file changes",
-    CATEGORIES,
   )
   assert.equal(categoryId, "cat-int")
 })
@@ -149,10 +155,7 @@ test("categorizeIssue v2: 'Unable to connect GitHub Auth' lands in a non-Other b
   // 3; `connect`, weight 1). Integration wins on score, which is
   // domain-appropriate — it's an integration-setup failure. The key v2 fix
   // is that it's no longer Other.
-  const categoryId = categorizeIssue(
-    "unable to connect github auth to openai codex",
-    CATEGORIES,
-  )
+  const categoryId = classifyTitle("unable to connect github auth to openai codex")
   assert.notEqual(categoryId, "cat-other", "must not fall back to Other")
   // Spot-check the actual winner for documentation purposes.
   assert.equal(categoryId, "cat-int")
@@ -164,10 +167,7 @@ test("categorizeIssue v2: a lone weight-1 phrase does NOT win over Other (thresh
   // on thin evidence. We kept the v1 floor of 2 and instead relied on v2's
   // phrase-list expansion (stronger signals at weights 2–3) to classify
   // eye-test rows. A solitary `roadmap` is still Other.
-  const categoryId = categorizeIssue(
-    "is this on the roadmap for q3?",
-    CATEGORIES,
-  )
+  const categoryId = classifyTitle("is this on the roadmap for q3?")
   assert.equal(categoryId, "cat-other")
 })
 
@@ -177,9 +177,8 @@ test("categorizeIssue v3: 'distracted by excessive Frontend guidance in system p
   // when the post was clearly about model behavior. v3 drops bare `plan`
   // from Pricing and introduces a model-quality slot that locks onto
   // `distracted` (2) + `system prompt` (2) = 4, well above threshold.
-  const categoryId = categorizeIssue(
+  const categoryId = classifyTitle(
     'make gpt-5.5 not get distracted by excessive "frontend guidance" in system prompt',
-    CATEGORIES,
   )
   assert.equal(categoryId, "cat-mq")
 })
@@ -188,11 +187,11 @@ test("categorizeIssue v3: legitimate pricing posts still classify as Pricing", (
   // Tightening Pricing must not regress true positives. "Pro plan" + "expensive"
   // (3 + 3) and a bare "pricing" mention (3) both still clear the threshold.
   assert.equal(
-    categorizeIssue("the pro plan is too expensive for individual devs", CATEGORIES),
+    classifyTitle("the pro plan is too expensive for individual devs"),
     "cat-price",
   )
   assert.equal(
-    categorizeIssue("question about codex cli pricing for teams", CATEGORIES),
+    classifyTitle("question about codex cli pricing for teams"),
     "cat-price",
   )
 })
@@ -203,28 +202,19 @@ test("categorizeIssue v3: bare 'plan' no longer pulls posts into Pricing", () =>
   // weight-1 hit (`connect`) — under v2 that summed to 2 and won Pricing
   // outright. Under v3 there's no `plan` entry, so neither category clears
   // the threshold and we fall back to Other.
-  const categoryId = categorizeIssue(
-    "i plan to connect codex with my own setup",
-    CATEGORIES,
-  )
+  const categoryId = classifyTitle("i plan to connect codex with my own setup")
   assert.notEqual(categoryId, "cat-price", "must not classify as Pricing")
 })
 
 test("categorizeIssue v3: hallucination complaints land in Model Quality", () => {
-  const categoryId = categorizeIssue(
-    "codex hallucinates imports that don't exist",
-    CATEGORIES,
-  )
+  const categoryId = classifyTitle("codex hallucinates imports that don't exist")
   assert.equal(categoryId, "cat-mq")
 })
 
 test("categorizeIssue v2: empty phrase-match still falls back to Other", () => {
   // Safety net — v2 only lowers the threshold; the no-match path is
   // preserved so genuinely uncategorizable titles still bucket Other.
-  const categoryId = categorizeIssue(
-    "hello world thanks everyone",
-    CATEGORIES,
-  )
+  const categoryId = classifyTitle("hello world thanks everyone")
   assert.equal(categoryId, "cat-other")
 })
 

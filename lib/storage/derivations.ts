@@ -31,12 +31,14 @@ export async function recordCategory(
   observationId: string,
   categoryId: string,
   confidence = 1.0,
+  evidence: unknown = null,
 ): Promise<void> {
   const { error } = await supabase.rpc("record_category", {
     obs_id: observationId,
     ver: CURRENT_VERSIONS.category,
     cat_id: categoryId,
     conf: confidence,
+    ev: evidence as any,
   })
   if (error) console.error("[derivations] record_category failed:", error)
 }

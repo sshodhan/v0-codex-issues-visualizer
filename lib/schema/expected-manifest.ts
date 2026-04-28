@@ -274,11 +274,14 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // shows v1, that's the verifier surfacing an unapplied
     // migration — apply scripts/011_algorithm_v2_bump.sql.
     sentiment: "v2",
-    // 024 bumped category to v4 (expanded Topic regex phrase table +
-    // reweights for coding-agent issue vocabulary). If the live
-    // registry still shows v3, apply
-    // scripts/024_topic_classifier_v4_bump.sql.
-    category: "v4",
+    // 025 bumped category to v5 (structural classifier fixes — title/body
+    // split with 4× title weight, template-prefix stripping, per-slug
+    // thresholds, and structured evidence emission persisted into the
+    // category_assignments.evidence JSONB column added by 026). If the
+    // live registry still shows v4, apply both
+    // scripts/025_topic_classifier_v5_bump.sql and
+    // scripts/026_category_assignments_evidence.sql.
+    category: "v5",
     impact: "v2",
     competitor_mention: "v2",
     // Classification stays at v1 (011 doesn't bump it).

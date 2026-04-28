@@ -36,7 +36,53 @@ guidance in system prompt" mis-bucketing into Pricing):
   `team plan`, `paid plan`, `enterprise plan`, `monthly fee`, `per token`,
   `per month`) so paid-tier discussion still classifies cleanly.
 
-v1 derivation rows remain in `sentiment_scores` / `category_assignments` /
+**What changed in v4** (`scripts/024_topic_classifier_v4_bump.sql`):
+
+- **category v4** — expanded `CATEGORY_PATTERNS` for coding-agent specific
+  reports: MCP / tool invocation / file-edit tooling phrases pulled into
+  Integration; `quota`/`usage limit`/`5-hour limit` strengthen Pricing;
+  `loop`/`looping`/`repetitive thinking` phrases land in Model Quality;
+  diff/approval/loading UX phrasing pulled into UX/UI. Also reweights
+  several over-broad terms.
+
+**What changed in v5** (`scripts/025_topic_classifier_v5_bump.sql` +
+`scripts/026_category_assignments_evidence.sql`, driven by the production
+diagnostic finding `model-quality` at zero observations because long bug
+bodies were overwhelming title-level model-quality cues):
+
+- **category v5 — structural refactor, not phrase tuning.** The
+  `CATEGORY_PATTERNS` phrase table is unchanged from v4; only the scoring
+  architecture changes:
+  - **Title/body split.** `categorizeIssue(title, body, categories)` scores
+    each segment separately. Title hits are multiplied by 4 before
+    summing into the per-slug score. Headlines are short, high-signal,
+    and editor-curated; bodies are long and dilute the score with
+    incidental terminology. Single title hit at weight 2 ≥ eight body
+    hits at weight 1.
+  - **Template prefix stripping.** `[BUG]`, `[FEATURE]`, `[FEAT]`,
+    `[REQUEST]`, `[QUESTION]`, `[DOCS]`, `[RFC]` are stripped from the
+    title before matching. Stops the bracket tag from consuming title
+    real estate (`[BUG] Claude forgets context` should classify on
+    "forgets context", not on the bracket).
+  - **Per-slug thresholds.** `SLUG_THRESHOLD` overrides the global floor
+    of 2 for precision-critical slugs: `model-quality` requires 3,
+    `pricing` requires 4. All other slugs keep 2.
+  - **Structured evidence emission.** `categorizeIssue` returns
+    `TopicResult { categoryId, slug, confidence, evidence }` where
+    `evidence = { matched_phrases[{phrase, weight, in}], scores, margin,
+    runner_up, threshold }`. The backfill route + scrapers consume
+    `.categoryId`; the backfill also persists the full `evidence` JSONB
+    into `category_assignments.evidence` (new column added in `scripts/
+    026`), so admin debugging can answer "why did this row classify as
+    X?" via a single SQL query.
+  - **Regression guard.** `tests/fixtures/topic-golden-set.jsonl` is the
+    new labelled corpus seeded with the misclassified production posts
+    surfaced via diagnostic SQL. `tests/topic-classifier-golden-set.test
+    .ts` enforces per-row precision + an aggregate accuracy floor; the
+    `scripts/eval-topic-patterns.ts` CLI runs the same set against
+    candidate phrase tweaks in <1s with no DB.
+
+v1–v4 derivation rows remain in `sentiment_scores` / `category_assignments` /
 `impact_scores` for replay comparison; the MV picks the newest per-observation
 row via `distinct on (observation_id) order by computed_at desc`.
 

@@ -39,6 +39,7 @@ interface SampleDiff {
   computed: {
     sentiment: { label: string; score: number; keyword_presence: number }
     category_slug: string | null
+    category_evidence: unknown
     impact: number
     competitors: string[]
   }
@@ -179,7 +180,10 @@ export async function POST(request: NextRequest) {
     const text = `${title} ${content}`.trim()
 
     const sentimentResult = analyzeSentiment(text)
-    const categoryId = categorizeIssue(text, categories) ?? null
+    const topicResult = categorizeIssue(title, content, categories)
+    const categoryId = topicResult?.categoryId ?? null
+    const categoryConfidence = topicResult?.confidence ?? 0
+    const categoryEvidence = topicResult?.evidence ?? null
     const engagement = latestEngagement.get(id) ?? { upvotes: 0, comments_count: 0 }
     const impact = calculateImpactScore(
       engagement.upvotes,
@@ -200,6 +204,7 @@ export async function POST(request: NextRequest) {
             keyword_presence: sentimentResult.keyword_presence,
           },
           category_slug: categoryId ? categorySlugById.get(categoryId) ?? null : null,
+          category_evidence: categoryEvidence,
           impact,
           competitors,
         },
@@ -222,7 +227,9 @@ export async function POST(request: NextRequest) {
     if (categoryId && !alreadyV2.category.has(id)) {
       writes.category++
       if (!dryRun) {
-        tasks.push(recordCategory(supabase, id, categoryId, 1.0))
+        tasks.push(
+          recordCategory(supabase, id, categoryId, categoryConfidence, categoryEvidence),
+        )
       }
     }
 
