@@ -814,9 +814,10 @@ New tab "Family Classification" in `/admin`:
 
 ### Architectural contract
 
-- **No feedback loop yet** — the admin panel classifies, the view surfaces
-  latest, but no approve/reject workflow. A future PR can add
-  `family_classifications_reviews` if reviewers need to override.
+- **Reviewer feedback loop is a separate read-side surface** — reviewers can
+  mark a classification correct/incorrect/unclear via §5.2 below. Reviews are
+  append-only and never mutate `family_classifications` or
+  `quality_bucket`; they exist purely to feed precision/recall analysis.
 - **Latest-only by default** — `family_classification_current` view hides
   older classifications, but older rows stay queryable via the table directly
   for audit queries like "how did this family's classification change over
@@ -827,6 +828,278 @@ New tab "Family Classification" in `/admin`:
 - **Severity_rollup is a placeholder** — stored as `unknown` in v1; a future
   pass can infer it from `danger level` in the LLM response or map
   family_kind → severity heuristically.
+
+## 5.2) Family Classification Quality Reviews
+
+`family_classification_reviews` (migration 030) captures reviewer feedback
+on whether a Family Classification row got the answer right. It is the
+evaluation loop for the classification system, **not** a ticketing or
+routing workflow.
+
+### Stage 5 review contract
+
+This is **Stage 5** feedback for **Stage 4** family classification +
+family naming + deterministic fallback. Reviews are the ground-truth
+signal future eval / Improvement Workbench (#164) reads back to decide
+which Stage to improve next. Reviews are append-only and never mutate
+`family_classifications`, `quality_bucket`, clustering output, or
+prompts — they are pure read-side evaluation.
+
+Each review answers four questions, one per column. They must stay
+unambiguous so the Workbench can hill-climb cleanly:
+
+- **`review_verdict`** — *Is the current stored/displayed classification
+  acceptable?* (`correct` / `incorrect` / `unclear`.) Judged against
+  what a downstream consumer would see, not against an internal stage.
+- **`review_decision`** — *How did the human resolve the tie or
+  uncertainty?* Captured when heuristic and LLM disagreed, or when the
+  reviewer wants to record a non-binary outcome (split, low-evidence,
+  needs-more-examples, etc.).
+- **`error_source`** — *Which Stage / root cause should be improved?*
+  Aligned with the 5-stage pipeline vocabulary so a spike in
+  `stage_4_llm_classification` directly points at the LLM prompt,
+  `stage_3_clustering` at the clustering threshold, etc.
+- **`evidence_snapshot.tie_break_context`** — frozen audit context
+  (heuristic kind, LLM suggested kind, llm_disagrees, the chosen
+  review_decision) so a later run of the Improvement Workbench can
+  see "what did the reviewer have on screen, and which side did they
+  pick?" without re-deriving from a possibly-mutated classification.
+
+#### Canonical decision/verdict pairs
+
+The validator enforces only the *contradictory* combinations; everything
+else is permitted and the dashboard surfaces meaning via independent
+per-decision tiles. Reviewers should aim for these canonical pairs:
+
+| verdict     | decision                | meaning                                                        |
+|-------------|-------------------------|----------------------------------------------------------------|
+| `correct`   | `accept_heuristic`      | Stored output is acceptable; heuristic wins the tie.           |
+| `correct`   | `accept_llm`            | *Only* on agreement rows — LLM was the better rationale, both happened to pick the same kind. |
+| `incorrect` | `accept_llm`            | Stored output is wrong; the LLM's suggestion is the better answer. |
+| `incorrect` | `override_family_kind`  | Reviewer supplies the expected family kind themselves.         |
+| `incorrect` | `mark_low_evidence`     | Family should be treated as low-evidence, not coherent.        |
+| `unclear`   | `mark_low_evidence`     | Same, when the reviewer also can't commit to incorrect.        |
+| `unclear`   | `needs_more_examples`   | Not enough evidence to decide — wait for more reps.            |
+| `incorrect` | `should_split_cluster`  | Cluster contains multiple distinct issues; Stage 3 / reps fault. |
+| `unclear`   | `should_split_cluster`  | Same, when the reviewer can't fully commit.                    |
+| any         | `mark_general_feedback` | Family is general feedback, not actionable as a single issue.  |
+| any         | `not_actionable`        | Issue exists but no useful follow-up.                          |
+
+**Rejected by the validator:** `correct + accept_llm` on disagreement
+rows. If the LLM suggested a different kind than the stored one, "accept
+the LLM" semantically means the stored output is wrong — verdict must
+be `incorrect`, not `correct`. Without this rule the Workbench can't
+tell which side the human picked.
+
+**Default:** `should_split_cluster` defaults `error_source` to
+`stage_3_clustering` when unset; otherwise the only allowed values are
+`stage_3_clustering` and `representative_selection` — those are the
+only places a "should split" decision is actionable upstream.
+
+#### Concrete example: low-evidence overflag
+
+A cluster has 3 reps that all read like single-line "doesn't work"
+complaints. The classifier ran Stage 4, the LLM came back with status
+`succeeded` and suggested `low_evidence`, but the deterministic
+fallback resolved to `coherent_single_issue` (the heuristic was lenient
+here). The dashboard surfaces it as `needs_review` with a
+`llm_disagrees_with_heuristic` review reason, and the reviewer agrees
+with the LLM:
+
+```jsonc
+{
+  "review_verdict": "incorrect",
+  "review_decision": "mark_low_evidence",
+  "expected_family_kind": "low_evidence",  // auto-set by validator
+  "actual_family_kind": "coherent_single_issue",
+  "error_source": "stage_4_family_naming",
+  "error_reason": "low_evidence_should_not_be_coherent",
+  "notes": "3 single-line reps with no concrete failure mode",
+  "evidence_snapshot": {
+    "tie_break_context": {
+      "heuristic_family_kind": "coherent_single_issue",
+      "llm_suggested_family_kind": "low_evidence",
+      "llm_disagrees": true,
+      "review_decision": "mark_low_evidence"
+    }
+    // … bounded family_title, representative_preview, llm.rationale, etc.
+  }
+}
+```
+
+The Improvement Workbench reading this back can attribute the error to
+Stage 4 family naming (the fallback), see the heuristic was the wrong
+choice for this row, and bucket it with other `low_evidence_should_not_be_coherent`
+rows for a Stage 4 fallback / threshold tightening pass.
+
+### What this is
+
+- An **append-only** table of reviewer verdicts per `family_classifications`
+  row. One row per review event; older reviews stay queryable for audit.
+- A small **inline form** inside the existing Family Quality Dashboard row
+  detail. Reviewers see the same evidence (title, summary, representatives,
+  matched phrases, LLM rationale, quality bucket) the dashboard renders, then
+  pick Correct / Incorrect / Unclear.
+- A **directional precision/recall summary** card at the top of the Family
+  Quality section. Tiles include `safe_to_trust_precision`,
+  `needs_review_correct`, `input_problem_confirmed`, top error_source,
+  top error_reason, and a dedicated tile per `review_decision`
+  (`tie_break_reviewed_count`, `heuristic_accepted_count`,
+  `llm_accepted_count`, `override_family_kind_count`,
+  `low_evidence_override_count`, `general_feedback_marked_count`,
+  `needs_more_examples_count`, `should_split_cluster_count`,
+  `not_actionable_count`). Marked as not statistically significant
+  until enough rows exist.
+- A **human tie-break section** in the row detail that surfaces whenever
+  heuristic and LLM disagreed (or the row was otherwise flagged for human
+  review). The reviewer records a `review_decision` so a later analysis
+  can answer "when heuristic and LLM disagreed, which did the human pick?"
+
+### What this is NOT
+
+- **Not ticketing.** No file/dismiss/defer/dedupe state. No `ticket_url`.
+  No external-issue mirror.
+- **Not approve/reject.** Reviews never mutate `family_classifications`,
+  never change `quality_bucket`, never re-run classification, never split
+  or merge clusters, never touch Layer 0 evidence or
+  `category_assignments`.
+- **Not a routing surface.** No PR automation, no GitHub issue creation,
+  no automatic fixes downstream.
+- **Not a queue.** Rows do not disappear from the dashboard after review.
+
+### Schema sketch
+
+`family_classification_reviews` (append-only):
+- `id`, `classification_id` (FK → `family_classifications.id`),
+  `cluster_id` (FK → `clusters.id`),
+- `review_verdict` ∈ `correct | incorrect | unclear`,
+- `review_decision` (nullable tie-break outcome) ∈ `accept_heuristic |
+  accept_llm | override_family_kind | mark_low_evidence |
+  mark_general_feedback | needs_more_examples | should_split_cluster |
+  not_actionable`,
+- `expected_family_kind` (nullable; required when
+  `error_reason = wrong_family_kind` or
+  `review_decision = override_family_kind`; auto-set to `low_evidence`
+  when `review_decision = mark_low_evidence`),
+- `actual_family_kind` (snapshot of the classifier's `family_kind` at
+  review time),
+- `quality_bucket` (snapshot of the dashboard bucket at review time),
+- `error_source` aligned with the 5-stage classification pipeline
+  (PR #162) ∈ `stage_1_regex_topic | stage_2_embedding | stage_3_clustering
+  | stage_4_llm_classification | stage_4_family_naming | stage_4_fallback
+  | stage_5_review_workflow | representative_selection | data_quality |
+  unknown`,
+- `error_reason` ∈ `wrong_family_kind | bad_family_title | bad_family_summary
+  | bad_representatives | bad_cluster_membership | llm_hallucinated |
+  llm_too_generic | heuristic_overrode_better_llm_answer |
+  llm_disagreed_but_was_wrong | low_evidence_should_not_be_coherent |
+  general_feedback_not_actionable | singleton_not_recurring |
+  mixed_cluster_should_split | false_safe_to_trust | false_needs_review
+  | false_input_problem | other`,
+- `notes`, `reviewed_by`, `reviewed_at`,
+- `evidence_snapshot` JSONB — bounded freeze of what the reviewer saw
+  (family_title, family_summary, family_kind, quality_bucket,
+  quality_reasons, representative_preview, common_matched_phrase_preview,
+  llm.status / suggested_family_kind / rationale, cluster_topic_metadata
+  fields, plus a `tie_break_context` block recording heuristic vs LLM
+  family_kind and the reviewer's `review_decision`).
+
+`family_classification_review_current` view: `distinct on (classification_id)
+order by reviewed_at desc` — latest verdict per classification, mirrors the
+`family_classification_current` pattern from §5.1.
+
+### Validation
+
+- `correct`: `error_source` and `error_reason` are forced to null on the
+  way in.
+- `incorrect`: requires `error_source` AND `error_reason`.
+- `incorrect` AND `error_reason = wrong_family_kind`: also requires
+  `expected_family_kind`.
+- `unclear`: notes recommended but `error_source` / `error_reason`
+  remain optional so combinations like `unclear + needs_more_examples`
+  work without forcing a fake error.
+- `review_decision = override_family_kind` (independent of verdict):
+  requires `expected_family_kind`.
+- `review_decision = mark_low_evidence` (independent of verdict): the
+  validator auto-sets `expected_family_kind = low_evidence` so the
+  reviewer doesn't have to repeat the choice.
+- `review_decision = should_split_cluster` (independent of verdict):
+  the validator defaults `error_source` to `stage_3_clustering` when
+  unset, and otherwise constrains it to `stage_3_clustering` or
+  `representative_selection`.
+- `review_verdict = correct` AND `review_decision = accept_llm` is
+  rejected when the LLM disagreed with the heuristic
+  (`llmSuggestedFamilyKind != actualFamilyKind`). See "Stage 5 review
+  contract" above for rationale.
+
+The validator (`lib/admin/family-classification-review.ts →
+validateFamilyClassificationReviewInput`) is shared between the API
+route and the UI form so the 400 response messages match the form
+guards exactly.
+
+### How errors map to follow-up work
+
+The summary tiles surface trends, not tickets. A spike in any single
+`error_reason` or `error_source` means a specific Stage of the pipeline
+needs work:
+
+- repeated `wrong_family_kind` → revisit Stage 4 family-classification
+  heuristic (`lib/storage/family-classification.ts`); consider a v2 bump.
+- repeated `bad_representatives` → fix representative-selection
+  (`mv_cluster_topic_metadata` consumers); error_source =
+  `representative_selection`.
+- repeated `stage_1_regex_topic` → tighten Stage 1 regex / topic
+  guardrails; add to the topic-classifier eval set.
+- repeated `stage_3_clustering` / `bad_cluster_membership` → revisit
+  clustering threshold or split-review work (`lib/storage/semantic-clusters.ts`).
+- repeated `llm_hallucinated` / `llm_too_generic` → bump the Stage 4
+  family-prompt template version; consider stricter strict-mode schema.
+- repeated `heuristic_overrode_better_llm_answer` → loosen the Stage 4
+  fallback / give the LLM more weight on `llm_accepted_count` rows.
+- repeated `llm_disagreed_but_was_wrong` → tighten the Stage 4 LLM
+  prompt; the heuristic is right more often than the LLM here.
+- repeated `false_safe_to_trust` → tighten the strict criteria in
+  `computeFamilyQualityBucket`.
+- repeated `false_needs_review` → relax the bucket criteria or improve
+  the upstream signals being used to flag.
+
+These are *guidance*, not automatic actions. The reviews surface the
+trend; the actual fix is a deliberate code change in a follow-up PR.
+
+### API + admin panel surfaces
+
+- `POST /api/admin/family-classification/review` — admin-secret gated.
+  Inserts one append-only row. Returns `{ ok: true, review }`. Body
+  fields: `classificationId`, `clusterId`, `reviewVerdict`,
+  `reviewDecision` (optional), `expectedFamilyKind`, `actualFamilyKind`,
+  `llmSuggestedFamilyKind` (validation-only — used to enforce the
+  tie-break contract; lands in `evidence_snapshot.tie_break_context`),
+  `qualityBucket`, `errorSource`, `errorReason`, `notes`,
+  `evidenceSnapshot`.
+- `GET /api/admin/family-classification/review` — admin-secret gated.
+  Returns `{ rows, summary }`. Filters: `classificationId`, `clusterId`,
+  `verdict`, `reviewDecision`, `qualityBucket`, `errorSource`,
+  `errorReason`, `limit` (default 50, max 200).
+- The Family Quality Dashboard expanded row includes a "Review
+  classification quality" form with Correct / Incorrect / Unclear
+  buttons. The current row also shows a small pill with the latest
+  verdict (or `—` when never reviewed).
+- A "Human tie-break" section appears in the row detail **only** when
+  heuristic and LLM disagreed (`llm_disagrees_with_heuristic` review
+  reason, or `family_kind !== llm_suggested_family_kind`). The
+  `review_decision` dropdown captures the reviewer's tie-break choice.
+
+### Validator: permissive on non-contradictory combinations
+
+The validator enforces only the rules listed in "Validation" above plus
+the tie-break contract from §5.2 "Stage 5 review contract" (no
+`correct + accept_llm` on disagreement rows; `should_split_cluster`
+constrains error_source). Beyond those, decision/verdict combinations
+are deliberately permitted (e.g. `unclear + needs_more_examples`
+without a fabricated error_source, `correct + accept_llm` on agreement
+rows). The dashboard tiles surface meaning by counting each decision
+independently rather than gating submission. This keeps the form
+forgiving and pushes interpretation to read-side analysis.
 
 ---
 

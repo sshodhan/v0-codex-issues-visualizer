@@ -107,6 +107,9 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "processing_events",
     // Family Classification v1 (029).
     "family_classifications",
+    // Family Classification QA Reviews (030) — append-only reviewer
+    // verdicts on whether a classification was correct/incorrect/unclear.
+    "family_classification_reviews",
   ],
   views: [
     // 007: cluster_frequency = view over cluster_members.
@@ -115,6 +118,8 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "v_cluster_source_diversity",
     // 029: latest family classification per cluster.
     "family_classification_current",
+    // 030: latest review per classification.
+    "family_classification_review_current",
   ],
   matviews: [
     // Recreated in 013 with bug-fingerprint columns folded in.
@@ -217,6 +222,15 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "idx_family_classifications_family_kind",
     "idx_family_classifications_needs_review",
     "idx_family_classifications_dominant_topic",
+    // ---- family_classification_reviews (030) ----
+    "idx_family_classification_reviews_classification_reviewed",
+    "idx_family_classification_reviews_cluster",
+    "idx_family_classification_reviews_verdict",
+    "idx_family_classification_reviews_decision",
+    "idx_family_classification_reviews_quality_bucket",
+    "idx_family_classification_reviews_error_source",
+    "idx_family_classification_reviews_error_reason",
+    "idx_family_classification_reviews_reviewed_at",
     // ---- algorithm registry (007) ----
     "idx_algorithm_versions_one_current",
     // ---- scrape logs (002 + hand-added status filter) ----
@@ -296,6 +310,27 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
       "review_reasons",
       "evidence",
       "computed_at",
+    ],
+    // 030 — Family Classification QA Reviews record shape. Append-only
+    // verdicts on `family_classifications` rows, with optional
+    // review_decision (tie-break outcome) and error_source/error_reason
+    // for incorrect verdicts. error_source values map to the 5-stage
+    // pipeline vocabulary introduced in PR #162. See
+    // docs/CLUSTERING_DESIGN.md §5.2.
+    family_classification_reviews: [
+      "classification_id",
+      "cluster_id",
+      "review_verdict",
+      "review_decision",
+      "expected_family_kind",
+      "actual_family_kind",
+      "quality_bucket",
+      "error_source",
+      "error_reason",
+      "notes",
+      "reviewed_by",
+      "reviewed_at",
+      "evidence_snapshot",
     ],
   },
   forbiddenTables: [
@@ -445,12 +480,15 @@ function tableGroup(name: string): string {
     name === "mv_cluster_topic_metadata" ||
     name === "family_classifications" ||
     name === "family_classification_current" ||
+    name === "family_classification_reviews" ||
+    name === "family_classification_review_current" ||
     name === "attach_to_cluster" ||
     name === "detach_from_cluster" ||
     name === "set_cluster_label" ||
     name === "record_observation_embedding" ||
     name.startsWith("idx_cluster_members") ||
     name.startsWith("idx_family_classifications") ||
+    name.startsWith("idx_family_classification_reviews") ||
     name.startsWith("idx_observation_embeddings") ||
     name.startsWith("idx_mv_cluster_health_current") ||
     name.startsWith("idx_mv_cluster_topic_metadata")
