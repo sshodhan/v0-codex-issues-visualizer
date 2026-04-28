@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { CircleCheck, Loader2, Play, RefreshCw, TestTube2, TriangleAlert, XCircle } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -14,6 +14,25 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  type BucketFilter,
+  type QualityBucket,
+  type QualityResponse,
+  type QualityRow,
+  type QualitySummary,
+  deriveBucketCounts,
+  filterRowsByBucket,
+  isBadLlmStatus,
+  normalizeQualityRow,
+} from "@/lib/admin/family-classification-quality-ui"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 
 const ROUTE = "/api/admin/family-classification"
@@ -488,6 +507,429 @@ function FamilyEvidenceCard({ draft, dryRun }: { draft: FamilyDraft; dryRun: boo
   )
 }
 
+
+
+const QUALITY_ROUTE = "/api/admin/family-classification/quality?limit=200"
+
+const QUALITY_BUCKET_STYLES: Record<QualityBucket, string> = {
+  input_problem: "bg-red-50/70 border-red-300 dark:bg-red-950/20",
+  needs_review: "bg-amber-50/70 border-amber-300 dark:bg-amber-950/20",
+  safe_to_trust: "bg-green-50/50 border-green-300 dark:bg-green-950/20",
+}
+
+const BUCKET_LABELS: Record<QualityBucket, string> = {
+  safe_to_trust: "Safe to trust",
+  needs_review: "Needs review",
+  input_problem: "Input problem",
+}
+
+function bucketLabel(bucket: string | null | undefined): string {
+  if (bucket === "safe_to_trust" || bucket === "needs_review" || bucket === "input_problem") {
+    return BUCKET_LABELS[bucket]
+  }
+  return "—"
+}
+
+const TABLE_COLUMN_COUNT = 9
+
+interface FamilyQualityDashboardProps {
+  rows: QualityRow[]
+  summary: Partial<QualitySummary>
+  loading: boolean
+  error: string | null
+  bucketFilter: BucketFilter
+  onBucketFilterChange: (next: BucketFilter) => void
+  expandedRows: Set<string>
+  onToggleRow: (clusterId: string) => void
+  onRetry: () => void
+}
+
+function FamilyQualityDashboard({
+  rows,
+  summary,
+  loading,
+  error,
+  bucketFilter,
+  onBucketFilterChange,
+  expandedRows,
+  onToggleRow,
+  onRetry,
+}: FamilyQualityDashboardProps) {
+  const bucketCounts = deriveBucketCounts(summary, rows)
+  const llmFailedCount = rows.filter((r) => isBadLlmStatus(r.llm_status)).length
+  const llmDisagreementCount = rows.filter((r) =>
+    r.review_reasons.includes("llm_disagrees_with_heuristic"),
+  ).length
+  const lowCoverageCount = rows.filter((r) =>
+    r.quality_reasons.includes("low_classification_coverage"),
+  ).length
+  const highMixednessCount = rows.filter((r) =>
+    r.quality_reasons.includes("high_topic_mixedness"),
+  ).length
+  const fallbackPathCount = rows.filter((r) =>
+    r.quality_reasons.includes("fallback_cluster_path"),
+  ).length
+
+  const filteredRows = filterRowsByBucket(rows, bucketFilter)
+
+  return (
+    <Card className="border-dashed">
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Read-only quality dashboard</CardTitle>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                read-only
+              </Badge>
+            </div>
+            <CardDescription>
+              Inspect-only diagnostics for already-classified families. This
+              section does not run classification or mutate data — it consumes
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 text-[11px]">
+                GET /api/admin/family-classification/quality
+              </code>
+              and groups rows into buckets so you can decide what to review
+              before relying on a family for routing or product insight.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-muted-foreground">Bucket</span>
+            <Select
+              value={bucketFilter}
+              onValueChange={(value) => onBucketFilterChange(value as BucketFilter)}
+            >
+              <SelectTrigger className="h-8 w-[160px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All buckets</SelectItem>
+                <SelectItem value="safe_to_trust">Safe to trust</SelectItem>
+                <SelectItem value="needs_review">Needs review</SelectItem>
+                <SelectItem value="input_problem">Input problem</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error ? (
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertTitle>Could not load family quality data</AlertTitle>
+            <AlertDescription className="space-y-2 text-xs">
+              <div>{error}</div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onRetry}
+                disabled={loading}
+                className="h-7 px-2 text-xs"
+              >
+                {loading ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-1 h-3 w-3" />
+                )}
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <StatTile
+            label="Safe to trust"
+            value={bucketCounts.safe_to_trust ?? 0}
+            hint="Signals look coherent and coverage is acceptable."
+          />
+          <StatTile
+            label="Needs review"
+            value={bucketCounts.needs_review ?? 0}
+            hint="Usable with caution; inspect rationale before routing."
+            emphasis
+          />
+          <StatTile
+            label="Input problem"
+            value={bucketCounts.input_problem ?? 0}
+            hint="Underlying inputs are likely degraded or sparse."
+            emphasis
+          />
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-5">
+          <StatTile label="LLM failed/skipped" value={llmFailedCount} />
+          <StatTile label="LLM disagreement" value={llmDisagreementCount} />
+          <StatTile label="Low coverage" value={lowCoverageCount} />
+          <StatTile label="High mixedness" value={highMixednessCount} />
+          <StatTile label="Fallback cluster" value={fallbackPathCount} />
+        </div>
+
+        {!error && !loading && rows.length === 0 ? (
+          <div className="rounded-md border border-dashed bg-background/50 p-4 text-center text-xs text-muted-foreground">
+            No family quality rows found. Run Family Classification backfill
+            first, then refresh this dashboard.
+          </div>
+        ) : null}
+
+        {!error && !loading && rows.length > 0 && filteredRows.length === 0 ? (
+          <div className="rounded-md border border-dashed bg-background/50 p-4 text-center text-xs text-muted-foreground">
+            No rows match the current bucket filter
+            <span className="mx-1 font-medium">{bucketLabel(bucketFilter)}</span>
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              onClick={() => onBucketFilterChange("all")}
+              className="h-auto px-1 py-0 text-xs"
+            >
+              Show all
+            </Button>
+          </div>
+        ) : null}
+
+        {filteredRows.length > 0 ? (
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Quality bucket</TableHead>
+                  <TableHead>Cluster ID</TableHead>
+                  <TableHead>Family kind</TableHead>
+                  <TableHead>LLM status</TableHead>
+                  <TableHead>Coverage</TableHead>
+                  <TableHead>Mixedness</TableHead>
+                  <TableHead>Observations</TableHead>
+                  <TableHead>Reps</TableHead>
+                  <TableHead>Recommended action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredRows.map((row) => {
+                  const expanded = expandedRows.has(row.cluster_id)
+                  return (
+                    <Fragment key={row.cluster_id}>
+                      <TableRow
+                        className={
+                          (QUALITY_BUCKET_STYLES[row.quality_bucket] ?? "") +
+                          " cursor-pointer"
+                        }
+                        onClick={() => onToggleRow(row.cluster_id)}
+                      >
+                        <TableCell className="font-medium">
+                          {bucketLabel(row.quality_bucket)}
+                        </TableCell>
+                        <TableCell>
+                          <code className="rounded bg-muted/60 px-1 py-0.5 text-[11px]">
+                            {row.cluster_id.length > 12
+                              ? `${row.cluster_id.slice(0, 8)}…`
+                              : row.cluster_id}
+                          </code>
+                        </TableCell>
+                        <TableCell>{row.family_kind ?? "—"}</TableCell>
+                        <TableCell>{row.llm_status ?? "—"}</TableCell>
+                        <TableCell>
+                          {formatPct(row.classification_coverage_share)}
+                        </TableCell>
+                        <TableCell>
+                          {row.mixed_topic_score?.toFixed(3) ?? "—"}
+                        </TableCell>
+                        <TableCell className="tabular-nums">
+                          {formatNumber(row.observation_count)}
+                        </TableCell>
+                        <TableCell className="tabular-nums">
+                          {row.representative_count}
+                        </TableCell>
+                        <TableCell
+                          className="max-w-[16rem] truncate"
+                          title={row.recommended_action}
+                        >
+                          {row.recommended_action || "—"}
+                        </TableCell>
+                      </TableRow>
+                      {expanded ? (
+                        <TableRow>
+                          <TableCell
+                            colSpan={TABLE_COLUMN_COUNT}
+                            className="bg-muted/20 text-xs"
+                          >
+                            <FamilyQualityRowDetails row={row} />
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading family quality data…
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function FamilyQualityRowDetails({ row }: { row: QualityRow }) {
+  return (
+    <div className="grid gap-4 py-3 md:grid-cols-2">
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          Why this bucket
+        </div>
+        <div className="space-y-1">
+          <MetricRow label="Bucket" value={bucketLabel(row.quality_bucket)} />
+          <MetricRow
+            label="Recommended action"
+            value={row.recommended_action || "—"}
+          />
+          <MetricRow
+            label="Needs human review"
+            value={row.needs_human_review ? "yes" : "no"}
+          />
+        </div>
+        {row.quality_reasons.length > 0 ? (
+          <div className="space-y-1">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Quality reasons
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {row.quality_reasons.map((reason) => (
+                <Badge
+                  key={reason}
+                  variant="secondary"
+                  className="text-[11px] font-normal"
+                >
+                  {reason}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {row.review_reasons.length > 0 ? (
+          <div className="space-y-1">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Review reasons
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {row.review_reasons.map((reason) => (
+                <Badge
+                  key={reason}
+                  variant={
+                    reason === "llm_disagrees_with_heuristic"
+                      ? "destructive"
+                      : "outline"
+                  }
+                  className="text-[11px] font-normal"
+                >
+                  {humanizeMachineCode(reason, REVIEW_REASON_LABELS)}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          Cluster signals
+        </div>
+        <div className="grid gap-x-4 gap-y-0 sm:grid-cols-2">
+          <MetricRow label="Cluster ID" value={row.cluster_id} />
+          <MetricRow label="Family kind" value={row.family_kind ?? "—"} />
+          <MetricRow
+            label="Coverage"
+            value={formatPct(row.classification_coverage_share)}
+          />
+          <MetricRow
+            label="Mixed-topic score"
+            value={
+              typeof row.mixed_topic_score === "number"
+                ? row.mixed_topic_score.toFixed(3)
+                : "—"
+            }
+          />
+          <MetricRow
+            label="Observations"
+            value={formatNumber(row.observation_count)}
+          />
+          <MetricRow
+            label="Representatives"
+            value={formatNumber(row.representative_count)}
+          />
+          <MetricRow
+            label="Phrases"
+            value={formatNumber(row.common_matched_phrase_count)}
+          />
+          <MetricRow
+            label="Algorithm version"
+            value={row.algorithm_version ?? "—"}
+          />
+          <MetricRow label="LLM status" value={row.llm_status ?? "—"} />
+          <MetricRow label="LLM model" value={row.llm_model ?? "—"} />
+        </div>
+      </section>
+
+      {row.representative_preview.length > 0 ? (
+        <section className="space-y-1.5 md:col-span-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Representatives ({row.representative_preview.length} of{" "}
+            {row.representative_count})
+          </div>
+          <ul className="space-y-1">
+            {row.representative_preview.map((rep, idx) => (
+              <li
+                key={`${row.cluster_id}-rep-${idx}`}
+                className="rounded-md border bg-background/60 px-2 py-1 text-xs"
+              >
+                {rep}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {row.common_matched_phrase_preview.length > 0 ? (
+        <section className="space-y-1.5 md:col-span-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Common matched phrases ({row.common_matched_phrase_preview.length}{" "}
+            of {row.common_matched_phrase_count})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {row.common_matched_phrase_preview.map((phrase, idx) => (
+              <Badge
+                key={`${row.cluster_id}-phrase-${idx}`}
+                variant="outline"
+                className="text-[11px] font-normal"
+              >
+                {phrase}
+              </Badge>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="md:col-span-2">
+        <details className="rounded-md border bg-background/60 px-2 py-1">
+          <summary className="cursor-pointer text-[11px] text-muted-foreground">
+            Raw row JSON
+          </summary>
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-snug">
+            {JSON.stringify(row, null, 2)}
+          </pre>
+        </details>
+      </section>
+    </div>
+  )
+}
+
 export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const [stats, setStats] = useState<Stats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
@@ -509,6 +951,12 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const [running, setRunning] = useState<null | "dryRun" | "singleCluster" | "batch">(null)
   const [runError, setRunError] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<BackfillResult | null>(null)
+  const [qualityRows, setQualityRows] = useState<QualityRow[]>([])
+  const [qualitySummary, setQualitySummary] = useState<Partial<QualitySummary>>({})
+  const [qualityLoading, setQualityLoading] = useState(false)
+  const [qualityError, setQualityError] = useState<string | null>(null)
+  const [qualityBucketFilter, setQualityBucketFilter] = useState<BucketFilter>("all")
+  const [expandedQualityRows, setExpandedQualityRows] = useState<Set<string>>(new Set())
 
   const loadStats = async () => {
     setStatsLoading(true)
@@ -536,8 +984,31 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     }
   }
 
+  const loadQuality = async () => {
+    setQualityLoading(true)
+    setQualityError(null)
+    try {
+      const res = await fetch(QUALITY_ROUTE, { headers: authHeaders(secret) })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const data = (await res.json()) as QualityResponse
+      const rawRows = Array.isArray(data.rows) ? data.rows : []
+      const normalized = rawRows
+        .map(normalizeQualityRow)
+        .filter((r): r is QualityRow => r !== null)
+      setQualityRows(normalized)
+      setQualitySummary(data.summary ?? {})
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setQualityError(message)
+      logClientError(e, "admin-family-classification-quality-failed")
+    } finally {
+      setQualityLoading(false)
+    }
+  }
+
   useEffect(() => {
     loadStats()
+    loadQuality()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secret])
 
@@ -728,10 +1199,13 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={loadStats}
-              disabled={statsLoading}
+              onClick={() => {
+                loadStats()
+                loadQuality()
+              }}
+              disabled={statsLoading || qualityLoading}
             >
-              {statsLoading ? (
+              {statsLoading || qualityLoading ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="mr-1 h-4 w-4" />
@@ -984,6 +1458,27 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               <AlertDescription className="text-xs">{runError}</AlertDescription>
             </Alert>
           ) : null}
+
+
+
+          <FamilyQualityDashboard
+            rows={qualityRows}
+            summary={qualitySummary}
+            loading={qualityLoading}
+            error={qualityError}
+            bucketFilter={qualityBucketFilter}
+            onBucketFilterChange={setQualityBucketFilter}
+            expandedRows={expandedQualityRows}
+            onToggleRow={(clusterId) => {
+              setExpandedQualityRows((current) => {
+                const next = new Set(current)
+                if (next.has(clusterId)) next.delete(clusterId)
+                else next.add(clusterId)
+                return next
+              })
+            }}
+            onRetry={loadQuality}
+          />
 
           {lastResult ? (
             <div className="space-y-3">
