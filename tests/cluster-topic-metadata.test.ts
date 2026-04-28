@@ -41,17 +41,30 @@ test("toDistribution preserves slug→count integer maps", () => {
   })
 })
 
-test("toPhrases drops malformed entries and keeps phrase+count tuples", () => {
+test("toPhrases drops malformed entries and keeps slug+phrase+count tuples", () => {
   const out = toPhrases([
-    { phrase: "hallucinate", count: 4 },
-    { phrase: "wrong answer", count: "2" }, // Postgres int-as-string
-    { phrase: 42, count: 1 }, // non-string phrase → skipped
-    { count: 9 }, // missing phrase → skipped
+    { slug: "model-quality", phrase: "hallucinate", count: 4 },
+    { slug: "model-quality", phrase: "wrong answer", count: "2" }, // Postgres int-as-string
+    { slug: "bug", phrase: 42, count: 1 }, // non-string phrase → skipped
+    { slug: "bug", count: 9 }, // missing phrase → skipped
     null, // null entry → skipped
   ])
   assert.deepEqual(out, [
-    { phrase: "hallucinate", count: 4 },
-    { phrase: "wrong answer", count: 2 },
+    { slug: "model-quality", phrase: "hallucinate", count: 4 },
+    { slug: "model-quality", phrase: "wrong answer", count: 2 },
+  ])
+})
+
+test("toPhrases falls back to 'unknown' slug when slug is missing or empty", () => {
+  const out = toPhrases([
+    { phrase: "hallucinate", count: 1 }, // missing slug
+    { slug: "", phrase: "wrong answer", count: 1 }, // empty slug
+    { slug: 7, phrase: "third", count: 1 }, // non-string slug
+  ])
+  assert.deepEqual(out, [
+    { slug: "unknown", phrase: "hallucinate", count: 1 },
+    { slug: "unknown", phrase: "wrong answer", count: 1 },
+    { slug: "unknown", phrase: "third", count: 1 },
   ])
 })
 
@@ -62,7 +75,8 @@ test("rowToMetadata maps the full MV row including NUMERIC strings", () => {
     cluster_path: "semantic",
     observation_count: 10,
     classified_count: 8,
-    other_count: 2,
+    unclassified_count: 2,
+    classification_coverage_share: "0.8000",
     topic_distribution: { bug: 6, performance: 2, unclassified: 2 },
     runner_up_distribution: { bug: 2 },
     dominant_topic_slug: "bug",
@@ -73,8 +87,8 @@ test("rowToMetadata maps the full MV row including NUMERIC strings", () => {
     low_margin_count: 1,
     mixed_topic_score: "0.4500",
     common_matched_phrases: [
-      { phrase: "hallucinate", count: 3 },
-      { phrase: "wrong answer", count: 2 },
+      { slug: "model-quality", phrase: "hallucinate", count: 3 },
+      { slug: "model-quality", phrase: "wrong answer", count: 2 },
     ],
     computed_at: "2026-04-28T00:00:00Z",
   }
@@ -85,7 +99,8 @@ test("rowToMetadata maps the full MV row including NUMERIC strings", () => {
   assert.equal(out.cluster_path, "semantic")
   assert.equal(out.observation_count, 10)
   assert.equal(out.classified_count, 8)
-  assert.equal(out.other_count, 2)
+  assert.equal(out.unclassified_count, 2)
+  assert.equal(out.classification_coverage_share, 0.8)
   assert.deepEqual(out.topic_distribution, { bug: 6, performance: 2, unclassified: 2 })
   assert.deepEqual(out.runner_up_distribution, { bug: 2 })
   assert.equal(out.dominant_topic_slug, "bug")
@@ -96,8 +111,8 @@ test("rowToMetadata maps the full MV row including NUMERIC strings", () => {
   assert.equal(out.low_margin_count, 1)
   assert.equal(out.mixed_topic_score, 0.45)
   assert.deepEqual(out.common_matched_phrases, [
-    { phrase: "hallucinate", count: 3 },
-    { phrase: "wrong answer", count: 2 },
+    { slug: "model-quality", phrase: "hallucinate", count: 3 },
+    { slug: "model-quality", phrase: "wrong answer", count: 2 },
   ])
 })
 
@@ -108,7 +123,8 @@ test("rowToMetadata falls back to fallback path when cluster_path is missing", (
     cluster_path: null,
     observation_count: 0,
     classified_count: 0,
-    other_count: 0,
+    unclassified_count: 0,
+    classification_coverage_share: "0.0000",
     topic_distribution: {},
     runner_up_distribution: {},
     dominant_topic_slug: null,
@@ -126,9 +142,10 @@ test("rowToMetadata falls back to fallback path when cluster_path is missing", (
   assert.equal(out.cluster_path, "fallback")
   // NULL aggregates (avg over zero contributing rows) survive as null
   // rather than being silently coerced to 0 — the distinction matters
-  // for "this cluster has no v5 evidence yet" surfaces.
+  // for "this cluster has no current-version evidence yet" surfaces.
   assert.equal(out.avg_confidence_proxy, null)
   assert.equal(out.avg_topic_margin, null)
   assert.equal(out.dominant_topic_slug, null)
   assert.equal(out.dominant_topic_share, 0)
+  assert.equal(out.classification_coverage_share, 0)
 })

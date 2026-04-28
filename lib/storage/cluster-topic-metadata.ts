@@ -17,6 +17,10 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 // See docs/CLUSTERING_DESIGN.md §4.6 for the architectural contract.
 
 export interface ClusterTopicPhrase {
+  /** Topic slug the phrase was scored under by Layer 0. The same
+   *  surface phrase can score for more than one slug; `(slug, phrase)`
+   *  is the unique unit of evidence. */
+  slug: string
   phrase: string
   count: number
 }
@@ -27,13 +31,19 @@ export interface ClusterTopicMetadata {
   cluster_path: "semantic" | "fallback"
   /** Active member count (cluster_members where detached_at IS NULL). */
   observation_count: number
-  /** Subset of observation_count with a v5 Topic decision. */
+  /** Subset of observation_count with a current-version Topic decision. */
   classified_count: number
-  /** observation_count - classified_count. Renamed `other_count` in
-   *  the MV to match the wording used in admin panels. */
-  other_count: number
+  /** observation_count - classified_count. Members the classifier
+   *  hasn't (re-)processed yet. Distinct from the categories.slug =
+   *  'other' bucket, which is a real Topic decision. */
+  unclassified_count: number
+  /** classified_count / observation_count. Compare to mixed_topic_score
+   *  to disambiguate "Family genuinely spans Topics" from "Layer 0
+   *  hasn't caught up yet": high mixed score with low coverage is the
+   *  latter. */
+  classification_coverage_share: number
   /** {slug → count}. Includes an `unclassified` bucket for members
-   *  without a v5 evidence row, so values sum to observation_count. */
+   *  without an evidence row, so values sum to observation_count. */
   topic_distribution: Record<string, number>
   /** {slug → count} of evidence.scoring.runner_up across members. */
   runner_up_distribution: Record<string, number>
@@ -51,11 +61,13 @@ export interface ClusterTopicMetadata {
   low_margin_count: number
   /** Shannon entropy over topic_distribution, normalised to [0, 1].
    *  0 = single-topic Family; 1 = uniform across observed buckets.
-   *  Useful as a "this Family may need split-review" hint — NOT a
-   *  hard split signal. */
+   *  Includes the `unclassified` bucket — pair with
+   *  classification_coverage_share to disambiguate genuine topic mix
+   *  from missing evidence. Hint for human review, NOT a split gate. */
   mixed_topic_score: number
-  /** Top 10 phrases by frequency from evidence.matched_phrases across
-   *  all members. Already ordered count-desc, phrase-asc. */
+  /** Top 10 (slug, phrase) tuples by frequency from
+   *  evidence.matched_phrases across all members. Already ordered
+   *  count-desc, slug-asc, phrase-asc. */
   common_matched_phrases: ClusterTopicPhrase[]
   computed_at: string
 }
@@ -66,7 +78,8 @@ interface RawRow {
   cluster_path: string | null
   observation_count: number | null
   classified_count: number | null
-  other_count: number | null
+  unclassified_count: number | null
+  classification_coverage_share: number | string | null
   topic_distribution: unknown
   runner_up_distribution: unknown
   dominant_topic_slug: string | null
@@ -81,8 +94,9 @@ interface RawRow {
 }
 
 const SELECT_COLUMNS =
-  "cluster_id, cluster_key, cluster_path, observation_count, classified_count, other_count, " +
-  "topic_distribution, runner_up_distribution, dominant_topic_slug, dominant_topic_count, " +
+  "cluster_id, cluster_key, cluster_path, observation_count, classified_count, " +
+  "unclassified_count, classification_coverage_share, topic_distribution, " +
+  "runner_up_distribution, dominant_topic_slug, dominant_topic_count, " +
   "dominant_topic_share, avg_confidence_proxy, avg_topic_margin, low_margin_count, " +
   "mixed_topic_score, common_matched_phrases, computed_at"
 
@@ -118,12 +132,17 @@ function toPhrases(value: unknown): ClusterTopicPhrase[] {
   const out: ClusterTopicPhrase[] = []
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue
+    const slug = (entry as { slug?: unknown }).slug
     const phrase = (entry as { phrase?: unknown }).phrase
     const count = (entry as { count?: unknown }).count
     if (typeof phrase !== "string") continue
     const n = typeof count === "number" ? count : Number.parseInt(String(count ?? "0"), 10)
     if (!Number.isFinite(n)) continue
-    out.push({ phrase, count: n })
+    out.push({
+      slug: typeof slug === "string" && slug.length > 0 ? slug : "unknown",
+      phrase,
+      count: n,
+    })
   }
   return out
 }
@@ -139,7 +158,8 @@ function rowToMetadata(row: RawRow): ClusterTopicMetadata {
     cluster_path: clusterPathOf(row.cluster_path),
     observation_count: row.observation_count ?? 0,
     classified_count: row.classified_count ?? 0,
-    other_count: row.other_count ?? 0,
+    unclassified_count: row.unclassified_count ?? 0,
+    classification_coverage_share: toNumber(row.classification_coverage_share),
     topic_distribution: toDistribution(row.topic_distribution),
     runner_up_distribution: toDistribution(row.runner_up_distribution),
     dominant_topic_slug: row.dominant_topic_slug,

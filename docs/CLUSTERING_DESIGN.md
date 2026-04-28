@@ -387,31 +387,41 @@ runner_up, margin, confidence_proxy, scores}` plus
 `category_assignments` (scripts/026). Those rows stay
 observation-level; nothing about Layer 0 changes here.
 
+> **Trust caveat.** These fields summarise classifier evidence; they
+> are not ground-truth labels. Use them to prioritise review and
+> improve Family naming, not to assert root cause without inspecting
+> representative observations.
+
 `scripts/028_cluster_topic_metadata.sql` adds a *read-only* MV,
 `mv_cluster_topic_metadata`, that **aggregates** that evidence onto the
-embedding-built clusters. Per cluster the MV emits:
+embedding-built clusters. The view filters `category_assignments` by
+the Topic version that is `current_effective` in `algorithm_versions`
+at refresh time, so v5 → v6 (and future shape-preserving bumps) carry
+over without an SQL edit. A bump that *changes* the evidence shape
+must rev this view in the same migration. Per cluster the MV emits:
 
 | Column | Meaning |
 |--------|---------|
 | `observation_count` | Active members (`cluster_members.detached_at IS NULL`). |
-| `classified_count` | Subset with a v5 evidence row. |
-| `other_count` | Members without a v5 evidence row (`observation_count − classified_count`). |
+| `classified_count` | Subset with a current-version evidence row. |
+| `unclassified_count` | Members the classifier hasn't (re-)processed yet (`observation_count − classified_count`). Distinct from `categories.slug = 'other'`, which is a real Topic decision. |
+| `classification_coverage_share` | `classified_count / observation_count` (NUMERIC(5,4)). Pair with `mixed_topic_score` to disambiguate "this Family genuinely spans Topics" from "Layer 0 hasn't caught up yet". |
 | `topic_distribution` | `JSONB {slug → count}`. Includes an `unclassified` bucket so values sum to `observation_count`. |
 | `dominant_topic_slug` | Lex-tiebroken mode of `topic_distribution`, excluding `unclassified` unless that is the only bucket. Matches the `mode()` `lib/storage/cluster-label-fallback.ts → composeDeterministicLabel` already uses. |
 | `dominant_topic_count` | Bucket count for the dominant slug. |
 | `dominant_topic_share` | `dominant_topic_count / observation_count` (NUMERIC(5,4)). |
 | `runner_up_distribution` | `JSONB {slug → count}` over `evidence.scoring.runner_up`. |
-| `avg_confidence_proxy` | Mean of `evidence.scoring.confidence_proxy`. NULL when no member has v5 evidence. |
-| `avg_topic_margin` | Mean of `evidence.scoring.margin`. NULL when no member has v5 evidence. |
-| `low_margin_count` | Members with `margin <= 2` (the v5 default threshold; close calls between Topics). |
-| `mixed_topic_score` | Shannon entropy of `topic_distribution`, normalised to `[0, 1]` by `ln(bucket_count)`. 0 = single-topic Family, 1 = uniform across observed buckets. |
-| `common_matched_phrases` | Top 10 phrases by frequency from `evidence.matched_phrases`, ordered count-desc / phrase-asc. |
+| `avg_confidence_proxy` | Mean of `evidence.scoring.confidence_proxy`. NULL when no member has current-version evidence. |
+| `avg_topic_margin` | Mean of `evidence.scoring.margin`. NULL when no member has current-version evidence. |
+| `low_margin_count` | Members with `margin <= 2` (the v5/v6 default threshold; close calls between Topics). |
+| `mixed_topic_score` | Shannon entropy of `topic_distribution`, normalised to `[0, 1]` by `ln(bucket_count)` and clamped at 1 to absorb FP epsilon on the cast. **Includes the `unclassified` bucket**, so a half-classified Family can read as "mixed" even when its classified half is one Topic — pair with `classification_coverage_share` to tell the two apart. |
+| `common_matched_phrases` | Top 10 `(slug, phrase)` tuples by frequency across all members' `evidence.matched_phrases`, ordered count-desc / slug-asc / phrase-asc. The same surface phrase can score for more than one slug, so the slug is part of the unique unit of evidence. |
 
 The MV is wired into the existing `refresh_materialized_views()` hook
 so the same cron tick that refreshes `mv_observation_current` /
 `mv_cluster_health_current` keeps it fresh. The unique index on
-`cluster_id` gates `REFRESH MATERIALIZED VIEW CONCURRENTLY` for the
-non-first refresh.
+`cluster_id` gates `REFRESH MATERIALIZED VIEW CONCURRENTLY`, which the
+hook uses on every refresh — no exclusive lock during refresh.
 
 #### Architectural contract
 
@@ -455,10 +465,10 @@ listClusterTopicMetadata(supabase, {
 
 Both helpers do NUMERIC-string → JS-number coercion at the boundary
 (Postgres NUMERIC arrives as a string via supabase-js) and preserve
-the NULL-vs-0 distinction for averages so "no v5 evidence yet" stays
-distinguishable from "computed average is zero". A pure `rowToMetadata`
-plus the coercion helpers are exported via `__testing` for unit
-coverage in `tests/cluster-topic-metadata.test.ts`.
+the NULL-vs-0 distinction for averages so "no current-version evidence
+yet" stays distinguishable from "computed average is zero". A pure
+`rowToMetadata` plus the coercion helpers are exported via `__testing`
+for unit coverage in `tests/cluster-topic-metadata.test.ts`.
 
 There is intentionally no admin/debug route in this pass: the existing
 `/api/clusters` chip-strip surface composes
@@ -479,14 +489,27 @@ where dominant_topic_share >= 0.8
   and observation_count >= 5
 order by observation_count desc;
 
--- Mixed Families that may need a split-review.
-select cluster_id, mixed_topic_score, observation_count, topic_distribution
+-- Mixed Families that may need a split-review (filter for high
+-- coverage so the score reflects topic mix, not missing evidence).
+select cluster_id, mixed_topic_score, classification_coverage_share,
+       observation_count, topic_distribution
 from mv_cluster_topic_metadata
 where mixed_topic_score >= 0.6
+  and classification_coverage_share >= 0.8
   and observation_count >= 5
 order by mixed_topic_score desc, observation_count desc;
 
--- Phrases that recur across a specific Family's evidence.
+-- Families where the high mixed score is actually a Layer 0 backlog
+-- (low coverage) rather than a real multi-topic Family.
+select cluster_id, mixed_topic_score, classification_coverage_share,
+       unclassified_count, observation_count
+from mv_cluster_topic_metadata
+where mixed_topic_score >= 0.6
+  and classification_coverage_share < 0.5
+order by unclassified_count desc;
+
+-- Phrases that recur across a specific Family's evidence, with the
+-- slug each phrase was scored under.
 select common_matched_phrases
 from mv_cluster_topic_metadata
 where cluster_id = '<uuid>';

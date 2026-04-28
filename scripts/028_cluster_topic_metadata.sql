@@ -166,13 +166,16 @@ topic_aggregates as (
   group by cluster_id
 ),
 phrase_rows as (
-  -- Flatten matched_phrases for cross-member phrase frequency.
-  -- Each evidence row carries up to a few phrase hits; we aggregate
-  -- distinct (cluster, phrase) counts and emit the top-N as JSONB
-  -- so the UI can show "phrases that recur in this Family" without
-  -- a follow-up RPC.
+  -- Flatten matched_phrases for cross-member phrase frequency. The
+  -- evidence emitter (lib/scrapers/shared.ts → scoreSegment) tags each
+  -- hit with the slug it scored under, and the same surface phrase can
+  -- score for more than one slug now or after a future phrase-table
+  -- maintenance pass — so aggregate by (cluster, slug, phrase) instead
+  -- of collapsing on phrase alone. Keeps "X is evidence FOR <topic>"
+  -- recoverable from the read model without a follow-up join.
   select
     mt.cluster_id,
+    lower(coalesce(elem ->> 'slug', 'unknown')) as slug,
     lower(coalesce(elem ->> 'phrase', '')) as phrase
   from member_topic mt
   cross join lateral jsonb_array_elements(coalesce(mt.matched_phrases, '[]'::jsonb)) as elem
@@ -181,31 +184,33 @@ phrase_rows as (
 phrase_counts as (
   select
     cluster_id,
+    slug,
     phrase,
     count(*)::int as cnt
   from phrase_rows
-  group by cluster_id, phrase
+  group by cluster_id, slug, phrase
 ),
 phrase_ranked as (
   select
     cluster_id,
+    slug,
     phrase,
     cnt,
     row_number() over (
       partition by cluster_id
-      order by cnt desc, phrase asc
+      order by cnt desc, slug asc, phrase asc
     ) as rn
   from phrase_counts
 ),
 common_phrases as (
   -- Top 10 per cluster, materialised as a JSONB array of
-  -- {phrase, count} objects so the read helper can surface them
+  -- {slug, phrase, count} objects so the read helper can surface them
   -- without further parsing.
   select
     cluster_id,
     jsonb_agg(
-      jsonb_build_object('phrase', phrase, 'count', cnt)
-      order by cnt desc, phrase asc
+      jsonb_build_object('slug', slug, 'phrase', phrase, 'count', cnt)
+      order by cnt desc, slug asc, phrase asc
     ) as common_matched_phrases
   from phrase_ranked
   where rn <= 10
@@ -248,7 +253,20 @@ select
   end::text as cluster_path,
   coalesce(ta.observation_count, 0) as observation_count,
   coalesce(ta.classified_count, 0) as classified_count,
-  coalesce(ta.observation_count - ta.classified_count, 0) as other_count,
+  -- Members of the cluster that have no current-version Topic evidence
+  -- yet. The name avoids collision with the categories.slug = 'other'
+  -- bucket — that one is a real Topic decision, this is the count of
+  -- observations the classifier has not yet (re-)processed.
+  coalesce(ta.observation_count - ta.classified_count, 0) as unclassified_count,
+  -- classified / observation, NUMERIC(5,4). Reviewers compare this to
+  -- mixed_topic_score to tell mixed-topic-ness from missing-evidence —
+  -- a high mixed_topic_score with low coverage is a Layer 0 backlog
+  -- problem, not a Family that genuinely spans Topics.
+  case
+    when ta.observation_count > 0
+      then (ta.classified_count::numeric / ta.observation_count::numeric)
+    else 0::numeric
+  end::numeric(5,4) as classification_coverage_share,
   coalesce(td.topic_distribution, '{}'::jsonb) as topic_distribution,
   coalesce(rud.runner_up_distribution, '{}'::jsonb) as runner_up_distribution,
   dt.dominant_topic_slug,
@@ -263,11 +281,17 @@ select
   coalesce(ta.low_margin_count, 0) as low_margin_count,
   -- Normalised entropy. ln(bucket_count) is the natural-log denominator;
   -- when bucket_count <= 1 entropy is mechanically 0 and we short-circuit
-  -- the division to avoid ln(1) = 0 → divide-by-zero.
-  case
+  -- the division to avoid ln(1) = 0 → divide-by-zero. The `least(…, 1)`
+  -- clamp guards the numeric(5,4) cast against a 1.0000…01 FP epsilon
+  -- that uniform distributions can produce after the divide.
+  -- NOTE: this score is computed over the full topic_distribution
+  -- (including the 'unclassified' bucket), so a half-classified Family
+  -- can read as "mixed" even when its classified half is one Topic.
+  -- Use classification_coverage_share above to disambiguate.
+  least(case
     when ei.bucket_count is null or ei.bucket_count <= 1 then 0::numeric
     else (ei.entropy_nat / ln(ei.bucket_count::numeric))
-  end::numeric(5,4) as mixed_topic_score,
+  end, 1::numeric)::numeric(5,4) as mixed_topic_score,
   coalesce(cp.common_matched_phrases, '[]'::jsonb) as common_matched_phrases,
   now() as computed_at
 from clusters c
@@ -294,9 +318,12 @@ create index if not exists idx_mv_cluster_topic_metadata_dominant
 
 -- Wire the new MV into the central refresh hook so the cron tick that
 -- already runs `refresh_materialized_views()` keeps it fresh alongside
--- the others. Refresh is non-concurrent on first creation (no rows
--- yet); subsequent refreshes can be made concurrent by callers that
--- need it. We keep the hook simple to match 016's signature.
+-- the others. The unique index on cluster_id above gates concurrent
+-- refresh, so refreshes do not take an exclusive lock on the MV — at
+-- the cost of one extra full scan per refresh. mv_trend_daily,
+-- mv_fingerprint_daily, and mv_cluster_health_current stay
+-- non-concurrent here; matching them on this MV is a separate
+-- discussion (their tradeoff hasn't been re-evaluated since 016).
 create or replace function refresh_materialized_views()
 returns void
 language plpgsql
@@ -307,7 +334,7 @@ begin
   refresh materialized view mv_trend_daily;
   refresh materialized view mv_fingerprint_daily;
   refresh materialized view mv_cluster_health_current;
-  refresh materialized view mv_cluster_topic_metadata;
+  refresh materialized view concurrently mv_cluster_topic_metadata;
 end;
 $$;
 
