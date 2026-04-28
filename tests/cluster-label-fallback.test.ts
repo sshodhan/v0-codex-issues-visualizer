@@ -14,6 +14,7 @@ test("topicNameForSlug returns canonical names for seed slugs", () => {
   assert.equal(topicNameForSlug("feature-request"), "Feature Request")
   assert.equal(topicNameForSlug("ux-ui"), "UX/UI")
   assert.equal(topicNameForSlug("api"), "API")
+  assert.equal(topicNameForSlug("model-quality"), "Model Quality")
   assert.equal(topicNameForSlug("other"), "Other")
 })
 

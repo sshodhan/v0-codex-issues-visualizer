@@ -18,6 +18,7 @@ const TOPIC_NAME_BY_SLUG: Record<string, string> = {
   documentation: "Documentation",
   integration: "Integration",
   pricing: "Pricing",
+  "model-quality": "Model Quality",
   security: "Security",
   "ux-ui": "UX/UI",
   api: "API",
