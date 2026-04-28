@@ -567,7 +567,7 @@ The only layer consumed by the dashboard API routes. Every row can be rebuilt fr
 - `sentiment_scores (observation_id, algorithm_version, computed_at DESC)` — latest-version lookups; same shape for `category_assignments`, `impact_scores`.
 - `competitor_mentions (competitor, computed_at DESC)` — per-competitor rollups.
 - `clusters (cluster_key)` UNIQUE — one cluster per normalized title key.
-- `cluster_members (cluster_id, observation_id) WHERE detached_at IS NULL` UNIQUE — one active membership per observation.
+- `cluster_members (cluster_id, observation_id) WHERE detached_at IS NULL` UNIQUE — prevents the same observation from being attached to the *same* cluster twice while active. **Known gap (v6 deploy 2026-04):** this constraint does **not** prevent the same observation from being active in *different* clusters simultaneously. When that happens, the MV's `LEFT JOIN cluster_members ... AND cm.detached_at IS NULL` fans the row out, two rows share an `observation_id`, and `REFRESH MATERIALIZED VIEW CONCURRENTLY mv_observation_current` fails with `idx_mv_observation_current_pk` violation. Fix surgically by detaching the older membership (see §7.5); long-term fix is a tighter partial unique index on `(observation_id) WHERE detached_at IS NULL`.
 - `classifications (observation_id, created_at DESC)` — per-observation LLM history.
 - `classification_reviews (classification_id, reviewed_at DESC)` — effective-state lookup.
 - `classifications (category, severity, needs_human_review, created_at DESC)` — triage queue filter.
