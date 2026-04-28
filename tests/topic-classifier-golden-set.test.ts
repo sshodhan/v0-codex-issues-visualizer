@@ -82,9 +82,10 @@ test("topic-golden-set: overall accuracy >= 90%", () => {
   )
 })
 
-// v5 structural invariants — guard the architectural decisions that drove
-// the refactor so a future "let's collapse title and body again" PR fails.
-test("topic-classifier v5: identical phrase has 4× more weight in the title than in the body", () => {
+// Structural invariants (introduced in v5, asserted on every version) —
+// guard the architectural decisions that drove the v5 refactor so a future
+// "let's collapse title and body again" PR fails.
+test("topic-classifier: identical phrase has 4× more weight in the title than in the body", () => {
   const titleHit = categorizeIssue("hallucinates", "", CATEGORIES)
   const bodyHit = categorizeIssue("", "hallucinates", CATEGORIES)
   assert.ok(titleHit, "title-only run must classify")
@@ -97,7 +98,7 @@ test("topic-classifier v5: identical phrase has 4× more weight in the title tha
   )
 })
 
-test("topic-classifier v5: [BUG] template prefix is stripped before scoring", () => {
+test("topic-classifier: [BUG] template prefix is stripped before scoring", () => {
   const withPrefix = categorizeIssue("[BUG] Claude hallucinates imports", "", CATEGORIES)
   const noPrefix = categorizeIssue("Claude hallucinates imports", "", CATEGORIES)
   assert.ok(withPrefix && noPrefix)
@@ -108,16 +109,16 @@ test("topic-classifier v5: [BUG] template prefix is stripped before scoring", ()
   )
 })
 
-test("topic-classifier v5: global threshold=2 — model-quality classifies when body score meets threshold", () => {
+test("topic-classifier: global threshold=2 — model-quality classifies when body score meets threshold", () => {
   // "wrong file" alone in body has pattern_weight 3 in CATEGORY_PATTERNS,
   // no title multiplier. Score 3 >= global threshold 2, so model-quality wins.
-  // Per-slug threshold overrides are intentionally empty in v5 — threshold
-  // tuning waits for backfill evidence.
+  // Per-slug threshold overrides are intentionally empty (introduced in v5,
+  // still empty in v6) — threshold tuning waits for backfill evidence.
   const atThreshold = categorizeIssue("", "wrong file in the diff", CATEGORIES)
   assert.equal(atThreshold?.slug, "model-quality")
 })
 
-test("topic-classifier v5: evidence object carries matched phrases, scores, margin, runner-up", () => {
+test("topic-classifier v6: evidence object carries matched phrases, scores, margin, runner-up", () => {
   const r = categorizeIssue(
     "Claude hallucinates imports",
     "the model also enters a loop and never stops",
@@ -125,7 +126,7 @@ test("topic-classifier v5: evidence object carries matched phrases, scores, marg
   )
   assert.ok(r)
   const ev = r!.evidence
-  assert.equal(ev.algorithm_version, "v5")
+  assert.equal(ev.algorithm_version, "v6")
   assert.equal(ev.classifier_type, "regex_topic")
   assert.ok(Array.isArray(ev.matched_phrases) && ev.matched_phrases.length > 0)
   assert.equal(typeof ev.scoring.scores, "object")
@@ -145,15 +146,28 @@ test("topic-classifier v5: evidence object carries matched phrases, scores, marg
   }
 })
 
-test("topic-classifier v5: returns Other (with evidence) when no slug clears its threshold", () => {
+test("topic-classifier: returns Other (with evidence) when no slug clears its threshold", () => {
   const r = categorizeIssue("hello world", "thanks everyone", CATEGORIES)
   assert.equal(r?.slug, "other")
   assert.equal(r?.confidenceProxy, 0)
   assert.equal(r?.evidence.matched_phrases.length, 0)
 })
 
+test("topic-classifier v6: row 46 — `bypass the approval prompt` wins over ux-ui `approval prompt` with margin >= 4", () => {
+  const r = categorizeIssue(
+    "Is there a way to bypass the approval prompt on trusted repos?",
+    "",
+    CATEGORIES,
+  )
+  assert.equal(r?.slug, "feature-request")
+  assert.ok(
+    (r?.evidence.scoring.margin ?? 0) >= 4,
+    `expected margin >= 4, got ${r?.evidence.scoring.margin}`,
+  )
+})
+
 // Type-level reachability: ensures TopicResult is exported and confidenceProxy is present.
-test("topic-classifier v5: TopicResult shape is exported and well-formed", () => {
+test("topic-classifier: TopicResult shape is exported and well-formed", () => {
   const r: TopicResult | null = categorizeIssue("test", "", CATEGORIES)
   assert.ok(
     r === null ||

@@ -274,15 +274,12 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // shows v1, that's the verifier surfacing an unapplied
     // migration — apply scripts/011_algorithm_v2_bump.sql.
     sentiment: "v2",
-    // 025 bumped category to v5 (structural classifier fixes — title/body
-    // split with 4× title weight, template-prefix stripping with the
-    // stripped prefix preserved in evidence, per-slug threshold mechanism
-    // wired but empty (default floor 2 applies), and structured evidence
-    // emission persisted into the category_assignments.evidence JSONB
-    // column added by 026). If the live registry still shows v4, apply
-    // both scripts/025_topic_classifier_v5_bump.sql and
-    // scripts/026_category_assignments_evidence.sql together.
-    category: "v5",
+    // 025 bumped category to v5 (structural classifier fixes); 027
+    // bumped to v6 (phrase-table maintenance pass — added/removed
+    // phrases per low-margin review, no architecture change). If the
+    // live registry still shows v4 or v5, apply scripts/025–027 in
+    // order.
+    category: "v6",
     impact: "v2",
     competitor_mention: "v2",
     // Classification stays at v1 (011 doesn't bump it).

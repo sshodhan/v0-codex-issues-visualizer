@@ -149,6 +149,17 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "timeout waiting for child process to exit", weight: 4 },
     { phrase: "diff edit mismatch", weight: 4 },
     { phrase: "diff edit failed", weight: 4 },
+    { phrase: "merge conflict", weight: 3 },
+    { phrase: "branch has conflicts", weight: 4 },
+    { phrase: "merge pull request", weight: 3 },
+    // known limitation: literal matcher cannot bridge a model-name token
+    // between "model" and "does not appear"; broad "does not appear"
+    // deliberately rejected as too cross-slug.
+    { phrase: "model does not appear", weight: 4 },
+    { phrase: "model doesn't appear", weight: 4 },
+    { phrase: "workspace-write sandbox", weight: 4 },
+    { phrase: "bubblewrap sandbox", weight: 4 },
+    { phrase: "device passthrough", weight: 3 },
   ],
   performance: [
     { phrase: "memory leak", weight: 4 },
@@ -188,6 +199,17 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "it would be great", weight: 2 },
     { phrase: "enhancement", weight: 2, wholeWord: true },
     { phrase: "bring back", weight: 2 },
+    { phrase: "support additionalcontext", weight: 4 },
+    { phrase: "support additional context", weight: 4 },
+    { phrase: "add additionalcontext", weight: 4 },
+    { phrase: "add additional context", weight: 4 },
+    { phrase: "pretooluse hooks", weight: 3 },
+    // w5 (not w4) intentionally outranks the ux-ui "approval prompt" w4
+    // when the title asks to bypass/disable the prompt — see scripts/027
+    // and the row-46 no-tie test.
+    { phrase: "bypass the approval prompt", weight: 5 },
+    { phrase: "i wish there was", weight: 3 },
+    { phrase: "wish we could", weight: 3 },
   ],
   documentation: [
     { phrase: "documentation", weight: 4, wholeWord: true },
@@ -205,7 +227,6 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "hands-on review", weight: 2 },
     { phrase: "guide", weight: 2, wholeWord: true },
     { phrase: "walkthrough", weight: 2, wholeWord: true },
-    { phrase: "how to", weight: 1 },
   ],
   "ux-ui": [
     { phrase: "approval prompt", weight: 4 },
@@ -235,6 +256,9 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "review loop", weight: 3 },
     { phrase: "diffs are shown", weight: 3 },
     { phrase: "waiting for review", weight: 3 },
+    { phrase: "progress logs", weight: 3 },
+    { phrase: "showing my progress logs", weight: 4 },
+    { phrase: "not showing progress", weight: 3 },
   ],
   integration: [
     { phrase: "mcp server", weight: 4 },
@@ -276,6 +300,13 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "fails to edit", weight: 4 },
     { phrase: "failed to edit", weight: 4 },
     { phrase: "says code was modified", weight: 4 },
+    { phrase: "additionalcontext missing from hook", weight: 4 },
+    { phrase: "additional context missing from hook", weight: 4 },
+    { phrase: "additionalcontext not passed", weight: 4 },
+    { phrase: "additional context not passed", weight: 4 },
+    { phrase: "additionalcontext is not passed", weight: 4 },
+    { phrase: "additional context is not passed", weight: 4 },
+    { phrase: "pretooluse hook missing context", weight: 4 },
   ],
   api: [
     { phrase: "responses api", weight: 4 },
@@ -338,6 +369,9 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "per month", weight: 2 },
     { phrase: "expensive", weight: 3, wholeWord: true },
     { phrase: "cost", weight: 2, wholeWord: true },
+    { phrase: "higher limits", weight: 3 },
+    { phrase: "higher limit", weight: 3 },
+    { phrase: "priority processing", weight: 3 },
   ],
   "model-quality": [
     { phrase: "hallucination", weight: 4 },
@@ -385,6 +419,14 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "distracted", weight: 3, wholeWord: true },
     { phrase: "off topic", weight: 3 },
     { phrase: "off-topic", weight: 3 },
+    { phrase: "developerinstructions", weight: 4 },
+    { phrase: "developer instructions", weight: 4 },
+    { phrase: "additionalcontext ignored", weight: 4 },
+    { phrase: "additional context ignored", weight: 4 },
+    { phrase: "ignores additionalcontext", weight: 4 },
+    { phrase: "ignores additional context", weight: 4 },
+    { phrase: "additionalcontext not used", weight: 4 },
+    { phrase: "additional context not used", weight: 4 },
   ],
   security: [
     { phrase: "prompt injection", weight: 4 },
@@ -405,6 +447,9 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "leaked", weight: 3 },
     { phrase: "leak", weight: 2, wholeWord: true },
     { phrase: "exposed", weight: 3, wholeWord: true },
+    { phrase: "ansi escape code injection", weight: 4 },
+    { phrase: "escape code injection", weight: 4 },
+    { phrase: "ansi escape injection", weight: 4 },
   ],
 }
 
@@ -456,7 +501,7 @@ export interface TopicEvidenceMatch {
 }
 
 export interface TopicEvidence {
-  algorithm_version: "v5"
+  algorithm_version: "v6"
   classifier_type: "regex_topic"
   input: {
     title_present: boolean
@@ -532,7 +577,7 @@ function scoreSegment(
 //   - Scrapers write `?.categoryId` onto the raw observation row as a
 //     convenience initial classification. No evidence is stored there.
 //   - Canonical, auditable topic assignments live in `category_assignments`
-//     with full v5 evidence, written by the derivation/backfill path via
+//     with full v5+ evidence, written by the derivation/backfill path via
 //     recordCategory() in lib/storage/derivations.ts.
 //
 // v5 changes (scripts/025_topic_classifier_v5_bump.sql + 026):
@@ -545,6 +590,20 @@ function scoreSegment(
 //   - Returns structured TopicResult { categoryId, slug, confidenceProxy,
 //     evidence } where evidence is a self-describing JSONB object persisted
 //     into category_assignments.evidence for SQL-side classification audits.
+//
+// v6 changes (scripts/027_topic_classifier_v6_bump.sql):
+//   - CATEGORY_PATTERNS phrase-table maintenance only — no mechanism
+//     changes. Title/body 4× split, template-prefix stripping, structured
+//     evidence emission, and the (still-empty) SLUG_THRESHOLD override
+//     mechanism all carry over from v5 unchanged. Bounded phrase additions
+//     for developerInstructions, merge/branch conflicts, progress-log
+//     visibility, higher-limits/priority-processing, workspace-write /
+//     bubblewrap sandbox + device passthrough, ANSI escape injection, and
+//     additionalContext / PreToolUse intent distinctions; weak `how to`
+//     documentation phrase removed. Evidence shape is unchanged from v5
+//     — only the algorithm_version discriminator string shifts to "v6".
+//     See docs/SCORING.md for the full changelog and the additionalContext
+//     classification rule.
 export function categorizeIssue(
   title: string,
   body: string,
@@ -595,7 +654,7 @@ export function categorizeIssue(
       slug: "other",
       confidenceProxy: 0,
       evidence: {
-        algorithm_version: "v5",
+        algorithm_version: "v6",
         classifier_type: "regex_topic",
         input: baseInput,
         scoring: {
@@ -626,7 +685,7 @@ export function categorizeIssue(
       slug: "other",
       confidenceProxy: 0,
       evidence: {
-        algorithm_version: "v5",
+        algorithm_version: "v6",
         classifier_type: "regex_topic",
         input: baseInput,
         scoring: {
@@ -648,7 +707,7 @@ export function categorizeIssue(
     slug: winnerSlug,
     confidenceProxy,
     evidence: {
-      algorithm_version: "v5",
+      algorithm_version: "v6",
       classifier_type: "regex_topic",
       input: baseInput,
       scoring: {
