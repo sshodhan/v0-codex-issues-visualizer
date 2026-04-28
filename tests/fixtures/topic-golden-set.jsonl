@@ -1,0 +1,35 @@
+{"title":"Codex loses context after a few turns","body":"After about 10 messages the assistant gives generic advice unrelated to my codebase.","expected":"model-quality"}
+{"title":"Claude ignores system prompt instructions","body":"Despite repeating the formatting rules in the system prompt, the model keeps producing output in a different format on every turn.","expected":"model-quality"}
+{"title":"Codex hallucinates imports that don't exist","body":"It confidently writes `from utilz import process_x` but utilz is not a real package and was never installed in the environment.","expected":"model-quality"}
+{"title":"[BUG] Codex loses task intent mid-session","body":"After about 10 messages the assistant gives generic advice unrelated to my codebase.","expected":"model-quality"}
+{"title":"Make gpt-5.5 not get distracted by excessive frontend guidance in system prompt","body":"The model is constantly distracted by frontend guidance even when the task is purely backend python.","expected":"model-quality"}
+{"title":"Cursor keeps looping on same message","body":"It says the same thing again and again and again, never actually completing the task.","expected":"model-quality"}
+{"title":"Codex enters an infinite reasoning loop","body":"The thinking trace just keeps repeating the same step multiple times and never produces output.","expected":"model-quality"}
+{"title":"Tool call returns wrong JSON schema","body":"The mcp tool invocation returns a payload that does not conform to the declared schema; downstream parsing fails immediately.","expected":"integration"}
+{"title":"replace_in_file says code was modified but no file changes","body":"The agent claims the diff was applied successfully but on disk nothing changed; subsequent steps fail because the supposed edit is missing.","expected":"integration"}
+{"title":"Unable to connect GitHub Auth to OpenAI Codex","body":"OAuth callback fails with a generic error and the configuration page just keeps reopening.","expected":"integration"}
+{"title":"MCP server crashes on startup","body":"As soon as I add the mcp server entry to the config, the agent panics with ENOENT before any tool is invoked.","expected":"integration"}
+{"title":"VS Code extension fails to load on Windows WSL","body":"Devcontainer with remote ssh — the codex extension simply does not activate. No errors in the developer console.","expected":"integration"}
+{"title":"Quota exceeded after one hour of normal usage","body":"Hit the 5-hour limit way before five hours; the rate limit usage remaining counter seems wrong.","expected":"pricing"}
+{"title":"Pro plan pricing is too expensive for solo devs","body":"At current per-token rates the pro plan is unaffordable for individual developers experimenting with the API.","expected":"pricing"}
+{"title":"Out of credits warning appears even with quota left","body":"Billing details show plenty of remaining usage but the CLI reports purchase more credits and refuses to run.","expected":"pricing"}
+{"title":"Approval prompt omits diff/file details","body":"The subagent patch approval prompt does not show which files are changing or the diff content; users have to blindly approve.","expected":"ux-ui"}
+{"title":"Diff view flickers when scrolling","body":"The review pane flickers and the loading icon spins indefinitely on long diffs.","expected":"ux-ui"}
+{"title":"Auto-accept toggle is buried three menus deep","body":"The accept diffs / auto accept toggle is too hard to find. UX is confusing.","expected":"ux-ui"}
+{"title":"Codex CLI panics with traceback on startup","body":"Stack trace points to a typeerror in the bootstrap code; the process exits with status code 1 immediately.","expected":"bug"}
+{"title":"segfault when running on macOS arm64","body":"Reproducible segfault on every invocation; attaching the crash report.","expected":"bug"}
+{"title":"diff edit failed: timeout waiting for child process to exit","body":"The diff edit mismatch error fires after every long-running build step; eventually the cli crashes.","expected":"bug"}
+{"title":"Memory leak after running codex for 30 minutes","body":"High cpu and memory leak; the process becomes unresponsive and eventually frozen.","expected":"performance"}
+{"title":"Painfully slow streaming on large repositories","body":"Initial indexing takes forever — painfully slow even on a fast machine.","expected":"performance"}
+{"title":"Resume picker slowed to a crawl","body":"After the last update the resume picker slowed; sluggish UI for any session list longer than ~50 entries.","expected":"performance"}
+{"title":"Please add support for custom OAuth providers","body":"Feature request: allow disabling the built-in github auth and bring back support for arbitrary OAuth callbacks.","expected":"feature-request"}
+{"title":"Can you add an option to skip the approval prompt","body":"It would be great to have a flag for power users to bypass the approval prompt entirely on trusted repos.","expected":"feature-request"}
+{"title":"[FEATURE] please add multi-window session support","body":"What feature would you like to see — multi-window session support across detached terminals.","expected":"feature-request"}
+{"title":"Setup documentation needs a walkthrough","body":"The current setup documentation is unclear; would help to have a walkthrough or troubleshooting guide for first-time configuration.","expected":"documentation"}
+{"title":"OpenAI Codex hands-on review","body":"Hands-on walkthrough of the new release — guide and how-to for getting started.","expected":"documentation"}
+{"title":"Outdated docs for the OpenAI-compatible /v1 endpoint","body":"The base_url examples in the readme still reference v0 routes that 404 with http 404.","expected":"api"}
+{"title":"http 401 unauthorized when using openai-compatible provider","body":"Sending a valid api key against the openai-compatible /v1 endpoint returns a 401 unauthorized; headers not defined.","expected":"api"}
+{"title":"Prompt injection in agent output runs arbitrary commands","body":"A crafted markdown comment in the codebase causes the agent to exfiltrate api key values to a remote server. Sandbox escape.","expected":"security"}
+{"title":"Sandbox escape via tool invocation","body":"Path traversal in the file editing tool lets the agent read whole filesystem outside the project root.","expected":"security"}
+{"title":"hello world thanks everyone","body":"just saying hi to the community.","expected":"other"}
+{"title":"is this on the roadmap for q3?","body":"curious about the timeline.","expected":"other"}

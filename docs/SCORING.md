@@ -36,7 +36,102 @@ guidance in system prompt" mis-bucketing into Pricing):
   `team plan`, `paid plan`, `enterprise plan`, `monthly fee`, `per token`,
   `per month`) so paid-tier discussion still classifies cleanly.
 
-v1 derivation rows remain in `sentiment_scores` / `category_assignments` /
+**What changed in v4** (`scripts/024_topic_classifier_v4_bump.sql`):
+
+- **category v4** — expanded `CATEGORY_PATTERNS` for coding-agent specific
+  reports: MCP / tool invocation / file-edit tooling phrases pulled into
+  Integration; `quota`/`usage limit`/`5-hour limit` strengthen Pricing;
+  `loop`/`looping`/`repetitive thinking` phrases land in Model Quality;
+  diff/approval/loading UX phrasing pulled into UX/UI. Also reweights
+  several over-broad terms.
+
+**What changed in v5** (`scripts/025_topic_classifier_v5_bump.sql` +
+`scripts/026_category_assignments_evidence.sql`, driven by the production
+diagnostic finding `model-quality` at zero observations because long bug
+bodies were overwhelming title-level model-quality cues):
+
+- **category v5 — structural refactor, not phrase tuning.** The
+  `CATEGORY_PATTERNS` phrase table is unchanged from v4; only the scoring
+  architecture changes:
+  - **Title/body split.** `categorizeIssue(title, body, categories)` scores
+    each segment separately. Title hits are multiplied by 4 before
+    summing into the per-slug score. Headlines are short, high-signal,
+    and editor-curated; bodies are long and dilute the score with
+    incidental terminology. Single title hit at weight 2 ≥ eight body
+    hits at weight 1.
+  - **Template prefix stripping.** `[BUG]`, `[FEATURE]`, `[FEAT]`,
+    `[REQUEST]`, `[QUESTION]`, `[DOCS]`, `[RFC]` are stripped from the
+    title before matching so the bracket tag does not consume scoring
+    budget. The stripped prefix is preserved in `evidence.input` for
+    audit.
+  - **Per-slug threshold mechanism.** `SLUG_THRESHOLD` is wired up but
+    intentionally left empty in v5 — the default floor of 2 applies to
+    all slugs. Threshold tuning is deferred until the backfill evidence
+    column shows concrete false-positive patterns for specific slugs.
+  - **Structured evidence emission.** `categorizeIssue` returns
+    `TopicResult { categoryId, slug, confidenceProxy, evidence }`.
+    `confidenceProxy` is a deterministic score-margin ratio (`margin /
+    (winner + runnerUp)`, clamped to [0,1]) — not a calibrated model
+    probability. The full `evidence` JSONB (see shape below) is persisted
+    into `category_assignments.evidence` (new column in `scripts/026`) so
+    admin debugging can answer "why did this row classify as X?" with a
+    single SQL query.
+  - **Regression guard.** `tests/fixtures/topic-golden-set.jsonl` is a
+    35-row labelled corpus covering all 11 topic slugs, seeded from
+    misclassified production posts surfaced via diagnostic SQL.
+    `tests/topic-classifier-golden-set.test.ts` enforces per-row
+    precision + ≥90% accuracy floor + v5 structural invariants.
+    `scripts/eval-topic-patterns.ts` prints precision/recall/F1 per slug
+    in <1s with no DB (`npx tsx scripts/eval-topic-patterns.ts --verbose`).
+
+`evidence` shape stored in `category_assignments.evidence`:
+
+```jsonc
+{
+  "algorithm_version": "v5",
+  "classifier_type": "regex_topic",
+  "input": {
+    "title_present": true,
+    "body_present": true,
+    "template_prefix": "[BUG]",   // null if no prefix was stripped
+    "template_stripped": true
+  },
+  "scoring": {
+    "title_multiplier": 4,
+    "body_multiplier": 1,
+    "default_threshold": 2,
+    "slug_thresholds": {},         // empty in v5; per-slug overrides added later
+    "scores": { "model-quality": 16, "bug": 4 },
+    "winner": "model-quality",
+    "runner_up": "bug",
+    "margin": 12,
+    "threshold": 2,
+    "confidence_proxy": 0.6        // margin / (winner + runnerUp)
+  },
+  "matched_phrases": [
+    {
+      "slug": "model-quality",
+      "phrase": "hallucinates",
+      "pattern_weight": 4,         // weight in CATEGORY_PATTERNS
+      "effective_weight": 16,      // pattern_weight × title_multiplier
+      "location": "title",
+      "raw_hits": 1,
+      "weighted_score": 16,
+      "whole_word": false
+    }
+  ]
+}
+```
+
+Two-tier `category_id` boundary:
+- **Scrapers** write `?.categoryId` onto the raw `observations` row as a
+  convenience initial classification. No evidence is stored at ingest.
+- **Canonical assignments** live in `category_assignments` with full v5
+  evidence, written by the derivation/backfill path via `recordCategory()`
+  in `lib/storage/derivations.ts`. Dashboard reads join through
+  `mv_observation_current` which picks up `category_assignments` rows.
+
+v1–v4 derivation rows remain in `sentiment_scores` / `category_assignments` /
 `impact_scores` for replay comparison; the MV picks the newest per-observation
 row via `distinct on (observation_id) order by computed_at desc`.
 
