@@ -1,9 +1,11 @@
 "use client"
 
+import { useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ExternalLink, ArrowUpRight, ArrowDownRight, Zap, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { logClientEvent } from "@/lib/error-tracking/client-logger"
 
 interface RealtimeInsight {
   category: { name: string; slug: string; color: string }
@@ -28,8 +30,15 @@ interface CategoryIssuesGridProps {
   skipFirstCategorySlug?: string | null
   maxIssuesPerCategory?: number
   onViewFullList?: (categorySlug: string) => void
-  /** When set and not "all", render only this category's card. */
+  /**
+   * Slug of the active topic chip ("all" or "" when no filter). Used to
+   * surface an explicit "no observations" banner when the user picked a
+   * topic that has no activity in the 72h window — without it, the grid
+   * silently shows the same content as the unfiltered view.
+   */
   categoryFilter?: string
+  /** Display name for `categoryFilter`; falls back to the slug if missing. */
+  categoryFilterLabel?: string
 }
 
 // Categories with fewer than HOT_THRESHOLD observations in the now-window
@@ -207,45 +216,31 @@ export function CategoryIssuesGrid({
   maxIssuesPerCategory = 3,
   onViewFullList,
   categoryFilter,
+  categoryFilterLabel,
 }: CategoryIssuesGridProps) {
   const filterActive = !!categoryFilter && categoryFilter !== "" && categoryFilter !== "all"
+  const filterMatch = filterActive
+    ? insights.find((i) => i.category.slug === categoryFilter)
+    : undefined
+  const filterEmpty = filterActive && !filterMatch
+  const filterDisplayName = categoryFilterLabel || categoryFilter || ""
 
-  // When the topic chip is active, the grid renders only that single
-  // category — no lead-story exclusion (the chip's category IS the focus),
-  // no hot/quiet partition.
-  if (filterActive) {
-    const filtered = insights.find((i) => i.category.slug === categoryFilter)
-    return (
-      <Card>
-        <CardHeader className="pb-4">
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <Zap className="h-4 w-4 text-amber-500" />
-            {filtered ? `${filtered.category.name} — recent activity` : "Selected topic"}
-          </CardTitle>
-          <CardDescription>
-            Showing the selected topic only. Clear the filter to see all themes.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="p-4 pt-0">
-          {filtered ? (
-            <div className="grid gap-4 md:grid-cols-2">
-              <CategoryCard
-                insight={filtered}
-                rank={insights.findIndex((i) => i.category.slug === filtered.category.slug) + 1}
-                maxIssues={maxIssuesPerCategory}
-                onViewFullList={onViewFullList}
-              />
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No observations for this topic in the last 72 hours.
-            </p>
-          )}
-          <Legend />
-        </CardContent>
-      </Card>
-    )
-  }
+  // Breadcrumb for the "user filtered to a topic with no 72h activity"
+  // case. Pre-fix, this would have manifested as a silently-empty hero
+  // even when the slug had observations the cap had hidden — so the log
+  // doubles as a regression alarm: if it fires for a slug that the
+  // dashboard's topic chip claims is selectable, the data path between
+  // /api/stats and the chip's option list has drifted.
+  useEffect(() => {
+    if (filterEmpty) {
+      logClientEvent("dashboard-hot-themes-filter-empty", {
+        category: categoryFilter,
+        categoryLabel: categoryFilterLabel ?? null,
+        totalActiveCategories: insights.length,
+        activeSlugs: insights.map((i) => i.category.slug),
+      })
+    }
+  }, [filterEmpty, categoryFilter, categoryFilterLabel, insights])
 
   // Filter out the hero category if specified
   const displayed = skipFirstCategorySlug
@@ -269,9 +264,11 @@ export function CategoryIssuesGrid({
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            {insights.length === 0
-              ? "No hot signals detected in the last 72 hours."
-              : "No additional themes beyond the lead story."}
+            {filterEmpty
+              ? `No observations for ${filterDisplayName} in the last 72 hours.`
+              : insights.length === 0
+                ? "No hot signals detected in the last 72 hours."
+                : "No additional themes beyond the lead story."}
           </p>
         </CardContent>
       </Card>
@@ -293,21 +290,38 @@ export function CategoryIssuesGrid({
     )
   }
 
+  // When the filter is active, the lead is the user's choice (not
+  // urgency-#1), so we drop the "#1 by urgency" claim from the description.
+  const headerTitle = skipFirstCategorySlug
+    ? filterActive
+      ? "Other topics with activity"
+      : "Other Hot Themes"
+    : "What Engineers Should Fix Now"
+  const headerDescription = skipFirstCategorySlug
+    ? filterActive
+      ? "Other topics from the last 72 hours, ordered by urgency."
+      : "All topics from the last 72 hours. The lead story above is #1 by urgency."
+    : "All topics ranked by urgency (volume + momentum + impact + source diversity)"
+
   return (
     <Card>
       <CardHeader className="pb-4">
         <CardTitle className="flex items-center gap-2 text-lg">
           <Zap className="h-4 w-4 text-amber-500" />
-          {skipFirstCategorySlug ? "Other Hot Themes" : "What Engineers Should Fix Now"}
+          {headerTitle}
         </CardTitle>
-        <CardDescription>
-          {skipFirstCategorySlug
-            ? "All topics from the last 72 hours. The lead story above is #1 by urgency."
-            : "All topics ranked by urgency (volume + momentum + impact + source diversity)"}
-        </CardDescription>
+        <CardDescription>{headerDescription}</CardDescription>
       </CardHeader>
 
       <CardContent className="p-4 pt-0">
+        {filterEmpty && (
+          <div className="mb-4 rounded-md border border-dashed border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+            No observations for{" "}
+            <span className="font-medium text-foreground">{filterDisplayName}</span> in the
+            last 72 hours. Showing all other topics with activity below.
+          </div>
+        )}
+
         {hot.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No themes with {HOT_THRESHOLD}+ observations in the last 72 hours.

@@ -705,9 +705,13 @@ The Triage tab partitions the result in the UI: cards with
 collapse under a "Show N quiet categories" expander
 (`components/dashboard/category-issues-grid.tsx`). This keeps low-volume
 slugs (e.g. `security`, `model-quality`) reachable from the dashboard while
-preserving the urgency-ranked lead story. See
-`docs/reviews/hot-themes-coverage-proposal.md` for the investigation that
-motivated removing the cap.
+preserving the urgency-ranked lead story. The grid emits a
+`dashboard-hot-themes-filter-empty` `logClientEvent` when the user picks a
+topic chip that has no observations in the 72h window — the event doubles
+as a regression alarm: if it fires for a slug the chip's option list claims
+is selectable, the data path between `/api/stats` and that option list has
+drifted. See `docs/reviews/hot-themes-coverage-proposal.md` for the
+investigation that motivated removing the cap.
 
 Future improvements:
 1. Add cross-source duplicate clustering (same story across HN + Reddit).

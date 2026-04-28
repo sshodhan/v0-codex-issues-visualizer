@@ -955,6 +955,7 @@ const handleHeroLlmCategoryDrill = (
   skipFirstCategorySlug={heroInsight?.categorySlug}
   onViewFullList={handleCategoryViewFullListInTriage}
   categoryFilter={globalCategory}
+  categoryFilterLabel={globalCategoryLabel}
   />
               {/* [V1 - DEPRECATED] skipFirstCategorySlug={undefined} - shows all categories including hero */}
 

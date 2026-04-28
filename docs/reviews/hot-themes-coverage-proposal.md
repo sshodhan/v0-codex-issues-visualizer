@@ -2,7 +2,9 @@
 
 Investigation date: 2026-04-28
 Branch: `claude/fix-hot-themes-limit-dUtT2`
-Status: investigation-only (no code change in this commit)
+Status: implemented in commits `5a0e88e` (cap removal + hot/quiet partition +
+tests + doc updates) and the follow-up commit on this branch (filter copy
+fix + `dashboard-hot-themes-filter-empty` breadcrumb).
 
 ## TL;DR
 
