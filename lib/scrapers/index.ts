@@ -65,6 +65,13 @@ interface RunSummary {
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>
+type SemanticCandidate = {
+  id: string
+  title: string
+  content: string | null
+  topicSlug: string | null
+  errorCode: string | null
+}
 
 /**
  * Persist one captured issue across the three layers:
@@ -91,6 +98,13 @@ async function persistIssueRecord(
   reportText: string
   isNewObservation: boolean
   fingerprint: BugFingerprint
+  semanticObservation: {
+    id: string
+    title: string
+    content: string | null
+    topicSlug: string | null
+    errorCode: string | null
+  }
 } | null> {
   if (!issue.source_id || !issue.external_id || !issue.title) return null
 
@@ -214,32 +228,6 @@ async function persistIssueRecord(
     },
   })
 
-  // 3.1c Aggregation — semantic clustering first (embeddings ⇒ attach,
-  // title-hash fallback on failure). Fingerprint sub-clustering is a
-  // read-time concern today: the SignalLayers panel groups cluster
-  // members by `error_code` + `top_stack_frame_hash` client-side so
-  // analysts see the sub-structure without the writer needing to create
-  // physical sub-clusters. If we later decide to promote sub-clusters
-  // to their own rows, the compound key above is the deterministic
-  // split function.
-  await runSemanticClusteringForBatch(
-    supabase,
-    [
-      {
-        id: observationId,
-        title: issue.title,
-        content: issue.content ?? null,
-        // Topic + error code feed the deterministic fallback labeller
-        // and prompt context (lib/storage/cluster-label-fallback.ts).
-        // Both are nullable: not every provider surfaces a Topic, and
-        // not every issue has a regex-extractable error code.
-        topicSlug: issue.category?.slug ?? null,
-        errorCode: fingerprint.error_code ?? null,
-      },
-    ],
-    { minClusterSize: 2 },
-  )
-
   return {
     observationId,
     title: issue.title,
@@ -251,6 +239,13 @@ async function persistIssueRecord(
     }),
     isNewObservation: !existing,
     fingerprint,
+    semanticObservation: {
+      id: observationId,
+      title: issue.title,
+      content: issue.content ?? null,
+      topicSlug: issue.category?.slug ?? null,
+      errorCode: fingerprint.error_code ?? null,
+    },
   }
 }
 
@@ -286,11 +281,26 @@ async function refreshMaterializedViews(supabase: AdminClient): Promise<void> {
   if (error) console.error("[cron] refresh_materialized_views failed:", error)
 }
 
+export async function runPostLoopSemanticClustering(
+  supabase: AdminClient,
+  semanticCandidates: SemanticCandidate[],
+  context: string,
+  runBatch: typeof runSemanticClusteringForBatch = runSemanticClusteringForBatch,
+): Promise<void> {
+  if (semanticCandidates.length === 0) return
+  try {
+    await runBatch(supabase, semanticCandidates, { minClusterSize: 2 })
+  } catch (error) {
+    console.error(`[scrapers] semantic clustering failed (${context}):`, error)
+  }
+}
+
 export async function runAllScrapers(): Promise<RunSummary> {
   const supabase = createAdminClient()
   const errors: string[] = []
   const bySource: RunSummary["bySource"] = []
   const classificationCandidates: ClassificationCandidate[] = []
+  const semanticCandidates: SemanticCandidate[] = []
   let totalFound = 0
   let totalAdded = 0
 
@@ -327,6 +337,7 @@ export async function runAllScrapers(): Promise<RunSummary> {
             added++
             if (persisted.isNewObservation) {
               classificationCandidates.push(buildClassificationCandidate(persisted))
+              semanticCandidates.push(persisted.semanticObservation)
             }
           }
         }
@@ -382,6 +393,12 @@ export async function runAllScrapers(): Promise<RunSummary> {
     supabase,
     classificationCandidates,
   )
+
+  // 3.1c Aggregation — semantic clustering must run across a batch of
+  // observations; running per-item guarantees singleton fallback when
+  // minClusterSize is 2. Fingerprint sub-clustering remains read-time.
+  await runPostLoopSemanticClustering(supabase, semanticCandidates, "runAllScrapers")
+
   errors.push(
     ...classificationResults.failures.map(
       (failure) =>
@@ -429,12 +446,14 @@ export async function runScraper(slug: string): Promise<RunSummary> {
   const issues = dedupeIssues(await scraper(source, categories))
   let added = 0
   const classificationCandidates: ClassificationCandidate[] = []
+  const semanticCandidates: SemanticCandidate[] = []
   for (const issue of issues) {
     const persisted = await persistIssueRecord(supabase, issue)
     if (persisted) {
       added++
       if (persisted.isNewObservation) {
         classificationCandidates.push(buildClassificationCandidate(persisted))
+        semanticCandidates.push(persisted.semanticObservation)
       }
     }
   }
@@ -443,6 +462,7 @@ export async function runScraper(slug: string): Promise<RunSummary> {
     supabase,
     classificationCandidates,
   )
+  await runPostLoopSemanticClustering(supabase, semanticCandidates, `runScraper:${slug}`)
 
   await refreshMaterializedViews(supabase)
 

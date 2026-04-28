@@ -171,10 +171,10 @@ A scrape run is structured as three sequential passes over the captured records.
 
 #### 3.1c Cluster (writes to aggregation layer only)
 
-1. For each observation in this run, compute `cluster_key` from the normalized title via `lib/storage/clusters.ts` → `attachToCluster()`.
-2. If no cluster exists for that key, insert one into `clusters` (with this observation as `canonical_observation_id`) and add the membership row.
-3. If a cluster exists, append a `cluster_members` row (`attached_at = now()`, `detached_at = NULL`).
-4. On a title revision that shifts `cluster_key`, the same function updates the membership: stamp `detached_at` on the old row, insert a new one for the new cluster, and re-select a canonical if needed. Because clusters are their own table, rebalancing never touches evidence.
+1. During per-issue ingest, we persist a semantic candidate payload (`id`, `title`, `content`, topic/error context) but **do not cluster yet**.
+2. After the scrape loop completes, `runSemanticClusteringForBatch(...)` runs once over the full candidate batch for that run (post-loop batched clustering).
+3. Semantic groups (`size >= minClusterSize`, default `2`) attach via semantic keys (`semantic:<digest>`); observations that fail embedding or remain singleton attach via deterministic title fallback.
+4. Clustering failures are contained (logged + continue) so the scrape still reaches view refresh and the dashboard doesn't stay stale waiting for the next cron tick.
 5. At the end of the scrape run, `/api/cron/scrape` calls the `refresh_materialized_views` RPC, which rebuilds `mv_observation_current` and `mv_trend_daily`. All dashboard reads pick up the new scrape after this step.
 
 #### 3.1d Classify bridge (ingest → derivation classification)

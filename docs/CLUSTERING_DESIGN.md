@@ -51,8 +51,13 @@ This design gives the accuracy benefits of semantic grouping without sacrificing
 For each scraped issue:
 1. Persist observation/revision/engagement/artifact in evidence layer.
 2. Persist derivations (sentiment/category/impact).
-3. Run clustering (semantic first, deterministic fallback).
-4. Return classification candidate metadata for newly seen observations.
+3. Return classification + semantic candidate metadata for newly seen observations.
+
+After the scrape loop completes, run **one post-loop batched clustering pass**
+across all new semantic candidates for the run (semantic first, deterministic
+fallback). This prevents the singleton-batch failure mode where `minClusterSize
+= 2` would force every observation into fallback if clustering were called
+per-item.
 
 ### 3.2 Classification queue population
 After source scraping completes, the run accumulates classification candidates (new observations only by default) and processes them through shared classification pipeline logic.
