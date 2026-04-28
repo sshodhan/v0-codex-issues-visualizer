@@ -140,18 +140,27 @@ order by fc.cluster_id, fc.computed_at desc;
 -- gains a `family_classification` row (current_effective = v1).
 alter table algorithm_versions
   drop constraint if exists algorithm_versions_kind_check;
-alter table algorithm_versions
-  add constraint algorithm_versions_kind_check
-  check (kind in (
-    'sentiment',
-    'category',
-    'impact',
-    'competitor_mention',
-    'classification',
-    'observation_embedding',
-    'semantic_cluster_label',
-    'family_classification'
-  ));
+do $$
+declare
+  allowed_kinds text;
+begin
+  -- Rebuild the CHECK from currently present kinds plus the new
+  -- family_classification kind. This keeps migration 029 compatible
+  -- with environments that already carry extra historical kinds.
+  select string_agg(quote_literal(kind), ', ' order by kind)
+    into allowed_kinds
+  from (
+    select kind from algorithm_versions
+    union
+    select 'family_classification'
+  ) kinds;
+
+  execute format(
+    'alter table algorithm_versions add constraint algorithm_versions_kind_check check (kind in (%s))',
+    allowed_kinds
+  );
+end
+$$;
 
 insert into algorithm_versions (kind, version, current_effective, notes)
 values (
