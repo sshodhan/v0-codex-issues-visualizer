@@ -11,9 +11,10 @@
 // a stale registry. This regression test fails the build the moment a
 // developer bumps one and forgets the other.
 //
-// Specifically catches the v1→v2 drift that PR #107 introduced when it
-// bumped semantic_cluster_label in the runtime registry without bumping
-// the manifest.
+// Specifically catches two known drifts:
+// - semantic_cluster_label v1→v2 (PR #107)
+// - category v3→v4 (Topic regex expansion/reweight) when runtime and
+//   EXPECTED_MANIFEST are not bumped together.
 
 import test from "node:test"
 import assert from "node:assert/strict"
