@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { logServerError } from "../error-tracking/server-logger.ts"
+
 // Read-only helpers for the Layer-A cluster topic metadata MV
 // (`mv_cluster_topic_metadata`, scripts/028). Layer 0 (the heuristic
 // Topic classifier) writes per-observation evidence; this module
@@ -14,7 +16,16 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 //   - it does not write anywhere (no RPCs, no inserts; the MV is
 //     refreshed by `refresh_materialized_views()`)
 //
+// Failure logging routes through `logServerError` from
+// `lib/error-tracking/server-logger.ts` so MV-not-applied / RLS / wire
+// failures land on the structured-log dashboard alongside the rest of
+// the read-side surfaces (`api-clusters`, `cluster-embedding`,
+// `cluster-labeling`). Component name is `cluster-topic-metadata` so
+// operators can grep one prefix to scope to this module.
+//
 // See docs/CLUSTERING_DESIGN.md §4.6 for the architectural contract.
+
+const LOG_COMPONENT = "cluster-topic-metadata"
 
 export interface ClusterTopicPhrase {
   /** Topic slug the phrase was scored under by Layer 0. The same
@@ -195,7 +206,9 @@ export async function getClusterTopicMetadata(
     .eq("cluster_id", clusterId)
     .maybeSingle()
   if (error) {
-    console.error("[cluster-topic-metadata] fetch failed:", error.message)
+    logServerError(LOG_COMPONENT, "fetch_failed", error, {
+      cluster_id: clusterId,
+    })
     return null
   }
   if (!data) return null
@@ -241,7 +254,13 @@ export async function listClusterTopicMetadata(
 
   const { data, error } = await query
   if (error) {
-    console.error("[cluster-topic-metadata] list failed:", error.message)
+    logServerError(LOG_COMPONENT, "list_failed", error, {
+      cluster_id_count: options.clusterIds?.length ?? null,
+      min_observation_count: options.minObservationCount ?? null,
+      min_mixed_topic_score: options.minMixedTopicScore ?? null,
+      dominant_topic_slug: options.dominantTopicSlug ?? null,
+      limit: options.limit ?? null,
+    })
     return []
   }
   return (data ?? []).map((r) => rowToMetadata(r as RawRow))
