@@ -30,6 +30,11 @@ interface PendingCluster {
 interface Stats {
   total_clusters: number | null
   without_classification: number | null
+  /** Count of family_classifications at the current algorithm version
+   *  whose cluster has zero active members — orphans left by a prior
+   *  cluster rebuild with redetach. Surfaced as its own tile so
+   *  operators can see when the upstream cluster shape moved on. */
+  stale_classifications?: number | null
   algorithm_version?: string
   pending?: PendingCluster[]
 }
@@ -743,18 +748,24 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
             </Alert>
           ) : null}
 
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-3">
             <StatTile
               label="Total clusters"
               value={stats?.total_clusters}
-              hint="Every row in the clusters table."
+              hint="All rows in the clusters table — includes historical/dead clusters with no active members. The two tiles to the right are scoped to live clusters only."
               emphasis={false}
             />
             <StatTile
               label="Without classification"
               value={stats?.without_classification}
               emphasis={(stats?.without_classification ?? 0) > 0}
-              hint="Eligible for backfill."
+              hint="Live clusters with no current-version classification. Same set the pending list and batch iterate over."
+            />
+            <StatTile
+              label="Pointing to dead clusters"
+              value={stats?.stale_classifications ?? null}
+              emphasis={(stats?.stale_classifications ?? 0) > 0}
+              hint="Classifications whose cluster has 0 active members. Run cluster rebuild → re-classify to clean up."
             />
           </div>
 
