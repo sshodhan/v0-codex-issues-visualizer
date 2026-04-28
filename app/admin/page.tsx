@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Table,
   TableBody,
@@ -505,14 +506,14 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="clustering" className="space-y-4">
             <WhatToKnowCard
               title="Clustering"
-              summary="Live cluster stats and on-demand rebuild. Attach-only is safe to re-run; re-detach is only when buildClusterKey itself changed."
+              summary="Live cluster stats and on-demand rebuild. Pick Semantic mode for embedding-based grouping (the architectural default) or Title-hash for the deterministic fallback."
               purpose={
                 <p>
                   Shows live counts from the aggregation layer (observations,
                   clusters, active memberships, orphans) and lets you trigger
                   the same clustering pass that runs after every scrape —
-                  hooking any orphan observations into the right cluster, or
-                  creating one if no match exists.
+                  attaching observations to existing clusters or forming new
+                  ones.
                 </p>
               }
               pipelineFit={
@@ -523,11 +524,20 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">detached_at IS NULL</code>{" "}
                   is the active set). Cluster shape is independent of the
                   evidence layer — observations are never mutated by this
-                  step.
+                  step. Semantic mode produces{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">semantic:&lt;hash&gt;</code>{" "}
+                  keys; Title-hash mode produces deterministic title-derived
+                  keys (every cluster on this path becomes{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_path = &apos;fallback&apos;</code>).
                 </p>
               }
               whenToRun={
                 <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Whenever the <strong>Orphans</strong> tile is non-zero —
+                    these are observations that ingest captured but missed
+                    the post-loop clustering call.
+                  </li>
                   <li>
                     After running{" "}
                     <code className="rounded bg-muted px-1 py-0.5 text-xs">
@@ -536,25 +546,35 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     so the new fingerprints can drive cluster keys.
                   </li>
                   <li>
-                    Whenever the <strong>Orphans</strong> tile is non-zero —
-                    these are observations that ingest captured but missed
-                    the post-loop clustering call.
+                    When all clusters show{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_path = &apos;fallback&apos;</code>{" "}
+                    in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">mv_cluster_topic_metadata</code>:
+                    rebuild in <strong>Semantic</strong> mode with{" "}
+                    <strong>Re-detach first</strong> ticked to repopulate
+                    embedding-based memberships.
                   </li>
                   <li>
-                    Tick <strong>Re-detach first</strong> only when{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                      buildClusterKey
-                    </code>{" "}
-                    has changed in code; existing memberships will be
-                    detached and re-attached under the new key.
+                    Tick <strong>Re-detach first</strong> when switching
+                    cluster mode or when the keying function itself has
+                    changed in code.
                   </li>
                 </ul>
               }
               impact={
                 <ul className="list-disc space-y-1 pl-5">
                   <li>
+                    Semantic mode calls OpenAI for any missing embeddings
+                    (text-embedding-3-small) and the LLM cluster labeller
+                    per formed group. Existing embeddings are reused.
+                  </li>
+                  <li>
                     Attach-only mode is a no-op for already-clustered
                     observations — safe to re-run anytime.
+                  </li>
+                  <li>
+                    Re-detach mode rewrites cluster shape — only use when
+                    switching modes or when the keying function changed.
                   </li>
                   <li>
                     Inserts attach/detach rows into{" "}
@@ -567,10 +587,6 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     <code className="rounded bg-muted px-1 py-0.5 text-xs">mv_trend_daily</code>{" "}
                     at the end.
                   </li>
-                  <li>
-                    Re-detach mode rewrites cluster shape — only use when
-                    the keying function itself has changed.
-                  </li>
                 </ul>
               }
               howToRun={
@@ -580,13 +596,14 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     cluster table.
                   </li>
                   <li>
-                    Click <strong>Rebuild clusters</strong> for the default
-                    attach-only pass.
+                    Pick a <strong>Rebuild mode</strong>. Default is{" "}
+                    <strong>Semantic</strong> — that&apos;s what you almost
+                    always want.
                   </li>
                   <li>
-                    Watch the processed / attached / detached counters and
-                    sample cluster keys. <strong>Refresh</strong> reloads
-                    stats.
+                    Click <strong>Rebuild clusters</strong>. Watch the
+                    processed / attached / detached counters and sample
+                    cluster keys; refresh reloads stats.
                   </li>
                 </ol>
               }
@@ -1603,11 +1620,20 @@ function BackfillPanel({ secret }: { secret: string }) {
 // Clustering panel
 // ============================================================================
 
+// Cluster rebuild modes. "semantic" is what the system architecturally
+// wants (embedding-based grouping via lib/storage/semantic-clusters.ts)
+// and is the default everywhere except the legacy default-when-omitted
+// behaviour of the route (kept for backwards compatibility). "title-hash"
+// is the deterministic fallback path — only useful when the embedding
+// pipeline is degraded or for tightly-controlled re-key scenarios.
+type ClusterRebuildMode = "semantic" | "title-hash"
+
 function ClusteringPanel({ secret }: { secret: string }) {
   const [stats, setStats] = useState<ClusterStats | null>(null)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
 
+  const [mode, setMode] = useState<ClusterRebuildMode>("semantic")
   const [redetach, setRedetach] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [running, setRunning] = useState(false)
@@ -1700,6 +1726,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
             cursor,
             limit: CHUNK_SIZE,
             redetach,
+            mode,
           }),
         })
         if (!res.ok) {
@@ -1715,6 +1742,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
               batchId,
               cursor,
               redetach,
+              mode,
               status: res.status,
             })
           }
@@ -1757,7 +1785,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
       if ((e as { name?: string }).name !== "AbortError") {
         setRunError(e instanceof Error ? e.message : String(e))
         if (shouldLogAdminClientError(e)) {
-          logClientError(e, "admin-cluster-rebuild-failed", { redetach })
+          logClientError(e, "admin-cluster-rebuild-failed", { redetach, mode })
         }
       } else {
         setBatchRows((rows) => {
@@ -1875,6 +1903,67 @@ function ClusteringPanel({ secret }: { secret: string }) {
           </Collapsible>
         )}
 
+        <div className="rounded-md border bg-muted/20 p-3">
+          <div className="text-xs font-semibold uppercase text-muted-foreground">
+            Rebuild mode
+          </div>
+          <RadioGroup
+            value={mode}
+            onValueChange={(value: string) => setMode(value as ClusterRebuildMode)}
+            className="mt-2 gap-2"
+            disabled={running}
+          >
+            <label
+              htmlFor="mode-semantic"
+              className="flex cursor-pointer items-start gap-3 rounded-md border bg-background/50 p-2 hover:bg-background"
+            >
+              <RadioGroupItem
+                value="semantic"
+                id="mode-semantic"
+                disabled={running}
+                className="mt-0.5"
+              />
+              <div className="space-y-0.5">
+                <div className="text-sm font-medium">
+                  Semantic (embedding-based){" "}
+                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-primary">
+                    recommended
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Groups observations whose OpenAI embeddings are within
+                  cosine 0.86, min cluster size 2. Produces{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
+                    semantic:&lt;hash&gt;
+                  </code>{" "}
+                  cluster keys. This is the architectural default for
+                  Layer A.
+                </p>
+              </div>
+            </label>
+            <label
+              htmlFor="mode-title-hash"
+              className="flex cursor-pointer items-start gap-3 rounded-md border bg-background/50 p-2 hover:bg-background"
+            >
+              <RadioGroupItem
+                value="title-hash"
+                id="mode-title-hash"
+                disabled={running}
+                className="mt-0.5"
+              />
+              <div className="space-y-0.5">
+                <div className="text-sm font-medium">Title-hash (fallback only)</div>
+                <p className="text-xs text-muted-foreground">
+                  Deterministic key from the normalized title. No
+                  embedding API calls. Use only when the embedding
+                  pipeline is degraded or for tightly-controlled re-key
+                  scenarios — most clusters end up as singletons.
+                </p>
+              </div>
+            </label>
+          </RadioGroup>
+        </div>
+
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
             <Checkbox
@@ -1887,7 +1976,8 @@ function ClusteringPanel({ secret }: { secret: string }) {
               htmlFor="redetach"
               className="cursor-pointer text-sm text-muted-foreground"
             >
-              Re-detach first (only when buildClusterKey changed)
+              Re-detach first (required when switching cluster mode or
+              when buildClusterKey changed)
             </label>
           </div>
           <Button onClick={handleRebuildClick} disabled={running}>
