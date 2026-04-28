@@ -160,7 +160,7 @@ export function classifyFamilyHeuristic(input: HeuristicInput): HeuristicResult 
 }
 
 interface LlmTitleInput {
-  representative_titles: string[]
+  representatives: FamilyRepresentative[]
   topic_distribution: Record<string, number>
   dominant_topic_slug: string | null
   common_matched_phrases: Array<{ slug: string; phrase: string; count: number }>
@@ -168,6 +168,59 @@ interface LlmTitleInput {
   mixed_topic_score: number
   low_margin_count: number
   observation_count: number
+}
+
+// Structured representative observation for evidence + LLM grounding.
+//
+// Stored in `evidence.representatives` so a reviewer can navigate from
+// a family classification back to the specific reports that justified
+// its title/summary. Title alone is too weak for the LLM to infer
+// `primary_failure_mode` / `affected_surface` / `likely_owner_area`,
+// so we also pass `body_snippet` and `topic_slug` to the model.
+export interface FamilyRepresentative {
+  observation_id: string
+  title: string
+  /** First REPRESENTATIVE_BODY_SNIPPET_CHARS of the observation content,
+   *  trimmed and clipped. Null when the source had no body (Reddit
+   *  comment without text, GitHub issue with empty description, …). */
+  body_snippet: string | null
+  /** Latest topic slug (from category_assignments → categories.slug)
+   *  for this observation. Null when Layer 0 hasn't classified it
+   *  under the current Topic version yet. */
+  topic_slug: string | null
+  /** True when this observation is the cluster's
+   *  `canonical_observation_id`. Canonical comes first in the
+   *  representatives list so titles/summaries anchor on it. */
+  is_canonical: boolean
+}
+
+const REPRESENTATIVE_LIMIT = 8
+const REPRESENTATIVE_BODY_SNIPPET_CHARS = 240
+
+// One of {succeeded | failed | skipped_*} — written into evidence.llm
+// even when the LLM call didn't happen, so reviewers can tell "this is
+// a low-quality fallback title because the API key was missing" from
+// "this is a low-quality fallback title because the model returned
+// junk".
+export type LlmStatus =
+  | "succeeded"
+  | "failed"
+  | "skipped_missing_api_key"
+  | "skipped_no_representatives"
+  | "low_confidence_fallback"
+
+export interface LlmEvidenceBlock {
+  status: LlmStatus
+  prompt_template_version: string
+  model: string | null
+  request_id: string | null
+  latency_ms: number | null
+  confidence: number | null
+  rationale: string | null
+  /** Heuristic-style coherence assessment from the LLM, used as a
+   *  disagreement signal only. Never overwrites
+   *  `heuristic.family_kind`. */
+  suggested_family_kind: FamilyKind | null
 }
 
 export interface LlmTitleProvenance {
@@ -187,8 +240,20 @@ interface LlmTitleResult {
   likely_owner_area: string | null
   confidence: number
   rationale: string
+  /** LLM's coherence judgement, used as a disagreement signal. Set to
+   *  null if the model could not commit to a kind. Never overwrites
+   *  the heuristic — see CLUSTERING_DESIGN.md §5.1. */
+  suggested_family_kind: FamilyKind | null
   provenance: LlmTitleProvenance
 }
+
+const FAMILY_KIND_VALUES: FamilyKind[] = [
+  "coherent_single_issue",
+  "mixed_multi_causal",
+  "needs_split_review",
+  "low_evidence",
+  "unclear",
+]
 
 const DEFAULT_LLM_MODEL = process.env.OPENAI_CLUSTER_LABEL_MODEL ?? "gpt-5-mini"
 const PROMPT_TEMPLATE_VERSION = "family-title-v1"
@@ -278,10 +343,23 @@ async function callFamilyTitleModel(
     return null
   }
 
-  const titlesBlock = input.representative_titles
-    .slice(0, 8)
-    .map((t, idx) => `${idx + 1}. ${t}`)
-    .join("\n")
+  // Render representatives as structured blocks: id + topic + canonical
+  // marker on a metadata line, then the title, then a body snippet (if
+  // any). Asking the model to reason about primary_failure_mode and
+  // affected_surface from titles alone is brittle; body snippets are
+  // the strongest grounding signal we have on hand.
+  const representativesBlock = input.representatives
+    .map((rep, idx) => {
+      const tags: string[] = []
+      if (rep.is_canonical) tags.push("canonical")
+      if (rep.topic_slug) tags.push(`topic: ${rep.topic_slug}`)
+      const tagSuffix = tags.length > 0 ? ` [${tags.join(", ")}]` : ""
+      const meta = `${idx + 1}. [${rep.observation_id}]${tagSuffix}`
+      const title = `   Title: ${rep.title}`
+      const snippet = rep.body_snippet ? `   Snippet: ${rep.body_snippet}` : ""
+      return [meta, title, snippet].filter(Boolean).join("\n")
+    })
+    .join("\n\n")
 
   const phrasesBlock =
     input.common_matched_phrases.length > 0
@@ -305,6 +383,8 @@ async function callFamilyTitleModel(
     })
     .join(", ")
 
+  const familyKindEnumStr = FAMILY_KIND_VALUES.join(" | ")
+
   const userPrompt =
     "You are analyzing a cluster of issue reports about Codex, an AI " +
     "coding agent. Common failure modes include: tool-call timeouts, " +
@@ -318,14 +398,16 @@ async function callFamilyTitleModel(
     "affected_surface (API/CLI/Web, null if mixed), " +
     "likely_owner_area (team or subsystem, null if unclear), " +
     "confidence (0..1, lower if evidence is mixed), " +
-    `rationale (<= 1 sentence, <= ${RATIONALE_MAX_CHARS} chars).\n\n` +
+    `rationale (<= 1 sentence, <= ${RATIONALE_MAX_CHARS} chars), ` +
+    `suggested_family_kind (one of ${familyKindEnumStr}, or null if unsure — ` +
+    "this is a coherence judgement only, not a clustering decision).\n\n" +
     `Dominant Topic: ${input.dominant_topic_slug ?? "unclassified"}\n` +
     `Topic distribution: ${topicDistributionStr}\n` +
     `Classification coverage: ${(input.classification_coverage_share * 100).toFixed(1)}%\n` +
     `Mixed topic score: ${input.mixed_topic_score.toFixed(3)} (0=single-topic, 1=uniform)\n` +
     `Low-margin observations (close topic calls): ${input.low_margin_count}/${input.observation_count}\n\n` +
     (phrasesBlock ? `${phrasesBlock}\n\n` : "") +
-    `Issue titles (${input.representative_titles.length} shown):\n${titlesBlock}`
+    `Representative reports (${input.representatives.length} shown, canonical first when available):\n${representativesBlock}`
 
   const startedAt = Date.now()
   let response: Response
@@ -360,6 +442,13 @@ async function callFamilyTitleModel(
                 likely_owner_area: { type: ["string", "null"] },
                 confidence: { type: "number", minimum: 0, maximum: 1 },
                 rationale: { type: "string", maxLength: RATIONALE_MAX_CHARS },
+                // Coherence judgement, used as a disagreement signal
+                // only. Listed in `required` (strict mode) but allows
+                // null so the model can decline.
+                suggested_family_kind: {
+                  type: ["string", "null"],
+                  enum: [...FAMILY_KIND_VALUES, null],
+                },
               },
               required: [
                 "family_title",
@@ -369,6 +458,7 @@ async function callFamilyTitleModel(
                 "likely_owner_area",
                 "confidence",
                 "rationale",
+                "suggested_family_kind",
               ],
             },
           },
@@ -449,6 +539,7 @@ async function callFamilyTitleModel(
     likely_owner_area?: string | null
     confidence?: number
     rationale?: string
+    suggested_family_kind?: string | null
   }
   try {
     parsed = JSON.parse(outputText)
@@ -501,6 +592,16 @@ async function callFamilyTitleModel(
     },
   })
 
+  // Validate the disagreement signal against the known enum. The
+  // schema enforces it, but a non-strict provider or schema regression
+  // shouldn't be able to inject arbitrary strings into review_reasons.
+  const suggestedKindRaw = parsed.suggested_family_kind ?? null
+  const suggested_family_kind: FamilyKind | null =
+    typeof suggestedKindRaw === "string" &&
+    (FAMILY_KIND_VALUES as string[]).includes(suggestedKindRaw)
+      ? (suggestedKindRaw as FamilyKind)
+      : null
+
   return {
     family_title: clipText(parsed.family_title.trim(), TITLE_MAX_CHARS),
     family_summary: clipText(parsed.family_summary.trim(), SUMMARY_MAX_CHARS),
@@ -515,6 +616,7 @@ async function callFamilyTitleModel(
       : null,
     confidence,
     rationale: clipText(parsed.rationale.trim(), RATIONALE_MAX_CHARS),
+    suggested_family_kind,
     provenance: {
       model: modelName,
       request_id: requestId,
@@ -552,43 +654,102 @@ export async function classifyClusterFamily(
     return null
   }
 
-  // Fetch the 8 most-recently-attached active members. Slicing here
-  // (instead of in the observations query) means the LLM prompt sees a
-  // deterministic ordered set: the same cluster yields the same titles
-  // run-to-run, which matters for caching and reproducibility.
-  // `is("detached_at", null)` is the PostgREST shape for `IS NULL` —
-  // `eq("detached_at", null)` would compile to `= NULL` and match
-  // nothing.
+  // Fetch active members ordered by attached_at desc, then reorder
+  // canonical-first so titles/summaries anchor on the canonical
+  // example. `is("detached_at", null)` is the PostgREST shape for `IS
+  // NULL` — `eq("detached_at", null)` would compile to `= NULL` and
+  // match nothing.
+  const canonicalId = (cluster as { canonical_observation_id: string | null })
+    .canonical_observation_id
+  // Fetch one extra so when canonical is also in the active member set
+  // we still have REPRESENTATIVE_LIMIT distinct rows after dedupe.
   const { data: members } = await supabase
     .from("cluster_members")
     .select("observation_id, attached_at")
     .eq("cluster_id", clusterId)
     .is("detached_at", null)
     .order("attached_at", { ascending: false })
-    .limit(8)
+    .limit(REPRESENTATIVE_LIMIT + 1)
 
-  let representative_titles: string[] = []
-  if (members && members.length > 0) {
-    const orderedIds = (members as Array<{ observation_id: string }>).map(
-      (m) => m.observation_id,
-    )
+  const memberIds = (
+    (members ?? []) as Array<{ observation_id: string }>
+  ).map((m) => m.observation_id)
+  // Canonical first, then recent members, deduped, capped.
+  const orderedIds: string[] = []
+  const seen = new Set<string>()
+  if (canonicalId) {
+    orderedIds.push(canonicalId)
+    seen.add(canonicalId)
+  }
+  for (const id of memberIds) {
+    if (seen.has(id)) continue
+    orderedIds.push(id)
+    seen.add(id)
+    if (orderedIds.length >= REPRESENTATIVE_LIMIT) break
+  }
+
+  let representatives: FamilyRepresentative[] = []
+  if (orderedIds.length > 0) {
     const { data: observations } = await supabase
       .from("mv_observation_current")
-      .select("observation_id, title")
+      .select("observation_id, title, content, category_id")
       .in("observation_id", orderedIds)
 
-    if (observations) {
-      // .in() does not preserve order — re-key by observation_id and
-      // reassemble in the original attached_at-desc order.
-      const titleByObs = new Map(
+    // category_id → slug lookup. Categories is a small lookup table;
+    // one query for all distinct ids is cheaper than embedding.
+    const categoryIds = Array.from(
+      new Set(
         (
-          observations as Array<{ observation_id: string; title: string | null }>
-        ).map((o) => [o.observation_id, o.title || "Untitled"]),
-      )
-      representative_titles = orderedIds.map(
-        (id) => titleByObs.get(id) ?? "Untitled",
+          (observations ?? []) as Array<{ category_id: string | null }>
+        )
+          .map((o) => o.category_id)
+          .filter((id): id is string => typeof id === "string"),
+      ),
+    )
+    let slugByCategoryId = new Map<string, string>()
+    if (categoryIds.length > 0) {
+      const { data: cats } = await supabase
+        .from("categories")
+        .select("id, slug")
+        .in("id", categoryIds)
+      slugByCategoryId = new Map(
+        ((cats ?? []) as Array<{ id: string; slug: string | null }>)
+          .filter((c) => typeof c.slug === "string")
+          .map((c) => [c.id, c.slug as string]),
       )
     }
+
+    const obsById = new Map(
+      (
+        (observations ?? []) as Array<{
+          observation_id: string
+          title: string | null
+          content: string | null
+          category_id: string | null
+        }>
+      ).map((o) => [o.observation_id, o]),
+    )
+
+    representatives = orderedIds
+      .map((id) => {
+        const o = obsById.get(id)
+        if (!o) return null
+        const trimmedBody = (o.content ?? "").trim()
+        const body_snippet =
+          trimmedBody.length > 0
+            ? clipText(trimmedBody, REPRESENTATIVE_BODY_SNIPPET_CHARS)
+            : null
+        const topic_slug =
+          o.category_id != null ? slugByCategoryId.get(o.category_id) ?? null : null
+        return {
+          observation_id: id,
+          title: (o.title ?? "").trim() || "Untitled",
+          body_snippet,
+          topic_slug,
+          is_canonical: id === canonicalId,
+        } satisfies FamilyRepresentative
+      })
+      .filter((r): r is FamilyRepresentative => r !== null)
   }
 
   // Apply heuristic rules. The new inputs (low_margin_count,
@@ -605,11 +766,19 @@ export async function classifyClusterFamily(
     avg_confidence_proxy: metadata.avg_confidence_proxy,
   })
 
-  // Try LLM title generation if OpenAI is available.
+  // Try LLM title generation if OpenAI is available. Track an explicit
+  // status so evidence can distinguish "no key configured" from "model
+  // returned junk" — both produce a heuristic-only fallback but the
+  // remediation paths are different.
   let llmResult: LlmTitleResult | null = null
-  if (process.env.OPENAI_API_KEY && representative_titles.length > 0) {
+  let llmStatus: LlmStatus
+  if (!process.env.OPENAI_API_KEY) {
+    llmStatus = "skipped_missing_api_key"
+  } else if (representatives.length === 0) {
+    llmStatus = "skipped_no_representatives"
+  } else {
     llmResult = await callFamilyTitleModel(DEFAULT_LLM_MODEL, {
-      representative_titles,
+      representatives,
       topic_distribution: metadata.topic_distribution,
       dominant_topic_slug: metadata.dominant_topic_slug,
       common_matched_phrases: metadata.common_matched_phrases,
@@ -618,6 +787,13 @@ export async function classifyClusterFamily(
       low_margin_count: metadata.low_margin_count,
       observation_count: metadata.observation_count,
     })
+    if (!llmResult) {
+      llmStatus = "failed"
+    } else if (llmResult.confidence < 0.5) {
+      llmStatus = "low_confidence_fallback"
+    } else {
+      llmStatus = "succeeded"
+    }
   }
 
   // Fallback title if LLM unavailable.
@@ -643,7 +819,7 @@ export async function classifyClusterFamily(
     const topPhrase =
       metadata.common_matched_phrases.length > 0
         ? metadata.common_matched_phrases[0].phrase
-        : representative_titles[0] || "Family"
+        : representatives[0]?.title || "Family"
     family_title = clipText(`${topicDisplay} — ${topPhrase}`, TITLE_MAX_CHARS)
     const reportWord = metadata.observation_count === 1 ? "report" : "reports"
     family_summary = clipText(
@@ -667,9 +843,41 @@ export async function classifyClusterFamily(
     )
   }
 
-  // Build evidence payload for audit. Provenance lets reviewers trace
-  // a row back to the exact LLM call (model + request_id + latency +
-  // prompt template version) that produced it.
+  // LLM disagreement signal. When the LLM commits to a different
+  // family_kind than the heuristic, we DO NOT overwrite the heuristic
+  // (heuristic stays authoritative — see CLUSTERING_DESIGN.md §5.1)
+  // but we add `llm_disagrees_with_heuristic` to review_reasons and
+  // force `needs_human_review = true`. The model's suggestion is also
+  // captured in `evidence.llm` for the reviewer to inspect.
+  const reviewReasons = [...heuristic.review_reasons]
+  let needsHumanReview = heuristic.needs_human_review
+  if (
+    llmResult?.suggested_family_kind &&
+    llmResult.suggested_family_kind !== heuristic.family_kind
+  ) {
+    reviewReasons.push("llm_disagrees_with_heuristic")
+    needsHumanReview = true
+  }
+
+  // Build evidence payload for audit. Always emit `llm` (with status)
+  // even when the LLM was skipped, so reviewers can tell why a generic
+  // fallback title was used.
+  const lowMarginShare =
+    metadata.observation_count > 0
+      ? metadata.low_margin_count / metadata.observation_count
+      : 0
+
+  const llmEvidence: LlmEvidenceBlock = {
+    status: llmStatus,
+    prompt_template_version: PROMPT_TEMPLATE_VERSION,
+    model: llmResult?.provenance.model ?? null,
+    request_id: llmResult?.provenance.request_id ?? null,
+    latency_ms: llmResult?.provenance.latency_ms ?? null,
+    confidence: llmResult?.confidence ?? null,
+    rationale: llmResult?.rationale ?? null,
+    suggested_family_kind: llmResult?.suggested_family_kind ?? null,
+  }
+
   const evidence = {
     cluster_topic_metadata: {
       cluster_path: metadata.cluster_path,
@@ -681,17 +889,12 @@ export async function classifyClusterFamily(
       dominant_topic_share: metadata.dominant_topic_share,
       mixed_topic_score: metadata.mixed_topic_score,
       low_margin_count: metadata.low_margin_count,
+      low_margin_share: lowMarginShare,
       avg_confidence_proxy: metadata.avg_confidence_proxy,
       common_matched_phrases: metadata.common_matched_phrases,
     },
-    representatives: representative_titles.slice(0, 5),
-    llm_result: llmResult
-      ? {
-          confidence: llmResult.confidence,
-          rationale: llmResult.rationale,
-          provenance: llmResult.provenance,
-        }
-      : null,
+    representatives,
+    llm: llmEvidence,
   }
 
   return {
@@ -709,8 +912,8 @@ export async function classifyClusterFamily(
     // "unknown" by design — see CLUSTERING_DESIGN.md §5.1.
     severity_rollup: "unknown",
     confidence,
-    needs_human_review: heuristic.needs_human_review,
-    review_reasons: heuristic.review_reasons,
+    needs_human_review: needsHumanReview,
+    review_reasons: reviewReasons,
     evidence,
   }
 }
