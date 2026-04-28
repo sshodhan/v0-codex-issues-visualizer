@@ -159,7 +159,7 @@ export function InsightKpiCard({
                   : "bg-[var(--positive)]/10 text-[var(--positive)]"
               )}>
                 {metrics.momentum! > 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-                {metrics.momentum! > 0 ? "+" : ""}{metrics.momentum}%
+                {metrics.momentum! > 0 ? "+" : ""}{metrics.momentum}
               </span>
             )}
           </div>

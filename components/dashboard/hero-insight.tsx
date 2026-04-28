@@ -149,7 +149,7 @@ export function HeroInsight({
                 >
                   {isRising ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
                   {isRising ? "+" : ""}
-                  {metrics.momentum}% vs last period
+                  {metrics.momentum} vs last period
                 </Badge>
               </div>
               <h2 className="text-2xl md:text-3xl font-bold text-foreground mb-2 text-balance">{headline}</h2>
@@ -263,7 +263,7 @@ export function HeroInsight({
                     <TrendingDown className="h-3 w-3 mr-1" />
                   )}
                   {isRising ? "+" : ""}
-                  {metrics.momentum}% vs prior 72h
+                  {metrics.momentum} vs prior 72h
                 </Badge>
               </div>
 
