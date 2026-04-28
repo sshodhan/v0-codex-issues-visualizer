@@ -22,6 +22,17 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  type BucketFilter,
+  type QualityBucket,
+  type QualityResponse,
+  type QualityRow,
+  type QualitySummary,
+  deriveBucketCounts,
+  filterRowsByBucket,
+  isBadLlmStatus,
+  normalizeQualityRow,
+} from "@/lib/admin/family-classification-quality-ui"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 
 const ROUTE = "/api/admin/family-classification"
@@ -500,40 +511,6 @@ function FamilyEvidenceCard({ draft, dryRun }: { draft: FamilyDraft; dryRun: boo
 
 const QUALITY_ROUTE = "/api/admin/family-classification/quality?limit=200"
 
-type QualityBucket = "safe_to_trust" | "needs_review" | "input_problem"
-
-interface QualityRow {
-  cluster_id: string
-  quality_bucket: QualityBucket
-  family_kind: string | null
-  recommended_action: string
-  review_reasons: string[]
-  quality_reasons: string[]
-  classification_coverage_share: number | null
-  mixed_topic_score: number | null
-  observation_count: number
-  llm_status: string | null
-  llm_model: string | null
-  representative_count: number
-  representative_preview: string[]
-  common_matched_phrase_count: number
-  common_matched_phrase_preview: string[]
-  needs_human_review: boolean
-  algorithm_version: string | null
-  classified_at: string | null
-  llm_classified_at: string | null
-  updated_at: string | null
-}
-
-interface QualitySummary {
-  bucket_counts: Record<string, number>
-}
-
-interface QualityResponse {
-  summary?: Partial<QualitySummary>
-  rows?: unknown[]
-}
-
 const QUALITY_BUCKET_STYLES: Record<QualityBucket, string> = {
   input_problem: "bg-red-50/70 border-red-300 dark:bg-red-950/20",
   needs_review: "bg-amber-50/70 border-amber-300 dark:bg-amber-950/20",
@@ -552,113 +529,6 @@ function bucketLabel(bucket: string | null | undefined): string {
   }
   return "—"
 }
-
-// LLM statuses that indicate the LLM step did NOT cleanly succeed. We
-// accept multiple vocabularies because the source-of-truth has shifted
-// over time: the route's typed enum uses "success"/"error"/"auth_error"/
-// "needs_review"/"needs_human_review", but earlier writers used
-// "succeeded"/"failed"/"skipped_*"/"low_confidence_fallback". Any
-// status not in BAD_LLM_STATUSES and not equal to a success keyword
-// counts as a clean run.
-const BAD_LLM_STATUSES = new Set<string>([
-  "failed",
-  "error",
-  "auth_error",
-  "skipped_missing_api_key",
-  "skipped_no_representatives",
-  "low_confidence_fallback",
-  "needs_review",
-  "needs_human_review",
-])
-
-function isBadLlmStatus(status: string | null | undefined): boolean {
-  if (!status) return false
-  return BAD_LLM_STATUSES.has(status)
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null
-}
-
-function asNumber(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null
-  if (typeof value === "string") {
-    const n = Number(value.trim())
-    return Number.isFinite(n) ? n : null
-  }
-  return null
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((v): v is string => typeof v === "string")
-}
-
-function normalizeBucket(value: unknown): QualityBucket {
-  if (value === "safe_to_trust" || value === "needs_review" || value === "input_problem") {
-    return value
-  }
-  return "needs_review"
-}
-
-// Tolerate both the current API shape and any near-miss field renames
-// (qualityBucket vs quality_bucket, etc.) so the dashboard does not
-// silently zero out if the endpoint gets reshaped.
-function normalizeQualityRow(input: unknown): QualityRow | null {
-  if (!input || typeof input !== "object") return null
-  const r = input as Record<string, unknown>
-  const cluster_id = asString(r.cluster_id) ?? asString(r.clusterId)
-  if (!cluster_id) return null
-  return {
-    cluster_id,
-    quality_bucket: normalizeBucket(r.quality_bucket ?? r.qualityBucket),
-    family_kind: asString(r.family_kind) ?? asString(r.familyKind),
-    recommended_action:
-      asString(r.recommended_action) ?? asString(r.recommendedAction) ?? "",
-    review_reasons: asStringArray(r.review_reasons ?? r.reviewReasons),
-    quality_reasons: asStringArray(r.quality_reasons ?? r.qualityReasons),
-    classification_coverage_share: asNumber(
-      r.classification_coverage_share ?? r.classificationCoverageShare,
-    ),
-    mixed_topic_score: asNumber(r.mixed_topic_score ?? r.mixedTopicScore),
-    observation_count: asNumber(r.observation_count ?? r.observationCount) ?? 0,
-    llm_status: asString(r.llm_status) ?? asString(r.llmStatus),
-    llm_model: asString(r.llm_model) ?? asString(r.llmModel),
-    representative_count: asNumber(r.representative_count ?? r.representativeCount) ?? 0,
-    representative_preview: asStringArray(r.representative_preview ?? r.representativePreview),
-    common_matched_phrase_count:
-      asNumber(r.common_matched_phrase_count ?? r.commonMatchedPhraseCount) ?? 0,
-    common_matched_phrase_preview: asStringArray(
-      r.common_matched_phrase_preview ?? r.commonMatchedPhrasePreview,
-    ),
-    needs_human_review: r.needs_human_review === true || r.needsHumanReview === true,
-    algorithm_version: asString(r.algorithm_version) ?? asString(r.algorithmVersion),
-    classified_at: asString(r.classified_at) ?? asString(r.classifiedAt),
-    llm_classified_at: asString(r.llm_classified_at) ?? asString(r.llmClassifiedAt),
-    updated_at: asString(r.updated_at) ?? asString(r.updatedAt),
-  }
-}
-
-// Falls back to recomputing bucket counts from rows when the server
-// summary is missing or partial. Empty cards driven by a schema
-// mismatch are worse than no dashboard.
-function deriveBucketCounts(
-  summary: Partial<QualitySummary> | undefined,
-  rows: QualityRow[],
-): Record<string, number> {
-  const fromServer = summary?.bucket_counts
-  if (fromServer && typeof fromServer === "object") {
-    const hasAny = Object.values(fromServer).some((v) => typeof v === "number")
-    if (hasAny) return fromServer
-  }
-  const counts: Record<string, number> = {}
-  for (const r of rows) {
-    counts[r.quality_bucket] = (counts[r.quality_bucket] ?? 0) + 1
-  }
-  return counts
-}
-
-type BucketFilter = "all" | QualityBucket
 
 const TABLE_COLUMN_COUNT = 9
 
@@ -700,10 +570,7 @@ function FamilyQualityDashboard({
     r.quality_reasons.includes("fallback_cluster_path"),
   ).length
 
-  const filteredRows =
-    bucketFilter === "all"
-      ? rows
-      : rows.filter((r) => r.quality_bucket === bucketFilter)
+  const filteredRows = filterRowsByBucket(rows, bucketFilter)
 
   return (
     <Card className="border-dashed">
