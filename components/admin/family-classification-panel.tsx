@@ -78,14 +78,21 @@ function StatTile({
   label,
   value,
   hint,
+  emphasis,
 }: {
   label: string
   value: number | null | undefined
   hint?: string
+  emphasis?: boolean
 }) {
   const display = typeof value === "number" ? value.toLocaleString() : "—"
   return (
-    <div className="rounded-md border p-3">
+    <div
+      className={
+        "rounded-md border p-3 " +
+        (emphasis ? "border-amber-500/50 bg-amber-50/40 dark:bg-amber-950/20" : "")
+      }
+    >
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="text-xl font-semibold tabular-nums">{display}</div>
       {hint ? (
@@ -281,6 +288,7 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               label="Total clusters"
               value={stats?.total_clusters}
               hint="Every row in the clusters table."
+              emphasis={false}
             />
             <StatTile
               label="Without classification"

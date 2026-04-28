@@ -6,7 +6,7 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 const LOG_COMPONENT = "family-classification"
 
-type AdminClient = ReturnType<typeof import("@/lib/supabase/admin").createAdminClient>
+type AdminClient = SupabaseClient
 
 // Heuristic-first family classification rules. These determine
 // `family_kind` and initial `needs_human_review` without LLM calls.

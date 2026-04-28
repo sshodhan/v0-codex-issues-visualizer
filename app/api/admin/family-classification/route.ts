@@ -176,23 +176,43 @@ export async function POST(request: NextRequest) {
 
   // Otherwise, classify top clusters by observation count (without an existing classification).
   try {
-    // Find clusters without a family_classification, ordered by size.
-    const { data: candidates, error: candErr } = await supabase
-      .from("clusters")
-      .select("id")
-      .not("id", "in", `(select distinct cluster_id from family_classifications)`)
-      .order("id", { ascending: false })
-      .limit(limit)
+    // First, get clusters that already have classifications.
+    const { data: classified, error: classifiedErr } = await supabase
+      .from("family_classifications")
+      .select("cluster_id", { count: "exact", head: false })
+      .distinct()
 
-    if (candErr) {
-      logServerError("admin-family-classification", "candidate_list_failed", candErr)
+    if (classifiedErr) {
+      logServerError("admin-family-classification", "classified_list_failed", classifiedErr)
       return NextResponse.json(
-        { error: "Failed to list candidate clusters" },
+        { error: "Failed to list classified clusters" },
         { status: 500 },
       )
     }
 
-    const clusterIds = (candidates ?? []).map((c) => c.id)
+    const classifiedIds = new Set((classified ?? []).map((c: { cluster_id: string }) => c.cluster_id))
+
+    // Find clusters without a family_classification, ordered by id.
+    const { data: allClusters, error: allErr } = await supabase
+      .from("clusters")
+      .select("id")
+      .order("id", { ascending: false })
+      .limit(limit * 2) // Fetch more to account for filtering
+
+    if (allErr) {
+      logServerError("admin-family-classification", "cluster_list_failed", allErr)
+      return NextResponse.json(
+        { error: "Failed to list clusters" },
+        { status: 500 },
+      )
+    }
+
+    // Filter out already-classified clusters
+    const candidates = (allClusters ?? [])
+      .filter((c: { id: string }) => !classifiedIds.has(c.id))
+      .slice(0, limit)
+
+    const clusterIds = candidates.map((c: { id: string }) => c.id)
     const wouldProcess = clusterIds.length
 
     if (dryRun) {
@@ -212,7 +232,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Apply: classify each and write.
-    let classified = 0
+    let classifiedCount = 0
     let failed = 0
     const failedIds: string[] = []
 
@@ -248,7 +268,7 @@ export async function POST(request: NextRequest) {
           failed++
           failedIds.push(clusterId)
         } else {
-          classified++
+          classifiedCount++
         }
       } catch (error) {
         failed++
@@ -265,7 +285,7 @@ export async function POST(request: NextRequest) {
       level: "info",
       data: {
         candidates: wouldProcess,
-        classified,
+        classified: classifiedCount,
         failed,
         failed_ids: failedIds.slice(0, 10),
       },
@@ -274,7 +294,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       dryRun: false,
       candidates: wouldProcess,
-      classified,
+      classified: classifiedCount,
       failed,
       wouldProcess,
     } as BackfillResult)
