@@ -25,12 +25,24 @@ export const maxDuration = 300
 
 const DEFAULT_LIMIT = 50
 const MAX_LIMIT = 500
+const PENDING_DEFAULT_LIMIT = 20
+const PENDING_MAX_LIMIT = 100
 const CURRENT_FAMILY_VERSION = CURRENT_VERSIONS.family_classification
+
+interface PendingCluster {
+  cluster_id: string
+  observation_count: number
+  dominant_topic_slug: string | null
+  classification_coverage_share: number
+  mixed_topic_score: number
+  cluster_path: string
+}
 
 interface BackfillStats {
   total_clusters: number | null
   without_classification: number | null
   algorithm_version: string
+  pending?: PendingCluster[]
 }
 
 interface BackfillResult {
@@ -48,9 +60,28 @@ interface BackfillResult {
 // version (or is missing entirely). After a version bump this stat
 // surfaces all stale clusters as work to do, not just the
 // never-classified ones.
+//
+// Optional `?pending=N` (default 20, max 100) additionally returns up to
+// N pending clusters (largest by observation_count first), with the
+// metadata the panel needs to render a per-row "Classify" button. This
+// powers the "step through the backlog one cluster at a time" workflow
+// when batch classification can't fit inside Vercel's gateway timeout.
 export async function GET(request: NextRequest) {
   const authErr = requireAdminSecret(request)
   if (authErr) return authErr
+
+  const url = new URL(request.url)
+  const pendingParam = url.searchParams.get("pending")
+  const pendingLimit =
+    pendingParam !== null
+      ? Math.max(
+          1,
+          Math.min(
+            Number.parseInt(pendingParam, 10) || PENDING_DEFAULT_LIMIT,
+            PENDING_MAX_LIMIT,
+          ),
+        )
+      : null
 
   const supabase = createAdminClient()
   try {
@@ -78,11 +109,70 @@ export async function GET(request: NextRequest) {
         ? Math.max(0, total - atCurrentVersion)
         : null
 
-    return NextResponse.json({
+    const response: BackfillStats = {
       total_clusters: total,
       without_classification: without,
       algorithm_version: CURRENT_FAMILY_VERSION,
-    } as BackfillStats)
+    }
+
+    if (pendingLimit != null) {
+      // Same shape as the POST batch path: list cluster_ids already at
+      // the current version, then rank by observation_count from the
+      // topic-metadata MV and filter out the up-to-date ones.
+      const { data: currentRows, error: currentListErr } = await supabase
+        .from("family_classification_current")
+        .select("cluster_id, algorithm_version")
+        .eq("algorithm_version", CURRENT_FAMILY_VERSION)
+
+      if (currentListErr) {
+        logServerError(
+          "admin-family-classification",
+          "pending_current_list_failed",
+          currentListErr,
+        )
+      }
+
+      const upToDate = new Set(
+        (currentRows ?? []).map((c: { cluster_id: string }) => c.cluster_id),
+      )
+
+      const { data: ranked, error: rankedErr } = await supabase
+        .from("mv_cluster_topic_metadata")
+        .select(
+          "cluster_id, observation_count, dominant_topic_slug, classification_coverage_share, mixed_topic_score, cluster_path",
+        )
+        .order("observation_count", { ascending: false })
+        .limit(pendingLimit * 4)
+
+      if (rankedErr) {
+        logServerError(
+          "admin-family-classification",
+          "pending_ranked_list_failed",
+          rankedErr,
+        )
+      }
+
+      response.pending = (ranked ?? [])
+        .filter((c: { cluster_id: string }) => !upToDate.has(c.cluster_id))
+        .slice(0, pendingLimit)
+        .map((c: {
+          cluster_id: string
+          observation_count: number | null
+          dominant_topic_slug: string | null
+          classification_coverage_share: number | string | null
+          mixed_topic_score: number | string | null
+          cluster_path: string | null
+        }) => ({
+          cluster_id: c.cluster_id,
+          observation_count: c.observation_count ?? 0,
+          dominant_topic_slug: c.dominant_topic_slug ?? null,
+          classification_coverage_share: Number(c.classification_coverage_share ?? 0),
+          mixed_topic_score: Number(c.mixed_topic_score ?? 0),
+          cluster_path: c.cluster_path ?? "semantic",
+        }))
+    }
+
+    return NextResponse.json(response)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     logServerError("admin-family-classification", "get_stats_failed", error)

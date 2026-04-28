@@ -18,11 +18,23 @@ import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logg
 
 const ROUTE = "/api/admin/family-classification"
 
+interface PendingCluster {
+  cluster_id: string
+  observation_count: number
+  dominant_topic_slug: string | null
+  classification_coverage_share: number
+  mixed_topic_score: number
+  cluster_path: string
+}
+
 interface Stats {
   total_clusters: number | null
   without_classification: number | null
   algorithm_version?: string
+  pending?: PendingCluster[]
 }
+
+const PENDING_LIST_PAGE_SIZE = 25
 
 // Mirrors lib/storage/family-classification.ts → FamilyClassificationDraft.
 // Kept as a JSON-shape interface here (loose) so the panel doesn't have
@@ -476,6 +488,18 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
 
+  const [pendingList, setPendingList] = useState<PendingCluster[]>([])
+  const [pendingError, setPendingError] = useState<string | null>(null)
+  // cluster_id of the row whose Classify button is currently in flight,
+  // null when nothing's running. Single-in-flight is intentional — the
+  // whole reason this exists is that batch processing busts the gateway
+  // timeout, so firing parallel calls would defeat the point.
+  const [pendingRunningId, setPendingRunningId] = useState<string | null>(null)
+  const [pendingRowError, setPendingRowError] = useState<{
+    cluster_id: string
+    message: string
+  } | null>(null)
+
   const [singleClusterId, setSingleClusterId] = useState("")
   const [running, setRunning] = useState<null | "dryRun" | "singleCluster" | "batch">(null)
   const [runError, setRunError] = useState<string | null>(null)
@@ -484,14 +508,23 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const loadStats = async () => {
     setStatsLoading(true)
     setStatsError(null)
+    setPendingError(null)
     try {
-      const res = await fetch(ROUTE, { headers: authHeaders(secret) })
+      // ?pending=N piggybacks on the stats call so the panel only does
+      // one round-trip on mount/refresh. The server returns the top N
+      // unclassified clusters by observation_count.
+      const res = await fetch(
+        `${ROUTE}?pending=${PENDING_LIST_PAGE_SIZE}`,
+        { headers: authHeaders(secret) },
+      )
       if (!res.ok) throw new Error(await explainAdminFailure(res))
       const data = (await res.json()) as Stats
       setStats(data)
+      setPendingList(data.pending ?? [])
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       setStatsError(message)
+      setPendingError(message)
       logClientError(e, "admin-family-classification-stats-failed")
     } finally {
       setStatsLoading(false)
@@ -502,6 +535,62 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     loadStats()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secret])
+
+  // Classify a single cluster from the pending list. Reuses the
+  // single-cluster POST path so the rich evidence card renders below
+  // (same as the manual paste-and-Classify flow). On success the row
+  // is dropped from the list and the without_classification stat is
+  // optimistically decremented so the UI doesn't need to wait for a
+  // round-trip; the next loadStats() reconciles.
+  const runFromPending = async (clusterId: string) => {
+    if (pendingRunningId || running) return
+    setPendingRunningId(clusterId)
+    setPendingRowError(null)
+    setRunError(null)
+    setLastResult(null)
+    const startedAt = Date.now()
+    try {
+      const res = await fetch(ROUTE, {
+        method: "POST",
+        headers: authHeaders(secret),
+        body: JSON.stringify({ clusterId, dryRun: false }),
+      })
+      if (!res.ok) {
+        const message = await explainAdminFailure(res)
+        logClientError(new Error(message), "admin-family-classification-pending-row-failed", {
+          cluster_id: clusterId,
+          status: res.status,
+        })
+        throw new Error(message)
+      }
+      const data = (await res.json()) as BackfillResult
+      setLastResult(data)
+      setPendingList((current: PendingCluster[]) =>
+        current.filter((c: PendingCluster) => c.cluster_id !== clusterId),
+      )
+      setStats((current: Stats | null) =>
+        current
+          ? {
+              ...current,
+              without_classification:
+                typeof current.without_classification === "number"
+                  ? Math.max(0, current.without_classification - 1)
+                  : current.without_classification,
+            }
+          : current,
+      )
+      logClientEvent("admin-family-classification-pending-row-succeeded", {
+        cluster_id: clusterId,
+        family_kind: data.draft?.family_kind,
+        durationMs: Date.now() - startedAt,
+      })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setPendingRowError({ cluster_id: clusterId, message })
+    } finally {
+      setPendingRunningId(null)
+    }
+  }
 
   const runSingleCluster = async () => {
     if (!singleClusterId.trim()) {
@@ -680,12 +769,16 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
                   placeholder="Paste cluster UUID here"
                   value={singleClusterId}
                   onChange={(e) => setSingleClusterId(e.target.value)}
-                  disabled={running !== null}
+                  disabled={running !== null || pendingRunningId !== null}
                   className="text-sm"
                 />
                 <Button
                   onClick={runSingleCluster}
-                  disabled={running !== null || !singleClusterId.trim()}
+                  disabled={
+                    running !== null ||
+                    pendingRunningId !== null ||
+                    !singleClusterId.trim()
+                  }
                   size="sm"
                 >
                   {running === "singleCluster" ? (
@@ -699,12 +792,148 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
             </div>
           </div>
 
+          {/* Pending-list browser. Each row classifies a single cluster
+              within the gateway timeout — useful when full batch
+              classification can't fit in one request (e.g. with slow
+              LLM calls). Largest clusters by observation_count first,
+              same ordering as the batch path. */}
+          <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold uppercase text-muted-foreground">
+                  Pending clusters (one at a time)
+                </div>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  Top {PENDING_LIST_PAGE_SIZE} by observation count. Each
+                  classify is a single OpenAI call so it fits inside the
+                  request timeout.
+                </p>
+              </div>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                {pendingList.length} shown
+                {typeof stats?.without_classification === "number"
+                  ? ` of ${stats.without_classification.toLocaleString()} pending`
+                  : ""}
+              </span>
+            </div>
+
+            {pendingError ? (
+              <Alert variant="destructive">
+                <AlertTitle>Could not load pending clusters</AlertTitle>
+                <AlertDescription className="text-xs">{pendingError}</AlertDescription>
+              </Alert>
+            ) : null}
+
+            {pendingList.length === 0 && !pendingError && !statsLoading ? (
+              <div className="rounded-md border border-dashed bg-background/50 p-4 text-center text-xs text-muted-foreground">
+                No pending clusters at the current algorithm version.
+              </div>
+            ) : null}
+
+            {pendingList.length > 0 ? (
+              <ul className="space-y-1.5">
+                {pendingList.map((row: PendingCluster) => {
+                  const isRunning = pendingRunningId === row.cluster_id
+                  const rowError =
+                    pendingRowError?.cluster_id === row.cluster_id
+                      ? pendingRowError.message
+                      : null
+                  return (
+                    <li
+                      key={row.cluster_id}
+                      className="rounded-md border bg-background/50 p-2 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                          {row.cluster_id}
+                        </code>
+                        <Badge variant="outline" className="text-[10px] font-normal">
+                          {row.observation_count} obs
+                        </Badge>
+                        {row.dominant_topic_slug ? (
+                          <Badge variant="secondary" className="text-[10px] font-normal">
+                            {row.dominant_topic_slug}
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px] font-normal">
+                            unclassified
+                          </Badge>
+                        )}
+                        {row.cluster_path === "fallback" ? (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] font-normal"
+                            title="key-based cluster (not embedding-based)"
+                          >
+                            fallback
+                          </Badge>
+                        ) : null}
+                        <span
+                          className="text-[10px] text-muted-foreground tabular-nums"
+                          title="classification coverage / mixed-topic score"
+                        >
+                          cov {Math.round(row.classification_coverage_share * 100)}% · mix{" "}
+                          {row.mixed_topic_score.toFixed(2)}
+                        </span>
+                        <Button
+                          onClick={() => runFromPending(row.cluster_id)}
+                          disabled={
+                            running !== null ||
+                            (pendingRunningId !== null && !isRunning)
+                          }
+                          size="sm"
+                          variant="outline"
+                          className="ml-auto h-7 px-2 text-xs"
+                        >
+                          {isRunning ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : (
+                            <Play className="mr-1 h-3 w-3" />
+                          )}
+                          Classify
+                        </Button>
+                      </div>
+                      {rowError ? (
+                        <div className="mt-1 text-[11px] text-destructive">
+                          {rowError}
+                        </div>
+                      ) : null}
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : null}
+
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={loadStats}
+                disabled={statsLoading || pendingRunningId !== null}
+                className="h-7 px-2 text-xs"
+              >
+                {statsLoading ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-1 h-3 w-3" />
+                )}
+                Reload list
+              </Button>
+              <span className="text-[11px] text-muted-foreground">
+                After working through this page, reload to fetch the next
+                {" "}
+                {PENDING_LIST_PAGE_SIZE}.
+              </span>
+            </div>
+          </div>
+
           <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="outline"
               onClick={runDryRun}
-              disabled={running !== null}
+              disabled={running !== null || pendingRunningId !== null}
             >
               {running === "dryRun" ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
@@ -716,7 +945,11 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
             <Button
               type="button"
               onClick={runBatch}
-              disabled={running !== null || (stats?.without_classification ?? 0) === 0}
+              disabled={
+                running !== null ||
+                pendingRunningId !== null ||
+                (stats?.without_classification ?? 0) === 0
+              }
             >
               {running === "batch" ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
@@ -726,7 +959,10 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               Classify batch
             </Button>
             <p className="text-xs text-muted-foreground">
-              Dry run previews how many clusters would be processed. Classify batch applies classifications to unclassified clusters.
+              Dry run previews how many clusters would be processed.
+              Classify batch applies classifications to unclassified
+              clusters in one request — for slow OpenAI calls or large
+              backlogs, prefer the row-by-row list above.
             </p>
           </div>
 
