@@ -623,7 +623,11 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
             <div className="space-y-1">
               <CardTitle className="text-lg">Family Classification</CardTitle>
               <CardDescription>
-                Classify clusters into family_kind (coherent, mixed, low-evidence, etc.) with optional LLM-generated title/summary.
+                Heuristic-authoritative cluster interpretation. The
+                deterministic rules decide{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">family_kind</code>{" "}
+                and review requirements; the LLM enriches title/summary and
+                flags disagreement but never overrides the heuristic.
               </CardDescription>
             </div>
             <Button

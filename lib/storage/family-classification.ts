@@ -159,6 +159,42 @@ export function classifyFamilyHeuristic(input: HeuristicInput): HeuristicResult 
   }
 }
 
+// Combine the heuristic verdict with the LLM's coherence assessment.
+//
+// Trust contract (see CLUSTERING_DESIGN.md §5.1):
+//   - The heuristic's `family_kind` is ALWAYS authoritative. The LLM
+//     never silently overrides deterministic safety rules.
+//   - When the LLM commits to a different `suggested_family_kind`, we
+//     keep the heuristic's kind, append `llm_disagrees_with_heuristic`
+//     to `review_reasons`, and force `needs_human_review = true`.
+//   - The LLM CAN raise needs_review (via disagreement) but CANNOT
+//     downgrade an already-elevated review requirement.
+//
+// Extracted from the orchestrator so the safety invariant is unit-
+// testable without mocking Supabase + the OpenAI fetch.
+export function applyLlmDisagreement(input: {
+  heuristic: HeuristicResult
+  llm_suggested_family_kind: FamilyKind | null
+}): HeuristicResult {
+  const review_reasons = [...input.heuristic.review_reasons]
+  let needs_human_review = input.heuristic.needs_human_review
+  if (
+    input.llm_suggested_family_kind != null &&
+    input.llm_suggested_family_kind !== input.heuristic.family_kind
+  ) {
+    review_reasons.push("llm_disagrees_with_heuristic")
+    needs_human_review = true
+  }
+  return {
+    // family_kind is preserved from the heuristic — the LLM's
+    // suggestion is captured in evidence (see classifyClusterFamily)
+    // but never overwrites this value.
+    family_kind: input.heuristic.family_kind,
+    needs_human_review,
+    review_reasons,
+  }
+}
+
 interface LlmTitleInput {
   representatives: FamilyRepresentative[]
   topic_distribution: Record<string, number>
@@ -843,21 +879,14 @@ export async function classifyClusterFamily(
     )
   }
 
-  // LLM disagreement signal. When the LLM commits to a different
-  // family_kind than the heuristic, we DO NOT overwrite the heuristic
-  // (heuristic stays authoritative — see CLUSTERING_DESIGN.md §5.1)
-  // but we add `llm_disagrees_with_heuristic` to review_reasons and
-  // force `needs_human_review = true`. The model's suggestion is also
-  // captured in `evidence.llm` for the reviewer to inspect.
-  const reviewReasons = [...heuristic.review_reasons]
-  let needsHumanReview = heuristic.needs_human_review
-  if (
-    llmResult?.suggested_family_kind &&
-    llmResult.suggested_family_kind !== heuristic.family_kind
-  ) {
-    reviewReasons.push("llm_disagrees_with_heuristic")
-    needsHumanReview = true
-  }
+  // Apply the LLM disagreement signal. Heuristic stays authoritative
+  // — see applyLlmDisagreement() for the trust contract. The model's
+  // suggestion (whether agreeing or not) is also captured in
+  // `evidence.llm` for the reviewer to inspect.
+  const finalVerdict = applyLlmDisagreement({
+    heuristic,
+    llm_suggested_family_kind: llmResult?.suggested_family_kind ?? null,
+  })
 
   // Build evidence payload for audit. Always emit `llm` (with status)
   // even when the LLM was skipped, so reviewers can tell why a generic
@@ -912,8 +941,8 @@ export async function classifyClusterFamily(
     // "unknown" by design — see CLUSTERING_DESIGN.md §5.1.
     severity_rollup: "unknown",
     confidence,
-    needs_human_review: needsHumanReview,
-    review_reasons: reviewReasons,
+    needs_human_review: finalVerdict.needs_human_review,
+    review_reasons: finalVerdict.review_reasons,
     evidence,
   }
 }

@@ -837,19 +837,37 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="family-classification" className="space-y-4">
             <WhatToKnowCard
               title="Family Classification"
-              summary="Interpret each cluster into family_kind (coherent, mixed, low-evidence, etc.) with optional LLM-generated title/summary. Layer A interpretation, not a clustering change."
+              summary="Heuristic-authoritative cluster interpretation. The deterministic rules decide family_kind and review requirements; the LLM enriches title/summary and flags disagreement, but never overrides the heuristic."
               purpose={
-                <p>
-                  Generates a per-cluster family classification record that
-                  summarizes what the semantic family represents, how
-                  coherent it is, and whether it needs human review.
-                  Heuristic-first (always deterministic) with optional
-                  LLM refinement for title/summary. See{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    docs/CLUSTERING_DESIGN.md
-                  </code>{" "}
-                  §4.7.
-                </p>
+                <div className="space-y-2">
+                  <p>
+                    Generates a per-cluster family classification record that
+                    summarizes what the semantic family represents, how
+                    coherent it is, and whether it needs human review.
+                    Heuristic-first (always deterministic) with optional
+                    LLM refinement for title/summary plus a disagreement
+                    signal. See{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      docs/CLUSTERING_DESIGN.md
+                    </code>{" "}
+                    §5.1.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    <strong>Trust contract:</strong> the heuristic&apos;s{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">family_kind</code>{" "}
+                    is authoritative. LLM enrichment cannot downgrade
+                    deterministic{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">needs_human_review</code>.
+                    The LLM&apos;s{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">suggested_family_kind</code>{" "}
+                    is captured as a disagreement signal only — when it
+                    differs from the heuristic, the heuristic verdict is
+                    preserved and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">llm_disagrees_with_heuristic</code>{" "}
+                    is appended to{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">review_reasons</code>.
+                  </p>
+                </div>
               }
               pipelineFit={
                 <p>
@@ -862,12 +880,23 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     family_classifications
                   </code>
-                  . Reads from{" "}
+                  . Evidence rows store structured representatives
+                  (canonical-first; each carries{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    lib/storage/family-classification.ts
-                  </code>{" "}
-                  (heuristic rules + optional LLM). Does NOT mutate
-                  cluster membership, embeddings, or{" "}
+                    observation_id
+                  </code>
+                  ,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">title</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    body_snippet
+                  </code>
+                  , and{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">topic_slug</code>),
+                  the cluster&apos;s Layer A signals, and an{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">llm</code>{" "}
+                  block with status + provenance + disagreement
+                  signal. Does NOT mutate cluster membership,
+                  embeddings, or{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     clusters.label
                   </code>
