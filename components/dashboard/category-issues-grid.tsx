@@ -28,7 +28,14 @@ interface CategoryIssuesGridProps {
   skipFirstCategorySlug?: string | null
   maxIssuesPerCategory?: number
   onViewFullList?: (categorySlug: string) => void
+  /** When set and not "all", render only this category's card. */
+  categoryFilter?: string
 }
+
+// Categories with fewer than HOT_THRESHOLD observations in the now-window
+// move to the collapsed "Quiet" subgroup so the urgency story stays
+// scannable while keeping every active topic reachable.
+const HOT_THRESHOLD = 3
 
 function SentimentBar({ negativeRatio }: { negativeRatio: number }) {
   const negative = negativeRatio
@@ -175,21 +182,80 @@ function CategoryCard({
   )
 }
 
+function Legend() {
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-border pt-4 text-xs text-muted-foreground">
+      <span className="flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full bg-[var(--positive)]" />
+        Positive
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full bg-[var(--neutral)]" />
+        Neutral
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full bg-[var(--negative)]" />
+        Negative
+      </span>
+    </div>
+  )
+}
+
 export function CategoryIssuesGrid({
   insights,
   skipFirstCategorySlug,
   maxIssuesPerCategory = 3,
   onViewFullList,
+  categoryFilter,
 }: CategoryIssuesGridProps) {
+  const filterActive = !!categoryFilter && categoryFilter !== "" && categoryFilter !== "all"
+
+  // When the topic chip is active, the grid renders only that single
+  // category — no lead-story exclusion (the chip's category IS the focus),
+  // no hot/quiet partition.
+  if (filterActive) {
+    const filtered = insights.find((i) => i.category.slug === categoryFilter)
+    return (
+      <Card>
+        <CardHeader className="pb-4">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Zap className="h-4 w-4 text-amber-500" />
+            {filtered ? `${filtered.category.name} — recent activity` : "Selected topic"}
+          </CardTitle>
+          <CardDescription>
+            Showing the selected topic only. Clear the filter to see all themes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-4 pt-0">
+          {filtered ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              <CategoryCard
+                insight={filtered}
+                rank={insights.findIndex((i) => i.category.slug === filtered.category.slug) + 1}
+                maxIssues={maxIssuesPerCategory}
+                onViewFullList={onViewFullList}
+              />
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No observations for this topic in the last 72 hours.
+            </p>
+          )}
+          <Legend />
+        </CardContent>
+      </Card>
+    )
+  }
+
   // Filter out the hero category if specified
   const displayed = skipFirstCategorySlug
     ? insights.filter((i) => i.category.slug !== skipFirstCategorySlug)
     : insights
 
-  // Take top 6 categories for the grid
-  const displayCategories = displayed.slice(0, 6)
+  const hot = displayed.filter((i) => i.nowCount >= HOT_THRESHOLD)
+  const quiet = displayed.filter((i) => i.nowCount < HOT_THRESHOLD)
 
-  if (displayCategories.length === 0) {
+  if (displayed.length === 0) {
     return (
       <Card>
         <CardHeader className="pb-4">
@@ -212,6 +278,21 @@ export function CategoryIssuesGrid({
     )
   }
 
+  const renderCard = (insight: RealtimeInsight) => {
+    const globalRank = insights.findIndex(
+      (i) => i.category.slug === insight.category.slug
+    ) + 1
+    return (
+      <CategoryCard
+        key={insight.category.slug}
+        insight={insight}
+        rank={globalRank}
+        maxIssues={maxIssuesPerCategory}
+        onViewFullList={onViewFullList}
+      />
+    )
+  }
+
   return (
     <Card>
       <CardHeader className="pb-4">
@@ -221,45 +302,33 @@ export function CategoryIssuesGrid({
         </CardTitle>
         <CardDescription>
           {skipFirstCategorySlug
-            ? "More topics from the last 72 hours. The lead story above is #1 by urgency."
-            : "Top topics ranked by urgency (volume + momentum + impact + source diversity)"}
+            ? "All topics from the last 72 hours. The lead story above is #1 by urgency."
+            : "All topics ranked by urgency (volume + momentum + impact + source diversity)"}
         </CardDescription>
       </CardHeader>
 
       <CardContent className="p-4 pt-0">
-        {/* 2-Column Responsive Grid */}
-        <div className="grid gap-4 md:grid-cols-2">
-          {displayCategories.map((insight) => {
-            const globalRank = insights.findIndex(
-              (i) => i.category.slug === insight.category.slug
-            ) + 1
-            return (
-              <CategoryCard
-                key={insight.category.slug}
-                insight={insight}
-                rank={globalRank}
-                maxIssues={maxIssuesPerCategory}
-                onViewFullList={onViewFullList}
-              />
-            )
-          })}
-        </div>
+        {hot.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No themes with {HOT_THRESHOLD}+ observations in the last 72 hours.
+          </p>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">{hot.map(renderCard)}</div>
+        )}
 
-        {/* Legend */}
-        <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-border pt-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--positive)]" />
-            Positive
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--neutral)]" />
-            Neutral
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[var(--negative)]" />
-            Negative
-          </span>
-        </div>
+        {quiet.length > 0 && (
+          <details className="mt-4 group">
+            <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+              Show {quiet.length} quiet {quiet.length === 1 ? "category" : "categories"}{" "}
+              <span className="text-xs text-muted-foreground">
+                (fewer than {HOT_THRESHOLD} observations in 72h)
+              </span>
+            </summary>
+            <div className="mt-3 grid gap-4 md:grid-cols-2">{quiet.map(renderCard)}</div>
+          </details>
+        )}
+
+        <Legend />
       </CardContent>
     </Card>
   )

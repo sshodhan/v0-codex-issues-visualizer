@@ -384,8 +384,15 @@ urgencyScore =
   + (sourceDiversity-1) * 0.8
 ```
 
-The top 6 categories by `urgencyScore` are returned, each with up to 3 sample
-issues sorted by `impact_score` desc.
+All categories with activity in the now-window or the prior 72h window are
+returned, sorted by `urgencyScore` desc, each with up to 3 sample issues
+sorted by `impact_score` desc. The dashboard partitions the result into
+"hot" (`nowCount >= HOT_THRESHOLD`) and a collapsed "quiet" subgroup so the
+urgency story stays scannable while every active topic remains reachable;
+see `docs/reviews/hot-themes-coverage-proposal.md` for the rationale.
+Categories that appear only in the prior window are returned with
+`avgImpact = 0` and `negativeRatio = 0` — display fields are zeroed rather
+than NaN, and `urgencyScore` ranks below every active bucket.
 
 Notes:
 

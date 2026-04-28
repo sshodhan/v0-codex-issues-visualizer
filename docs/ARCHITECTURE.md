@@ -698,6 +698,17 @@ Notes on what is *not* a separate term:
   stored on any row and not consumed here. See `docs/SCORING.md` for the
   full story.
 
+Coverage: `computeRealtimeInsights` returns **every** category with activity
+in the now-window or the prior 72h window — there is no `slice(0, N)` cap.
+The Triage tab partitions the result in the UI: cards with
+`nowCount >= HOT_THRESHOLD` (currently 3) render in the main grid; the rest
+collapse under a "Show N quiet categories" expander
+(`components/dashboard/category-issues-grid.tsx`). This keeps low-volume
+slugs (e.g. `security`, `model-quality`) reachable from the dashboard while
+preserving the urgency-ranked lead story. See
+`docs/reviews/hot-themes-coverage-proposal.md` for the investigation that
+motivated removing the cap.
+
 Future improvements:
 1. Add cross-source duplicate clustering (same story across HN + Reddit).
 2. Per-category dynamic thresholds (some categories are noisy by default).
