@@ -122,14 +122,20 @@ test("LABEL_MODEL.OPENAI_PREFIX matches the prefix the writer composes", () => {
   assert.equal(LABEL_MODEL.OPENAI_PREFIX, "openai:")
 })
 
-// Static guard: no consumer file may regress to a hardcoded `0.4`
-// literal next to `label_confidence`. This catches the easy-to-miss
-// "I just inlined the number again" review failure that the
-// MIN_DISPLAYABLE_LABEL_CONFIDENCE refactor was meant to prevent.
-test("no UI consumer hardcodes 0.4 next to label_confidence", () => {
+// Static guard: no consumer file may regress to ANY hardcoded numeric
+// literal compared against `label_confidence`. The previous version of
+// this guard pinned only `0.4`, which let a `0.6` literal in
+// components/dashboard/family-card.tsx silently suppress every
+// deterministic fallback label. The check now matches any numeric
+// threshold (and any comparison operator) so the next drift fails the
+// suite regardless of which value gets inlined.
+test("no UI consumer hardcodes a numeric threshold next to label_confidence", () => {
   const dirs = ["app", "components/dashboard"]
   const offenders: Array<{ file: string; line: number; text: string }> = []
-  const literalRegex = /label_confidence[^\n]*?>=\s*0\.4\b/
+  // Matches `label_confidence <op> <number>` and the symmetric
+  // `<number> <op> label_confidence` (e.g. `0.6 <= label_confidence`).
+  const literalLhs = /label_confidence[^\n]*?(?:>=|<=|>|<|===|!==|==|!=)\s*(?:-?\d+(?:\.\d+)?|\.\d+)/
+  const literalRhs = /(?:-?\d+(?:\.\d+)?|\.\d+)\s*(?:>=|<=|>|<|===|!==|==|!=)[^\n]*?label_confidence/
 
   function walk(dir: string): string[] {
     const out: string[] = []
@@ -149,7 +155,7 @@ test("no UI consumer hardcodes 0.4 next to label_confidence", () => {
       const text = readFileSync(path.join(REPO_ROOT, rel), "utf8")
       const lines = text.split("\n")
       lines.forEach((line, idx) => {
-        if (literalRegex.test(line)) {
+        if (literalLhs.test(line) || literalRhs.test(line)) {
           offenders.push({ file: rel, line: idx + 1, text: line.trim() })
         }
       })
@@ -159,7 +165,7 @@ test("no UI consumer hardcodes 0.4 next to label_confidence", () => {
   assert.equal(
     offenders.length,
     0,
-    `Hardcoded label_confidence >= 0.4 literals found:\n${offenders
+    `Hardcoded numeric threshold against label_confidence found:\n${offenders
       .map((o) => `  ${o.file}:${o.line}  ${o.text}`)
       .join("\n")}\n` +
       `Import MIN_DISPLAYABLE_LABEL_CONFIDENCE from @/lib/storage/cluster-label-fallback instead.`,

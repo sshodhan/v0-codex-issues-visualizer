@@ -3,9 +3,8 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { ClusterTrustRibbon } from "./cluster-trust-ribbon"
+import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import type { ClusterRollupRow } from "@/hooks/use-dashboard-data"
-
-const MIN_DISPLAYABLE_LABEL_CONFIDENCE = 0.6
 
 interface FamilyCardProps {
   cluster: ClusterRollupRow
@@ -21,11 +20,19 @@ function getActionabilityColor(value: number): string {
 }
 
 export function FamilyCard({ cluster, days, isLoudest, isFixFirst }: FamilyCardProps) {
-  const familyLabel =
-    cluster.label &&
+  const isSingleton = cluster.count <= 1
+  const hasDisplayableClusterLabel =
+    !!cluster.label &&
     cluster.label_confidence != null &&
     cluster.label_confidence >= MIN_DISPLAYABLE_LABEL_CONFIDENCE
-      ? cluster.label
+  // For singletons the representative title is more informative than a
+  // generic "Bug cluster · …" rollup, so prefer it. For multi-issue
+  // families we prefer the cluster label (LLM or deterministic fallback)
+  // because it explains what unifies the members.
+  const familyLabel = isSingleton
+    ? cluster.representative_title || (hasDisplayableClusterLabel ? cluster.label! : `Cluster #${cluster.id.slice(0, 8)}`)
+    : hasDisplayableClusterLabel
+      ? cluster.label!
       : cluster.representative_title || `Cluster #${cluster.id.slice(0, 8)}`
 
   const actionability = cluster.rail_scoring?.actionability_input ?? 0
@@ -37,7 +44,7 @@ export function FamilyCard({ cluster, days, isLoudest, isFixFirst }: FamilyCardP
       <Card className="h-full transition-colors hover:border-primary/60 hover:bg-muted/30">
         <CardContent className="p-4 space-y-2">
           {/* Badges row */}
-          {(isLoudest || isFixFirst) && (
+          {(isLoudest || isFixFirst || isSingleton) && (
             <div className="flex items-center gap-1.5">
               {isLoudest && (
                 <Badge className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] px-1.5 py-0">
@@ -47,6 +54,11 @@ export function FamilyCard({ cluster, days, isLoudest, isFixFirst }: FamilyCardP
               {isFixFirst && (
                 <Badge className="bg-green-600 hover:bg-green-700 text-white text-[10px] px-1.5 py-0">
                   FIX FIRST
+                </Badge>
+              )}
+              {isSingleton && (
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground">
+                  SINGLETON
                 </Badge>
               )}
             </div>
@@ -81,6 +93,13 @@ export function FamilyCard({ cluster, days, isLoudest, isFixFirst }: FamilyCardP
 
           {/* Trust ribbon */}
           <ClusterTrustRibbon cluster={cluster} />
+
+          {/* Drill-down affordance */}
+          <p className="pt-1 text-[11px] font-medium text-primary">
+            {isSingleton
+              ? "View observation →"
+              : `View ${cluster.count} observation${cluster.count === 1 ? "" : "s"} →`}
+          </p>
         </CardContent>
       </Card>
     </Link>
