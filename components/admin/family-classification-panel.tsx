@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { CircleCheck, Loader2, Play, RefreshCw, TestTube2, TriangleAlert, XCircle } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 
 const ROUTE = "/api/admin/family-classification"
@@ -488,6 +489,58 @@ function FamilyEvidenceCard({ draft, dryRun }: { draft: FamilyDraft; dryRun: boo
   )
 }
 
+
+
+const QUALITY_ROUTE = "/api/admin/family-classification/quality?limit=200"
+
+interface QualityResponse {
+  summary?: {
+    bucket_counts?: Record<string, number>
+  }
+  rows: QualityRow[]
+}
+
+interface QualityRow {
+  cluster_id: string
+  quality_bucket: "safe_to_trust" | "needs_review" | "input_problem"
+  family_title?: string | null
+  family_kind: string | null
+  confidence?: number | null
+  recommended_action: string
+  review_reasons: string[]
+  quality_reasons: string[]
+  classification_coverage_share: number | null
+  mixed_topic_score: number | null
+  cluster_path?: string | null
+  llm_status: string | null
+  representative_count: number
+  family_summary?: string | null
+  llm_rationale?: string | null
+  evidence?: unknown
+  cluster_metadata?: unknown
+  topic_distribution?: unknown
+  representatives?: Array<{
+    is_canonical?: boolean
+    observation_id?: string
+    topic_slug?: string | null
+    title?: string
+    body_snippet?: string | null
+  }>
+  common_matched_phrases?: Array<{ phrase?: string; slug?: string; count?: number }>
+}
+
+const QUALITY_BUCKET_STYLES: Record<string, string> = {
+  input_problem: "bg-red-50/70 border-red-300 dark:bg-red-950/20",
+  needs_review: "bg-amber-50/70 border-amber-300 dark:bg-amber-950/20",
+  safe_to_trust: "bg-green-50/50 border-green-300 dark:bg-green-950/20",
+}
+
+function bucketLabel(bucket: QualityRow["quality_bucket"]): string {
+  if (bucket === "safe_to_trust") return "Safe to trust"
+  if (bucket === "input_problem") return "Input problem"
+  return "Needs review"
+}
+
 export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const [stats, setStats] = useState<Stats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
@@ -509,6 +562,10 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const [running, setRunning] = useState<null | "dryRun" | "singleCluster" | "batch">(null)
   const [runError, setRunError] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<BackfillResult | null>(null)
+  const [qualityRows, setQualityRows] = useState<QualityRow[]>([])
+  const [qualitySummary, setQualitySummary] = useState<Record<string, number>>({})
+  const [qualityLoading, setQualityLoading] = useState(false)
+  const [qualityError, setQualityError] = useState<string | null>(null)
 
   const loadStats = async () => {
     setStatsLoading(true)
@@ -536,8 +593,25 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     }
   }
 
+  const loadQuality = async () => {
+    setQualityLoading(true)
+    setQualityError(null)
+    try {
+      const res = await fetch(QUALITY_ROUTE, { headers: authHeaders(secret) })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const data = (await res.json()) as QualityResponse
+      setQualityRows(data.rows ?? [])
+      setQualitySummary(data.summary?.bucket_counts ?? {})
+    } catch (e) {
+      setQualityError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setQualityLoading(false)
+    }
+  }
+
   useEffect(() => {
     loadStats()
+    loadQuality()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secret])
 
@@ -728,7 +802,7 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={loadStats}
+              onClick={() => { loadStats(); loadQuality() }}
               disabled={statsLoading}
             >
               {statsLoading ? (
@@ -984,6 +1058,77 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               <AlertDescription className="text-xs">{runError}</AlertDescription>
             </Alert>
           ) : null}
+
+
+
+          <Card className="border-dashed">
+            <CardHeader>
+              <CardTitle className="text-base">Quality buckets</CardTitle>
+              <CardDescription>
+                Family Classification is an interpretation layer, not ground truth. The quality bucket is diagnostic only. Use it to decide what to inspect before relying on a family for routing or product insight.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {qualityError ? <Alert variant="destructive"><AlertDescription>{qualityError}</AlertDescription></Alert> : null}
+              <div className="grid gap-3 md:grid-cols-3">
+                <StatTile label="Safe to trust" value={qualitySummary.safe_to_trust ?? 0} hint="Signals look coherent and coverage is acceptable." />
+                <StatTile label="Needs review" value={qualitySummary.needs_review ?? 0} hint="Usable with caution; inspect rationale before routing." emphasis />
+                <StatTile label="Input problem" value={qualitySummary.input_problem ?? 0} hint="Underlying inputs are likely degraded or sparse." emphasis />
+              </div>
+              <div className="grid gap-3 md:grid-cols-5">
+                <StatTile label="LLM failed/skipped" value={qualityRows.filter((r) => r.llm_status && r.llm_status !== "success").length} />
+                <StatTile label="LLM disagreement" value={qualityRows.filter((r) => r.quality_reasons.includes("llm_disagrees_with_heuristic")).length} />
+                <StatTile label="Low coverage" value={qualityRows.filter((r) => r.quality_reasons.includes("low_classification_coverage")).length} />
+                <StatTile label="Fallback cluster" value={qualityRows.filter((r) => (r.cluster_path ?? "") === "fallback").length} />
+                <StatTile label="Low confidence" value={qualityRows.filter((r) => (r.confidence ?? 1) < 0.55).length} />
+              </div>
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Quality bucket</TableHead><TableHead>Family title</TableHead><TableHead>Family kind</TableHead><TableHead>Confidence</TableHead><TableHead>Recommended action</TableHead><TableHead>Review reasons</TableHead><TableHead>Coverage</TableHead><TableHead>Mixedness</TableHead><TableHead>Cluster path</TableHead><TableHead>LLM status</TableHead><TableHead>Representative count</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {qualityRows.map((row) => (
+                      <Fragment key={row.cluster_id}>
+                        <TableRow className={QUALITY_BUCKET_STYLES[row.quality_bucket] ?? ""}>
+                          <TableCell>{bucketLabel(row.quality_bucket)}</TableCell>
+                          <TableCell>{row.family_title ?? row.cluster_id}</TableCell>
+                          <TableCell>{row.family_kind ?? "—"}</TableCell>
+                          <TableCell>{formatPct(row.confidence)}</TableCell>
+                          <TableCell className="max-w-48 truncate" title={row.recommended_action}>{row.recommended_action}</TableCell>
+                          <TableCell>{row.review_reasons.join(", ") || "—"}</TableCell>
+                          <TableCell>{formatPct(row.classification_coverage_share)}</TableCell>
+                          <TableCell>{row.mixed_topic_score?.toFixed(3) ?? "—"}</TableCell>
+                          <TableCell>{row.cluster_path ?? "—"}</TableCell>
+                          <TableCell>{row.llm_status ?? "—"}</TableCell>
+                          <TableCell>{row.representative_count}</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell colSpan={11} className="text-xs">
+                            <details>
+                              <summary className="cursor-pointer">Details</summary>
+                              <div className="mt-2 space-y-1">
+                                <div><strong>family_summary:</strong> {row.family_summary ?? "—"}</div>
+                                <div><strong>recommended_action:</strong> {row.recommended_action}</div>
+                                <div><strong>quality_reasons:</strong> {row.quality_reasons.join(", ") || "—"}</div>
+                                <div><strong>llm_rationale:</strong> {row.llm_rationale ?? "—"}</div>
+                                <div><strong>cluster metadata:</strong> <code>{JSON.stringify(row.cluster_metadata ?? null)}</code></div>
+                                <div><strong>topic distribution:</strong> <code>{JSON.stringify(row.topic_distribution ?? null)}</code></div>
+                                <div><strong>representative observations:</strong> <code>{JSON.stringify(row.representatives ?? [], null, 2)}</code></div>
+                                <div><strong>common matched phrases:</strong> <code>{JSON.stringify(row.common_matched_phrases ?? [], null, 2)}</code></div>
+                                <div><strong>raw evidence JSON fallback:</strong> <code>{JSON.stringify(row.evidence ?? row, null, 2)}</code></div>
+                              </div>
+                            </details>
+                          </TableCell>
+                        </TableRow>
+                      </Fragment>
+                    ))}
+                  </TableBody>
+                </Table>
+                {qualityLoading ? <div className="p-3 text-xs text-muted-foreground">Loading…</div> : null}
+              </div>
+            </CardContent>
+          </Card>
 
           {lastResult ? (
             <div className="space-y-3">
