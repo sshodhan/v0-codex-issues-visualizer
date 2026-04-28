@@ -7,23 +7,23 @@
 -- v4 and v5 score the SAME CATEGORY_PATTERNS table differently — title
 -- and body are now scored separately and the title contribution is
 -- weighted 4×; bracket prefixes ([BUG], [FEATURE], …) are stripped
--- before matching; per-slug thresholds (model-quality 3, pricing 4)
--- replace the global threshold of 2; and the matcher returns
--- structured evidence (matched phrases + per-slug scores + margin +
--- runner-up) persisted into the new category_assignments.evidence
--- JSONB column added by scripts/026_category_assignments_evidence.sql.
+-- before matching with the stripped prefix preserved in evidence; the
+-- per-slug threshold mechanism (SLUG_THRESHOLD) is wired up but ships
+-- empty in v5 — global threshold of 2 still applies to all slugs;
+-- threshold tuning is deferred until backfill evidence shows need.
+-- The matcher returns structured TopicResult { categoryId, slug,
+-- confidenceProxy, evidence } where evidence is a self-describing
+-- JSONB persisted into the new category_assignments.evidence column
+-- added by scripts/026_category_assignments_evidence.sql.
 --
 -- Reusing v4 would mix pre- and post-refactor classifier outputs under
 -- one label, break replay integrity, and prevent admin backfill from
 -- recomputing already-classified rows.
 --
--- Apply order: this migration may be applied before or after 026; the
--- enrich pipeline tolerates a NULL evidence column on existing v5 rows
--- (recordCategory passes null when no evidence is supplied) and the new
--- record_category(uuid, text, uuid, numeric, jsonb) signature added in
--- 026 is what the application calls. If 026 has not yet run, the
--- application's calls will fail with "function … does not exist" — apply
--- 025 + 026 together.
+-- Apply order: 025 + 026 must be applied together. The enrich pipeline
+-- calls the new 5-arg record_category(uuid, text, uuid, numeric, jsonb)
+-- signature added in 026, so 026 must run before any v5 derivation
+-- write — and 025 is what flips the registry to v5 in the first place.
 
 begin;
 
@@ -37,7 +37,7 @@ insert into algorithm_versions (kind, version, current_effective, notes) values
     'category',
     'v5',
     true,
-    'Structural classifier fixes: title/body scoring split (title 4× weight), [BUG]/[FEATURE] template prefix stripping, per-slug thresholds (model-quality=3, pricing=4), structured evidence emission persisted into category_assignments.evidence (see scripts/026)'
+    'Structural classifier fixes: title/body scoring split (title 4× weight), [BUG]/[FEATURE] template prefix stripping (prefix preserved in evidence), per-slug threshold mechanism (SLUG_THRESHOLD) wired but empty (default 2 applies; tuning deferred), structured evidence emission persisted into category_assignments.evidence (see scripts/026)'
   )
 on conflict (kind, version) do update
    set current_effective = excluded.current_effective,
