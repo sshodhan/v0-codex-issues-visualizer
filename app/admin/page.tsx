@@ -50,6 +50,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
+import { FamilyClassificationPanel } from "@/components/admin/family-classification-panel"
 import { WhatToKnowCard } from "@/components/admin/what-to-know-card"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
@@ -243,7 +244,7 @@ interface ProcessingEventItem {
   created_at: string
 }
 
-const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema", "cluster-labels"] as const
+const ADMIN_TAB_VALUES = ["backfill", "classify-backfill", "clustering", "trace", "schema", "cluster-labels", "family-classification"] as const
 type AdminTab = (typeof ADMIN_TAB_VALUES)[number]
 
 // `useSearchParams()` bails out of static prerender in Next.js 15 and
@@ -322,6 +323,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="trace">Observation trace</TabsTrigger>
             <TabsTrigger value="schema">Schema verification</TabsTrigger>
             <TabsTrigger value="cluster-labels">Cluster-label backfill</TabsTrigger>
+            <TabsTrigger value="family-classification">Family classification</TabsTrigger>
           </TabsList>
           <TabsContent value="backfill" className="space-y-4">
             <WhatToKnowCard
@@ -831,6 +833,133 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               }
             />
             <ClusterLabelBackfillPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="family-classification" className="space-y-4">
+            <WhatToKnowCard
+              title="Family Classification"
+              summary="Heuristic-authoritative cluster interpretation. The deterministic rules decide family_kind and review requirements; the LLM enriches title/summary and flags disagreement, but never overrides the heuristic."
+              purpose={
+                <div className="space-y-2">
+                  <p>
+                    Generates a per-cluster family classification record that
+                    summarizes what the semantic family represents, how
+                    coherent it is, and whether it needs human review.
+                    Heuristic-first (always deterministic) with optional
+                    LLM refinement for title/summary plus a disagreement
+                    signal. See{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      docs/CLUSTERING_DESIGN.md
+                    </code>{" "}
+                    §5.1.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    <strong>Trust contract:</strong> the heuristic&apos;s{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">family_kind</code>{" "}
+                    is authoritative. LLM enrichment cannot downgrade
+                    deterministic{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">needs_human_review</code>.
+                    The LLM&apos;s{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">suggested_family_kind</code>{" "}
+                    is captured as a disagreement signal only — when it
+                    differs from the heuristic, the heuristic verdict is
+                    preserved and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">llm_disagrees_with_heuristic</code>{" "}
+                    is appended to{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">review_reasons</code>.
+                  </p>
+                </div>
+              }
+              pipelineFit={
+                <p>
+                  Append-only interpretation layer on top of Layer A
+                  (cluster membership) and{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    mv_cluster_topic_metadata
+                  </code>
+                  . Writes to{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    family_classifications
+                  </code>
+                  . Evidence rows store structured representatives
+                  (canonical-first; each carries{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    observation_id
+                  </code>
+                  ,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">title</code>,{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    body_snippet
+                  </code>
+                  , and{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">topic_slug</code>),
+                  the cluster&apos;s Layer A signals, and an{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">llm</code>{" "}
+                  block with status + provenance + disagreement
+                  signal. Does NOT mutate cluster membership,
+                  embeddings, or{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    clusters.label
+                  </code>
+                  .
+                </p>
+              }
+              whenToRun={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    After the first ingest to interpret existing clusters.
+                  </li>
+                  <li>
+                    After a significant clustering rebuild to get fresh
+                    interpretations.
+                  </li>
+                  <li>
+                    Periodically to flag clusters that may have changed
+                    composition and need review.
+                  </li>
+                </ul>
+              }
+              impact={
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Inserts one{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      family_classifications
+                    </code>{" "}
+                    row per cluster (not a mutation — older classifications are kept for audit).
+                  </li>
+                  <li>
+                    Heuristic rules are always applied (deterministic).
+                    LLM title generation is optional and fails gracefully.
+                  </li>
+                  <li>
+                    Idempotent — re-running adds new rows alongside old
+                    ones; the{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      family_classification_current
+                    </code>{" "}
+                    view picks the latest per cluster.
+                  </li>
+                </ul>
+              }
+              howToRun={
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>
+                    Click <strong>Dry run</strong> to see how many clusters
+                    would be classified (read-only preview).
+                  </li>
+                  <li>
+                    Paste a single cluster UUID to classify just that one
+                    and see the result.
+                  </li>
+                  <li>
+                    Click <strong>Classify batch</strong> to process all
+                    unclassified clusters. Provide the admin secret in the
+                    header field.
+                  </li>
+                </ol>
+              }
+            />
+            <FamilyClassificationPanel secret={secret} />
           </TabsContent>
         </Tabs>
       </main>

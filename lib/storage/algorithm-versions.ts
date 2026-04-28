@@ -45,6 +45,13 @@ export const CURRENT_VERSIONS = {
   // semantic clusters when they contain reports with distinct root
   // causes. See scripts/013_bug_fingerprints.sql.
   bug_fingerprint: "v1",
+  // v1 of Family Classification: heuristic-first per-cluster
+  // interpretation (family_kind + needs_human_review) with optional
+  // LLM-generated title/summary. Reads `mv_cluster_topic_metadata`
+  // (added by 028); writes append-only rows to
+  // `family_classifications` (added by 029). NOT a clustering or
+  // labelling change — see docs/CLUSTERING_DESIGN.md §4.7.
+  family_classification: "v1",
 } as const
 
 export type AlgorithmKind = keyof typeof CURRENT_VERSIONS

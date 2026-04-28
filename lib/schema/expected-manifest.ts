@@ -105,12 +105,16 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "bug_fingerprints",
     // Processing trace events (017).
     "processing_events",
+    // Family Classification v1 (029).
+    "family_classifications",
   ],
   views: [
     // 007: cluster_frequency = view over cluster_members.
     "cluster_frequency",
     // 014.
     "v_cluster_source_diversity",
+    // 029: latest family classification per cluster.
+    "family_classification_current",
   ],
   matviews: [
     // Recreated in 013 with bug-fingerprint columns folded in.
@@ -207,6 +211,12 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "idx_mv_cluster_topic_metadata_cluster",
     "idx_mv_cluster_topic_metadata_mixed",
     "idx_mv_cluster_topic_metadata_dominant",
+    // ---- family_classifications (029) ----
+    "idx_family_classifications_cluster_computed",
+    "idx_family_classifications_algorithm_version",
+    "idx_family_classifications_family_kind",
+    "idx_family_classifications_needs_review",
+    "idx_family_classifications_dominant_topic",
     // ---- algorithm registry (007) ----
     "idx_algorithm_versions_one_current",
     // ---- scrape logs (002 + hand-added status filter) ----
@@ -269,6 +279,24 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
       "detail_json",
       "created_at",
     ],
+    // 029 — Family Classification v1 record shape.
+    family_classifications: [
+      "cluster_id",
+      "algorithm_version",
+      "family_title",
+      "family_summary",
+      "family_kind",
+      "dominant_topic_slug",
+      "primary_failure_mode",
+      "affected_surface",
+      "likely_owner_area",
+      "severity_rollup",
+      "confidence",
+      "needs_human_review",
+      "review_reasons",
+      "evidence",
+      "computed_at",
+    ],
   },
   forbiddenTables: [
     // 003 created, 007 dropped.
@@ -306,6 +334,9 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     semantic_cluster_label: "v2",
     // 013 added this one.
     bug_fingerprint: "v1",
+    // 029 — Family Classification v1 (heuristic-first family_kind +
+    // optional LLM title/summary). See docs/CLUSTERING_DESIGN.md §4.7.
+    family_classification: "v1",
   },
 }
 
@@ -412,11 +443,14 @@ function tableGroup(name: string): string {
     name === "v_cluster_source_diversity" ||
     name === "mv_cluster_health_current" ||
     name === "mv_cluster_topic_metadata" ||
+    name === "family_classifications" ||
+    name === "family_classification_current" ||
     name === "attach_to_cluster" ||
     name === "detach_from_cluster" ||
     name === "set_cluster_label" ||
     name === "record_observation_embedding" ||
     name.startsWith("idx_cluster_members") ||
+    name.startsWith("idx_family_classifications") ||
     name.startsWith("idx_observation_embeddings") ||
     name.startsWith("idx_mv_cluster_health_current") ||
     name.startsWith("idx_mv_cluster_topic_metadata")

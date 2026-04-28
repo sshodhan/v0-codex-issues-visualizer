@@ -688,6 +688,148 @@ The triage card surfaces the three layers explicitly so reviewers don't have to 
 
 ---
 
+## 5.1) Family Classification (Layer A interpretation)
+
+`family_classifications` is a per-cluster *interpretation* layer that sits
+on top of `mv_cluster_topic_metadata` (Layer A evidence aggregation, §4.6).
+It is **not** a clustering change or a labelling override — it is a
+read-only interpretation record whose only job is to assign a coherence
+verdict, an optional human-readable title/summary, and a review flag to
+each Layer A cluster.
+
+### What Family Classification does
+
+For each cluster, assign:
+- **family_kind** (heuristic-first, deterministic): one of:
+  - `coherent_single_issue` — dominant topic share ≥ 75%
+  - `mixed_multi_causal` — high topic mixedness + high coverage AND members
+    are confidently classified (few low-margin) — genuinely multi-causal
+    but tractable
+  - `needs_split_review` — same shape as `mixed_multi_causal` but with many
+    low-margin members, signalling Layer 0 is also unsure of the boundaries
+  - `low_evidence` — coverage < 50% (too many members unclassified)
+  - `unclear` — mixed signals that don't fit the above rules
+- **needs_human_review** (boolean) and **review_reasons[]** machine codes:
+  `low_classification_coverage`, `high_topic_mixedness`,
+  `many_close_topic_calls`, `mixed_or_unclear_signals`,
+  `fallback_cluster_path`, `low_avg_layer0_confidence`,
+  `llm_disagrees_with_heuristic`
+- Optional **LLM-generated** title, summary, primary_failure_mode,
+  affected_surface, likely_owner_area, plus a `suggested_family_kind`
+  used as a disagreement signal only
+- **Evidence JSONB snapshot**: cluster topic metadata, structured
+  representative observations (`observation_id`, `title`, `body_snippet`,
+  `topic_slug`, `is_canonical`), and an `llm` block with status +
+  provenance
+
+### What Family Classification does NOT do
+
+- Does not change `cluster_members` (membership is embedding-first, owned by
+  `lib/storage/semantic-clusters.ts`)
+- Does not overwrite `clusters.label` (cluster display name stays independent
+  of the family interpretation)
+- Does not split or merge clusters automatically (flagged for review only)
+- Does not mutate Layer 0 evidence or category_assignments
+- Does not become ground-truth by default (reviewer must accept it before
+  routing/dedup uses it)
+- The LLM **never overwrites** `family_kind`. If the LLM's
+  `suggested_family_kind` disagrees with the heuristic, the heuristic
+  result is preserved and `llm_disagrees_with_heuristic` is appended to
+  `review_reasons` (forcing `needs_human_review = true`).
+
+### Rules (heuristic-first)
+
+Run deterministically on every cluster. Auxiliary signals first
+(accumulate review reasons), then four mutually-exclusive kind rules:
+
+```
+auxReasons = []
+if cluster_path == "fallback":           auxReasons += ["fallback_cluster_path"]
+if avg_confidence_proxy != null
+   and avg_confidence_proxy < 0.3:       auxReasons += ["low_avg_layer0_confidence"]
+
+if classification_coverage_share < 0.5:
+  family_kind = "low_evidence"
+  review_reasons = ["low_classification_coverage"] + auxReasons
+  needs_human_review = true
+
+else if mixed_topic_score >= 0.6 and classification_coverage_share >= 0.8:
+  if low_margin_count / observation_count >= 0.4:
+    family_kind = "needs_split_review"
+    review_reasons = ["high_topic_mixedness", "many_close_topic_calls"] + auxReasons
+    needs_human_review = true
+  else:
+    family_kind = "mixed_multi_causal"
+    review_reasons = ["high_topic_mixedness"] + auxReasons
+    needs_human_review = (auxReasons not empty)
+
+else if dominant_topic_share >= 0.75:
+  family_kind = "coherent_single_issue"
+  review_reasons = auxReasons
+  needs_human_review = (auxReasons not empty)
+
+else:
+  family_kind = "unclear"
+  review_reasons = ["mixed_or_unclear_signals"] + auxReasons
+  needs_human_review = true
+```
+
+Optional LLM enrichment (heuristic stays authoritative):
+- Call `callFamilyTitleModel(...)` with structured representatives
+  (canonical observation first, then recent active members; each carries
+  `observation_id`, `title`, `body_snippet`, `topic_slug`).
+- Strict-mode JSON schema: returns `family_title`, `family_summary`,
+  `primary_failure_mode`, `affected_surface`, `likely_owner_area`,
+  `confidence`, `rationale`, and `suggested_family_kind`.
+- On failure or `confidence < 0.5`, fall back to deterministic
+  `"{Title-Cased Topic} — {top phrase}"` with input-sensitive confidence
+  `clamp(min(coverage, dominant_share), 0.2, 0.6)`.
+- `evidence.llm.status` always set, even when the call didn't happen:
+  `succeeded | failed | skipped_missing_api_key | skipped_no_representatives | low_confidence_fallback`.
+
+### Table + View
+
+**family_classifications** (append-only, one row per classification):
+- `cluster_id`, `algorithm_version`, `family_title`, `family_summary`, `family_kind`,
+  `dominant_topic_slug`, `primary_failure_mode`, `affected_surface`,
+  `likely_owner_area`, `severity_rollup`, `confidence`, `needs_human_review`,
+  `review_reasons[]`, `evidence` (JSONB snapshot), `computed_at`
+
+**family_classification_current** (view picking latest per cluster):
+- Same columns, filtered by `distinct on (cluster_id) order by computed_at desc`
+
+### Admin panel
+
+New tab "Family classification" in `/admin`:
+- Stats: total clusters, clusters without classification
+- Single-cluster lookup: paste cluster UUID, see draft result
+- Dry-run: count candidates without running classifier
+- Batch: process top N unclassified clusters
+
+### Reads
+
+- `lib/storage/family-classification.ts` → `classifyClusterFamily(supabase, clusterId)`
+  Returns `FamilyClassificationDraft` (heuristic + optional LLM)
+- `/api/admin/family-classification` (POST) → runs classification + writes to DB
+
+### Architectural contract
+
+- **No feedback loop yet** — the admin panel classifies, the view surfaces
+  latest, but no approve/reject workflow. A future PR can add
+  `family_classifications_reviews` if reviewers need to override.
+- **Latest-only by default** — `family_classification_current` view hides
+  older classifications, but older rows stay queryable via the table directly
+  for audit queries like "how did this family's classification change over
+  time?"
+- **Never fed back into clustering** — the family_kind is a *label* on what
+  the embedding pass already created, never an input to the embedding pass
+  or member re-assignment.
+- **Severity_rollup is a placeholder** — stored as `unknown` in v1; a future
+  pass can infer it from `danger level` in the LLM response or map
+  family_kind → severity heuristically.
+
+---
+
 ## 11) Success Criteria
 
 The clustering redesign is successful when:
