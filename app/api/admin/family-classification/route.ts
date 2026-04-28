@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireAdminSecret } from "@/lib/admin/auth"
 import { classifyClusterFamily } from "@/lib/storage/family-classification"
+import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 // Admin endpoint for Family Classification backfill (Layer A interpretation).
@@ -9,21 +10,27 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 // Classifies clusters into family_kind + optional LLM title/summary.
 // This is NOT a clustering or labelling change — just a per-cluster
 // interpretation layer that sits on top of `mv_cluster_topic_metadata`
-// (PR #150) and optional manual review signals (PR #151). See
-// docs/CLUSTERING_DESIGN.md §4.7.
+// and optional manual review signals. See docs/CLUSTERING_DESIGN.md §4.7.
 //
 // Parallel to /api/admin/classify-backfill and
 // /api/admin/cluster-label-backfill: same orchestrator shape, same
 // admin secret gate (x-admin-secret header), same dryRun/apply flow.
+//
+// "Up-to-date" here means a row in `family_classification_current`
+// whose `algorithm_version` equals
+// `CURRENT_VERSIONS.family_classification`. After a version bump, all
+// older-version clusters re-appear as candidates.
 
 export const maxDuration = 300
 
 const DEFAULT_LIMIT = 50
 const MAX_LIMIT = 500
+const CURRENT_FAMILY_VERSION = CURRENT_VERSIONS.family_classification
 
 interface BackfillStats {
   total_clusters: number | null
   without_classification: number | null
+  algorithm_version: string
 }
 
 interface BackfillResult {
@@ -34,40 +41,47 @@ interface BackfillResult {
   wouldProcess: number
 }
 
-// GET: stats on how many clusters don't have a family classification yet.
+// GET: stats on how many clusters need a current-version classification.
+//
+// "without_classification" counts clusters whose latest row in
+// `family_classification_current` is NOT at the current algorithm
+// version (or is missing entirely). After a version bump this stat
+// surfaces all stale clusters as work to do, not just the
+// never-classified ones.
 export async function GET(request: NextRequest) {
   const authErr = requireAdminSecret(request)
   if (authErr) return authErr
 
   const supabase = createAdminClient()
   try {
-    // Count total clusters.
     const { count: totalClusters, error: totalErr } = await supabase
       .from("clusters")
       .select("id", { count: "exact", head: true })
 
-    // Count clusters that have a family_classification row.
-    const { count: withClassification, error: withErr } = await supabase
-      .from("family_classifications")
+    // family_classification_current is one row per cluster (latest by
+    // computed_at). Count rows at the active version → "up to date".
+    const { count: atCurrentVersion, error: currentErr } = await supabase
+      .from("family_classification_current")
       .select("cluster_id", { count: "exact", head: true })
-      .distinct()
+      .eq("algorithm_version", CURRENT_FAMILY_VERSION)
 
     if (totalErr) {
       logServerError("admin-family-classification", "count_total_failed", totalErr)
     }
-    if (withErr) {
-      logServerError("admin-family-classification", "count_with_failed", withErr)
+    if (currentErr) {
+      logServerError("admin-family-classification", "count_current_failed", currentErr)
     }
 
     const total = totalClusters ?? null
     const without =
-      total != null && withClassification != null
-        ? Math.max(0, total - withClassification)
+      total != null && atCurrentVersion != null
+        ? Math.max(0, total - atCurrentVersion)
         : null
 
     return NextResponse.json({
       total_clusters: total,
       without_classification: without,
+      algorithm_version: CURRENT_FAMILY_VERSION,
     } as BackfillStats)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -174,45 +188,49 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Otherwise, classify top clusters by observation count (without an existing classification).
+  // Otherwise, classify the top-N largest clusters that don't have a
+  // current-version family_classification. "Largest" = observation_count
+  // from the topic-metadata MV, so the human-review backlog gets the
+  // highest-impact clusters first.
   try {
-    // First, get clusters that already have classifications.
-    const { data: classified, error: classifiedErr } = await supabase
-      .from("family_classifications")
-      .select("cluster_id", { count: "exact", head: false })
-      .distinct()
+    // Cluster_ids whose latest classification is already at the active version.
+    const { data: currentRows, error: currentErr } = await supabase
+      .from("family_classification_current")
+      .select("cluster_id, algorithm_version")
+      .eq("algorithm_version", CURRENT_FAMILY_VERSION)
 
-    if (classifiedErr) {
-      logServerError("admin-family-classification", "classified_list_failed", classifiedErr)
+    if (currentErr) {
+      logServerError("admin-family-classification", "current_list_failed", currentErr)
       return NextResponse.json(
-        { error: "Failed to list classified clusters" },
+        { error: "Failed to list current-version classifications" },
         { status: 500 },
       )
     }
 
-    const classifiedIds = new Set((classified ?? []).map((c: { cluster_id: string }) => c.cluster_id))
+    const upToDate = new Set(
+      (currentRows ?? []).map((c: { cluster_id: string }) => c.cluster_id),
+    )
 
-    // Find clusters without a family_classification, ordered by id.
-    const { data: allClusters, error: allErr } = await supabase
-      .from("clusters")
-      .select("id")
-      .order("id", { ascending: false })
-      .limit(limit * 2) // Fetch more to account for filtering
+    // Order by observation_count desc so the largest unclassified
+    // clusters are processed first (matches the comment-stated intent).
+    const { data: ranked, error: rankedErr } = await supabase
+      .from("mv_cluster_topic_metadata")
+      .select("cluster_id, observation_count")
+      .order("observation_count", { ascending: false })
+      .limit(limit * 4) // generous so post-filter still has `limit` rows
 
-    if (allErr) {
-      logServerError("admin-family-classification", "cluster_list_failed", allErr)
+    if (rankedErr) {
+      logServerError("admin-family-classification", "ranked_list_failed", rankedErr)
       return NextResponse.json(
-        { error: "Failed to list clusters" },
+        { error: "Failed to list ranked clusters" },
         { status: 500 },
       )
     }
 
-    // Filter out already-classified clusters
-    const candidates = (allClusters ?? [])
-      .filter((c: { id: string }) => !classifiedIds.has(c.id))
+    const clusterIds = (ranked ?? [])
+      .filter((c: { cluster_id: string }) => !upToDate.has(c.cluster_id))
       .slice(0, limit)
-
-    const clusterIds = candidates.map((c: { id: string }) => c.id)
+      .map((c: { cluster_id: string }) => c.cluster_id)
     const wouldProcess = clusterIds.length
 
     if (dryRun) {

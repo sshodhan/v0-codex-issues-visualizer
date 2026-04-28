@@ -1,67 +1,40 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-// These are pure-function tests for the family classification heuristic rules.
-// We test the decision logic without requiring Supabase or OpenAI.
+// Tests for the family classification heuristic. Imports the *exported*
+// rule from lib/storage/family-classification.ts so production drift is
+// caught — earlier versions of this file inlined a copy and silently
+// passed when the real function diverged.
 
-// Copy the heuristic logic for testing (or export it separately in the main module).
-// For now, inline the deterministic rule logic so tests are self-contained.
+import {
+  classifyFamilyHeuristic,
+  type HeuristicInput,
+  type HeuristicResult,
+} from "../lib/storage/family-classification.ts"
 
-type FamilyKind =
-  | "coherent_single_issue"
-  | "mixed_multi_causal"
-  | "needs_split_review"
-  | "low_evidence"
-  | "unclear"
-
-interface HeuristicResult {
-  family_kind: FamilyKind
-  needs_human_review: boolean
-  review_reasons: string[]
+// Most tests pin only the few inputs they care about; defaults below
+// keep the rest in the "coherent, semantic, confident" zone so we
+// exercise one rule at a time.
+const DEFAULT_INPUT: HeuristicInput = {
+  classification_coverage_share: 0.9,
+  mixed_topic_score: 0.2,
+  dominant_topic_share: 0.5,
+  low_margin_count: 0,
+  observation_count: 100,
+  cluster_path: "semantic",
+  avg_confidence_proxy: 0.8,
 }
 
-function classifyFamilyHeuristic(input: {
-  classification_coverage_share: number
-  mixed_topic_score: number
-  dominant_topic_share: number
-}): HeuristicResult {
-  if (input.classification_coverage_share < 0.5) {
-    return {
-      family_kind: "low_evidence",
-      needs_human_review: true,
-      review_reasons: ["low_classification_coverage"],
-    }
-  }
-
-  if (input.mixed_topic_score >= 0.6 && input.classification_coverage_share >= 0.8) {
-    return {
-      family_kind: "needs_split_review",
-      needs_human_review: true,
-      review_reasons: ["high_topic_mixedness"],
-    }
-  }
-
-  if (input.dominant_topic_share >= 0.75) {
-    return {
-      family_kind: "coherent_single_issue",
-      needs_human_review: false,
-      review_reasons: [],
-    }
-  }
-
-  return {
-    family_kind: "unclear",
-    needs_human_review: true,
-    review_reasons: ["mixed_or_unclear_signals"],
-  }
+function call(overrides: Partial<HeuristicInput> = {}): HeuristicResult {
+  return classifyFamilyHeuristic({ ...DEFAULT_INPUT, ...overrides })
 }
 
 // ============================================================================
-// Tests
+// Rule 1: low coverage → low_evidence
 // ============================================================================
 
 test("low_coverage < 0.5 → low_evidence + needs_human_review", () => {
-  const result = classifyFamilyHeuristic({
+  const result = call({
     classification_coverage_share: 0.3,
     mixed_topic_score: 0.2,
     dominant_topic_share: 0.8,
@@ -72,40 +45,68 @@ test("low_coverage < 0.5 → low_evidence + needs_human_review", () => {
 })
 
 test("coverage at 0.5 boundary is not low_evidence", () => {
-  const result = classifyFamilyHeuristic({
+  const result = call({
     classification_coverage_share: 0.5,
     mixed_topic_score: 0.1,
     dominant_topic_share: 0.8,
   })
-  // Should fall through to dominant_topic_share >= 0.75 → coherent_single_issue
   assert.equal(result.family_kind, "coherent_single_issue")
   assert.equal(result.needs_human_review, false)
 })
 
-test("high_mixed_score >= 0.6 + high_coverage >= 0.8 → needs_split_review", () => {
-  const result = classifyFamilyHeuristic({
+// ============================================================================
+// Rule 2: mixed-topic branch (mixed_multi_causal vs needs_split_review)
+// ============================================================================
+
+test("high_mixed_score + high_coverage + low low-margin → mixed_multi_causal", () => {
+  // Few close calls means Layer 0 is confident on each member; the
+  // family is genuinely multi-causal, not a Layer 0 boundary problem.
+  const result = call({
     classification_coverage_share: 0.85,
     mixed_topic_score: 0.65,
     dominant_topic_share: 0.4,
+    low_margin_count: 5, // 5/100 = 5% < 40%
+    observation_count: 100,
   })
-  assert.equal(result.family_kind, "needs_split_review")
-  assert.equal(result.needs_human_review, true)
+  assert.equal(result.family_kind, "mixed_multi_causal")
+  assert.equal(result.needs_human_review, false)
   assert.deepEqual(result.review_reasons, ["high_topic_mixedness"])
 })
 
-test("mixed_score >= 0.6 but coverage < 0.8 → does not trigger needs_split_review", () => {
-  const result = classifyFamilyHeuristic({
+test("high_mixed_score + high_coverage + many close calls → needs_split_review", () => {
+  // ≥ 40% low-margin members means Layer 0 itself is unsure where the
+  // boundaries are. Escalates to needs_split_review.
+  const result = call({
+    classification_coverage_share: 0.85,
+    mixed_topic_score: 0.65,
+    dominant_topic_share: 0.4,
+    low_margin_count: 50, // 50/100 = 50% ≥ 40%
+    observation_count: 100,
+  })
+  assert.equal(result.family_kind, "needs_split_review")
+  assert.equal(result.needs_human_review, true)
+  assert.deepEqual(result.review_reasons, [
+    "high_topic_mixedness",
+    "many_close_topic_calls",
+  ])
+})
+
+test("mixed_score >= 0.6 but coverage < 0.8 → falls through to unclear", () => {
+  const result = call({
     classification_coverage_share: 0.7,
     mixed_topic_score: 0.65,
     dominant_topic_share: 0.5,
   })
-  // Should fall through to unclear
   assert.equal(result.family_kind, "unclear")
   assert.equal(result.needs_human_review, true)
 })
 
+// ============================================================================
+// Rule 3: high dominant share → coherent_single_issue
+// ============================================================================
+
 test("dominant_topic_share >= 0.75 → coherent_single_issue + no review", () => {
-  const result = classifyFamilyHeuristic({
+  const result = call({
     classification_coverage_share: 0.9,
     mixed_topic_score: 0.15,
     dominant_topic_share: 0.8,
@@ -115,8 +116,12 @@ test("dominant_topic_share >= 0.75 → coherent_single_issue + no review", () =>
   assert.deepEqual(result.review_reasons, [])
 })
 
-test("dominant_topic_share < 0.75 + other signals mixed → unclear + needs review", () => {
-  const result = classifyFamilyHeuristic({
+// ============================================================================
+// Rule 4: fallthrough → unclear
+// ============================================================================
+
+test("dominant < 0.75 + low mixed → unclear + needs review", () => {
+  const result = call({
     classification_coverage_share: 0.85,
     mixed_topic_score: 0.45,
     dominant_topic_share: 0.7,
@@ -126,8 +131,8 @@ test("dominant_topic_share < 0.75 + other signals mixed → unclear + needs revi
   assert.deepEqual(result.review_reasons, ["mixed_or_unclear_signals"])
 })
 
-test("balanced distribution (dominant_topic_share=0.5) → unclear + needs review", () => {
-  const result = classifyFamilyHeuristic({
+test("balanced distribution (dominant=0.5) → unclear + needs review", () => {
+  const result = call({
     classification_coverage_share: 0.9,
     mixed_topic_score: 0.5,
     dominant_topic_share: 0.5,
@@ -136,44 +141,131 @@ test("balanced distribution (dominant_topic_share=0.5) → unclear + needs revie
   assert.equal(result.needs_human_review, true)
 })
 
-test("rule precedence: low_coverage checked first (before mixed_topic)", () => {
-  // Even with high mixed score and coverage, low coverage should win
-  const result = classifyFamilyHeuristic({
+// ============================================================================
+// Rule precedence
+// ============================================================================
+
+test("rule precedence: low_coverage wins over high mixed score", () => {
+  const result = call({
     classification_coverage_share: 0.3,
     mixed_topic_score: 0.8,
     dominant_topic_share: 0.5,
   })
   assert.equal(result.family_kind, "low_evidence")
-  assert.equal(result.needs_human_review, true)
 })
 
-test("rule precedence: needs_split_review checked before dominant_topic", () => {
-  // High mixed score with high coverage should win over dominant_topic_share < 0.75
-  const result = classifyFamilyHeuristic({
+test("rule precedence: mixed-topic branch wins over high dominant share", () => {
+  // Even with dominant >= 0.75, if mixed >= 0.6 and coverage >= 0.8 we
+  // take the mixed branch (Layer 0 says the family spans Topics).
+  const result = call({
     classification_coverage_share: 0.8,
     mixed_topic_score: 0.7,
     dominant_topic_share: 0.6,
+    low_margin_count: 5,
+    observation_count: 100,
   })
-  assert.equal(result.family_kind, "needs_split_review")
-  assert.equal(result.needs_human_review, true)
+  assert.equal(result.family_kind, "mixed_multi_causal")
 })
 
-test("boundary: mixed_topic_score exactly 0.6", () => {
-  const result = classifyFamilyHeuristic({
+// ============================================================================
+// Boundary tests for the rule thresholds
+// ============================================================================
+
+test("boundary: mixed_topic_score exactly 0.6 enters mixed branch", () => {
+  const result = call({
     classification_coverage_share: 0.8,
     mixed_topic_score: 0.6,
     dominant_topic_share: 0.5,
+    low_margin_count: 5,
+    observation_count: 100,
   })
-  assert.equal(result.family_kind, "needs_split_review")
-  assert.equal(result.needs_human_review, true)
+  assert.equal(result.family_kind, "mixed_multi_causal")
 })
 
-test("boundary: dominant_topic_share exactly 0.75", () => {
-  const result = classifyFamilyHeuristic({
+test("boundary: dominant_topic_share exactly 0.75 → coherent", () => {
+  const result = call({
     classification_coverage_share: 0.9,
     mixed_topic_score: 0.2,
     dominant_topic_share: 0.75,
   })
   assert.equal(result.family_kind, "coherent_single_issue")
+})
+
+test("boundary: low_margin_count at 40% exactly triggers split-review", () => {
+  const result = call({
+    classification_coverage_share: 0.85,
+    mixed_topic_score: 0.65,
+    dominant_topic_share: 0.4,
+    low_margin_count: 40,
+    observation_count: 100,
+  })
+  assert.equal(result.family_kind, "needs_split_review")
+})
+
+// ============================================================================
+// Auxiliary signals (cluster_path, avg_confidence_proxy)
+// ============================================================================
+
+test("cluster_path=fallback adds review reason even when otherwise coherent", () => {
+  const result = call({
+    classification_coverage_share: 0.9,
+    mixed_topic_score: 0.15,
+    dominant_topic_share: 0.85,
+    cluster_path: "fallback",
+  })
+  assert.equal(result.family_kind, "coherent_single_issue")
+  assert.equal(result.needs_human_review, true)
+  assert.ok(result.review_reasons.includes("fallback_cluster_path"))
+})
+
+test("low avg_confidence_proxy adds review reason on coherent cluster", () => {
+  const result = call({
+    classification_coverage_share: 0.9,
+    mixed_topic_score: 0.15,
+    dominant_topic_share: 0.85,
+    avg_confidence_proxy: 0.2,
+  })
+  assert.equal(result.family_kind, "coherent_single_issue")
+  assert.equal(result.needs_human_review, true)
+  assert.ok(result.review_reasons.includes("low_avg_layer0_confidence"))
+})
+
+test("avg_confidence_proxy of null does not trigger the low-confidence reason", () => {
+  const result = call({
+    classification_coverage_share: 0.9,
+    mixed_topic_score: 0.15,
+    dominant_topic_share: 0.85,
+    avg_confidence_proxy: null,
+  })
   assert.equal(result.needs_human_review, false)
+  assert.deepEqual(result.review_reasons, [])
+})
+
+test("aux signals are appended after primary review reasons (low_evidence path)", () => {
+  const result = call({
+    classification_coverage_share: 0.3,
+    cluster_path: "fallback",
+  })
+  assert.equal(result.family_kind, "low_evidence")
+  assert.deepEqual(result.review_reasons, [
+    "low_classification_coverage",
+    "fallback_cluster_path",
+  ])
+})
+
+// ============================================================================
+// observation_count = 0 edge case
+// ============================================================================
+
+test("zero observations does not divide-by-zero in low_margin_share", () => {
+  const result = call({
+    classification_coverage_share: 0.85,
+    mixed_topic_score: 0.65,
+    dominant_topic_share: 0.4,
+    low_margin_count: 0,
+    observation_count: 0,
+  })
+  // With observation_count=0, low_margin_share is treated as 0, so the
+  // mixed branch picks mixed_multi_causal (not split_review).
+  assert.equal(result.family_kind, "mixed_multi_causal")
 })
