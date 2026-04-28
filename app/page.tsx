@@ -145,6 +145,38 @@ function DashboardContentInner() {
     return parsed
   }, [searchParams])
 
+  /**
+   * Drop `?issues_page` from the URL whenever a filter that changes the
+   * /api/issues count is mutated outside the URL helpers (i.e. global
+   * filter bar, V3 time buttons, hero card setGlobalCategory, etc.).
+   * The PagerBar self-clamps so the visible page is always valid, but
+   * the URL would otherwise read "page 5" while the user is staring at
+   * page 1 — confusing on copy-paste / refresh.
+   */
+  const resetIssuesPageInUrl = useCallback(() => {
+    if (!searchParams.has("issues_page")) return
+    const next = new URLSearchParams(searchParams.toString())
+    next.delete("issues_page")
+    const qs = next.toString()
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+  }, [pathname, router, searchParams])
+
+  const setGlobalCategoryWithReset = useCallback(
+    (slug: string) => {
+      setGlobalCategory(slug)
+      resetIssuesPageInUrl()
+    },
+    [resetIssuesPageInUrl],
+  )
+
+  const setGlobalDaysWithReset = useCallback(
+    (days: number) => {
+      setGlobalDays(days)
+      resetIssuesPageInUrl()
+    },
+    [resetIssuesPageInUrl],
+  )
+
   const applyIssueSearchParams = useCallback(
     (patch: { clusterId?: string | null; compoundKey?: string | null; llmCategory?: string | null }) => {
       const next = new URLSearchParams(searchParams.toString())
@@ -345,7 +377,7 @@ function DashboardContentInner() {
 
   const handleNavigateToCategory = (slug: string) => {
     // Stay on Dashboard tab and scroll to issues table with category filter
-    setGlobalCategory(slug)
+    setGlobalCategoryWithReset(slug)
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => {
         document.getElementById("dashboard-issues-table-anchor")?.scrollIntoView({
@@ -358,7 +390,7 @@ function DashboardContentInner() {
 
   const handleHeroExploreIssues = (categorySlug: string) => {
     setActiveTab("v3")
-    setGlobalCategory(categorySlug)
+    setGlobalCategoryWithReset(categorySlug)
     if (typeof window !== "undefined") {
       // Retry mechanism to wait for the element to appear in the DOM after tab switch
       const scrollToElement = (retries = 10) => {
@@ -413,7 +445,7 @@ function DashboardContentInner() {
 
   const handleCategoryViewFullListInTriage = (categorySlug: string) => {
     setActiveTab("v3")
-    setGlobalCategory(categorySlug)
+    setGlobalCategoryWithReset(categorySlug)
     // Clear any existing llmCategory filter to show all issues in the category
     applyIssueSearchParams({ llmCategory: null, clusterId: null, compoundKey: null })
     if (typeof window !== "undefined") {
@@ -450,6 +482,9 @@ function DashboardContentInner() {
           next.delete("triage_group")
         }
       }
+      // llm_category feeds /api/issues; group is triage-only but resetting
+      // is harmless (user is on the Classifications tab when this fires).
+      next.delete("issues_page")
       const qs = next.toString()
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
     },
@@ -464,7 +499,7 @@ function DashboardContentInner() {
   )
 
   const handleStoryHeuristicFromAtlas = (slug: string) => {
-    setGlobalCategory(slug)
+    setGlobalCategoryWithReset(slug)
     applyTriageContextParams({ llm: null, group: null })
   }
 
@@ -488,7 +523,7 @@ const handleHeroLlmCategoryDrill = (
   llmCategorySlug: string,
   ) => {
   // Stay on Dashboard tab and scroll to issues table with LLM category filter
-  setGlobalCategory(categorySlug)
+  setGlobalCategoryWithReset(categorySlug)
   applyIssueSearchParams({ llmCategory: llmCategorySlug })
   if (typeof window !== "undefined") {
   requestAnimationFrame(() => {
@@ -836,10 +871,10 @@ const handleHeroLlmCategoryDrill = (
             {/* Global Filters */}
             <GlobalFilterBar
               timeDays={globalDays}
-              onTimeChange={setGlobalDays}
+              onTimeChange={setGlobalDaysWithReset}
               categoryOptions={categoryOptions}
               categoryValue={globalCategory}
-              onCategoryChange={setGlobalCategory}
+              onCategoryChange={setGlobalCategoryWithReset}
             />
 
             {/* Dashboard Tab */}
@@ -950,7 +985,7 @@ const handleHeroLlmCategoryDrill = (
   activeClusterId={clusterIdFromUrl ?? undefined}
   activeClusterLabel={activeClusterLabel ?? undefined}
   activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
-  onClearGlobalCategory={() => setGlobalCategory("all")}
+  onClearGlobalCategory={() => setGlobalCategoryWithReset("all")}
   selectedSourceSlugs={sourcesFromUrl}
   onSourceSelectionChange={handleIssueSourceSelectionChange}
   />
@@ -975,7 +1010,7 @@ const handleHeroLlmCategoryDrill = (
                       key={d}
                       size="sm"
                       variant={globalDays === d ? "default" : "outline"}
-                      onClick={() => setGlobalDays(d)}
+                      onClick={() => setGlobalDaysWithReset(d)}
                       className="h-7 px-2.5 text-xs"
                     >
                       {d === 0 ? "All" : `${d}d`}
@@ -1010,7 +1045,7 @@ const handleHeroLlmCategoryDrill = (
                   activeCompoundKey={compoundKeyFromUrl}
                   activeClusterId={clusterIdFromUrl ?? undefined}
                   activeClusterLabel={activeClusterLabel ?? undefined}
-                  onClearGlobalCategory={() => setGlobalCategory("all")}
+                  onClearGlobalCategory={() => setGlobalCategoryWithReset("all")}
                   selectedSourceSlugs={sourcesFromUrl}
                   onSourceSelectionChange={handleIssueSourceSelectionChange}
                   pagination={{
@@ -1039,10 +1074,10 @@ const handleHeroLlmCategoryDrill = (
                 onOpenClusterInTriage={handleStoryOpenClusterInTriage}
                 activeClusterId={clusterIdFromUrl}
                 timeDays={globalDays}
-                onTimeChange={setGlobalDays}
+                onTimeChange={setGlobalDaysWithReset}
                 categoryOptions={categoryOptions}
                 categoryValue={globalCategory}
-                onCategoryChange={setGlobalCategory}
+                onCategoryChange={setGlobalCategoryWithReset}
                 lastSyncLabel={lastScrapeTime}
                 globalTimeLabel={globalTimeLabel}
                 asOfActive={asOf != null}
