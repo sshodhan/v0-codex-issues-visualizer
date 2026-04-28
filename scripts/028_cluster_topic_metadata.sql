@@ -57,6 +57,13 @@ current_topic_version as (
   -- shape; future bumps that preserve the shape will be picked up
   -- automatically. A bump that changes the shape MUST also rev this
   -- view (see docs/CLUSTERING_DESIGN.md §4.6).
+  --
+  -- `limit 1` here is exact, not a tiebreaker: the partial unique
+  -- index `idx_algorithm_versions_one_current` (scripts/007:130) on
+  -- `(kind) where current_effective` guarantees at most one such row
+  -- per kind. Do NOT add `order by version desc` — the registry
+  -- versions are strings (`'v10'` would lex-sort before `'v9'`), and
+  -- the index already enforces single-row determinism.
   select version
   from algorithm_versions
   where kind = 'category' and current_effective
