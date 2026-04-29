@@ -4,9 +4,17 @@
 export type QualityBucket = "safe_to_trust" | "needs_review" | "input_problem"
 
 export interface QualityRow {
+  /** PK of the latest `family_classifications` row for the cluster
+   *  (the view's `id`). Null when normalising older API responses
+   *  that didn't surface it. The review form requires it before
+   *  POST /api/admin/family-classification/review is enabled. */
+  classification_id: string | null
   cluster_id: string
   quality_bucket: QualityBucket
   family_kind: string | null
+  family_title: string | null
+  family_summary: string | null
+  confidence: number | null
   recommended_action: string
   review_reasons: string[]
   quality_reasons: string[]
@@ -15,6 +23,12 @@ export interface QualityRow {
   observation_count: number
   llm_status: string | null
   llm_model: string | null
+  /** The LLM's suggested family_kind, surfaced alongside the heuristic
+   *  family_kind so the review form can render a heuristic-vs-LLM
+   *  comparison and the tie_break_context snapshot block has real data
+   *  to record. Null when the LLM step did not run or the API response
+   *  pre-dates this field. */
+  llm_suggested_family_kind: string | null
   representative_count: number
   representative_preview: string[]
   common_matched_phrase_count: number
@@ -92,9 +106,17 @@ export function normalizeQualityRow(input: unknown): QualityRow | null {
   const cluster_id = asString(r.cluster_id) ?? asString(r.clusterId)
   if (!cluster_id) return null
   return {
+    classification_id:
+      asString(r.classification_id) ??
+      asString(r.classificationId) ??
+      asString(r.id) ??
+      null,
     cluster_id,
     quality_bucket: normalizeBucket(r.quality_bucket ?? r.qualityBucket),
     family_kind: asString(r.family_kind) ?? asString(r.familyKind),
+    family_title: asString(r.family_title) ?? asString(r.familyTitle),
+    family_summary: asString(r.family_summary) ?? asString(r.familySummary),
+    confidence: asNumber(r.confidence),
     recommended_action:
       asString(r.recommended_action) ?? asString(r.recommendedAction) ?? "",
     review_reasons: asStringArray(r.review_reasons ?? r.reviewReasons),
@@ -106,6 +128,9 @@ export function normalizeQualityRow(input: unknown): QualityRow | null {
     observation_count: asNumber(r.observation_count ?? r.observationCount) ?? 0,
     llm_status: asString(r.llm_status) ?? asString(r.llmStatus),
     llm_model: asString(r.llm_model) ?? asString(r.llmModel),
+    llm_suggested_family_kind:
+      asString(r.llm_suggested_family_kind) ??
+      asString(r.llmSuggestedFamilyKind),
     representative_count: asNumber(r.representative_count ?? r.representativeCount) ?? 0,
     representative_preview: asStringArray(r.representative_preview ?? r.representativePreview),
     common_matched_phrase_count:

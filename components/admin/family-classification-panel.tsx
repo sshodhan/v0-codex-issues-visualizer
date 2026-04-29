@@ -1,6 +1,6 @@
 "use client"
 
-import { Fragment, useEffect, useState } from "react"
+import { Fragment, useCallback, useEffect, useState } from "react"
 import { CircleCheck, Loader2, Play, RefreshCw, TestTube2, TriangleAlert, XCircle } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 import {
   type BucketFilter,
   type QualityBucket,
@@ -33,9 +34,100 @@ import {
   isBadLlmStatus,
   normalizeQualityRow,
 } from "@/lib/admin/family-classification-quality-ui"
+import {
+  ERROR_REASONS,
+  ERROR_SOURCES,
+  FAMILY_KIND_VALUES,
+  REVIEW_DECISIONS,
+  buildFamilyReviewEvidenceSnapshot,
+  type ErrorReason,
+  type ErrorSource,
+  type FamilyKind as ReviewFamilyKind,
+  type FamilyReviewSummary,
+  type ReviewDecision,
+} from "@/lib/admin/family-classification-review"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 
 const ROUTE = "/api/admin/family-classification"
+const REVIEW_ROUTE = "/api/admin/family-classification/review"
+
+// Display labels for the QA-review machine codes. Kept colocated with
+// the panel so display-string churn doesn't ripple into the validator
+// module.
+const REVIEW_VERDICT_LABELS: Record<string, string> = {
+  correct: "Correct",
+  incorrect: "Incorrect",
+  unclear: "Unclear",
+}
+
+const ERROR_SOURCE_LABELS: Record<string, string> = {
+  stage_1_regex_topic: "Stage 1 — regex / topic",
+  stage_2_embedding: "Stage 2 — embedding",
+  stage_3_clustering: "Stage 3 — clustering",
+  stage_4_llm_classification: "Stage 4 — LLM classification",
+  stage_4_family_naming: "Stage 4 — family naming",
+  stage_4_fallback: "Stage 4 — deterministic fallback",
+  stage_5_review_workflow: "Stage 5 — review workflow",
+  representative_selection: "Representative selection",
+  data_quality: "Data quality",
+  unknown: "Unknown",
+}
+
+const ERROR_REASON_LABELS: Record<string, string> = {
+  wrong_family_kind: "Wrong family kind",
+  bad_family_title: "Bad family title",
+  bad_family_summary: "Bad family summary",
+  bad_representatives: "Bad representatives",
+  bad_cluster_membership: "Bad cluster membership",
+  llm_hallucinated: "LLM hallucinated",
+  llm_too_generic: "LLM too generic",
+  heuristic_overrode_better_llm_answer: "Heuristic overrode better LLM answer",
+  llm_disagreed_but_was_wrong: "LLM disagreed but was wrong",
+  low_evidence_should_not_be_coherent: "Low evidence — should not be coherent",
+  general_feedback_not_actionable: "General feedback — not actionable",
+  singleton_not_recurring: "Singleton (not recurring)",
+  mixed_cluster_should_split: "Mixed cluster — should split",
+  false_safe_to_trust: "False safe-to-trust",
+  false_needs_review: "False needs-review",
+  false_input_problem: "False input-problem",
+  other: "Other",
+}
+
+const REVIEW_DECISION_LABELS: Record<string, string> = {
+  accept_heuristic: "Accept heuristic",
+  accept_llm: "Accept LLM suggestion",
+  override_family_kind: "Override family kind",
+  mark_low_evidence: "Mark as low evidence",
+  mark_general_feedback: "Mark as general feedback",
+  needs_more_examples: "Needs more examples",
+  should_split_cluster: "Should split cluster",
+  not_actionable: "Not actionable",
+}
+
+const FAMILY_KIND_REVIEW_LABELS: Record<string, string> = {
+  coherent_single_issue: "Coherent",
+  mixed_multi_causal: "Mixed (multi-causal)",
+  needs_split_review: "Needs split review",
+  low_evidence: "Low evidence",
+  unclear: "Unclear",
+}
+
+interface LatestReview {
+  id: string
+  classification_id: string
+  cluster_id: string
+  review_verdict: string
+  review_decision: string | null
+  expected_family_kind: string | null
+  actual_family_kind: string | null
+  quality_bucket: string | null
+  error_source: string | null
+  error_reason: string | null
+  notes: string | null
+  reviewed_by: string | null
+  reviewed_at: string
+  evidence_snapshot: Record<string, unknown> | null
+}
 
 interface PendingCluster {
   cluster_id: string
@@ -530,7 +622,7 @@ function bucketLabel(bucket: string | null | undefined): string {
   return "—"
 }
 
-const TABLE_COLUMN_COUNT = 9
+const TABLE_COLUMN_COUNT = 10
 
 interface FamilyQualityDashboardProps {
   rows: QualityRow[]
@@ -542,6 +634,48 @@ interface FamilyQualityDashboardProps {
   expandedRows: Set<string>
   onToggleRow: (clusterId: string) => void
   onRetry: () => void
+  latestReviewByClassification: Record<string, LatestReview>
+  reviewSummary: FamilyReviewSummary | null
+  reviewSummaryLoading: boolean
+  reviewSummaryError: string | null
+  onSubmitReview: (input: ReviewSubmitInput) => Promise<{ ok: boolean; error?: string }>
+}
+
+interface ReviewSubmitInput {
+  row: QualityRow
+  reviewVerdict: "correct" | "incorrect" | "unclear"
+  reviewDecision?: ReviewDecision
+  expectedFamilyKind?: ReviewFamilyKind
+  errorSource?: ErrorSource
+  errorReason?: ErrorReason
+  notes?: string
+}
+
+// Detects rows where heuristic and LLM disagreed and the dashboard
+// wants the reviewer to make an explicit tie-break call. Scoped tightly
+// to actual disagreement signals so the amber "Human tie-break needed"
+// box doesn't appear on every needs_review row:
+//   * `llm_disagrees_with_heuristic` review reason — the canonical
+//     signal written by the classifier when the two suggest different
+//     family_kinds;
+//   * `llm_suggested_family_kind` differs from the stored
+//     `family_kind` — same disagreement seen directly, used as a
+//     belt-and-suspenders check in case the review_reason wasn't set
+//     (e.g. older classifications or the LLM's status was non-success
+//     but it still emitted a suggested kind).
+// "Needs review" rows that aren't a heuristic-vs-LLM split are still
+// reviewable via the verdict buttons; they just don't get the dedicated
+// tie-break section.
+function isTieBreakRow(row: QualityRow): boolean {
+  if (row.review_reasons.includes("llm_disagrees_with_heuristic")) return true
+  if (
+    row.llm_suggested_family_kind != null &&
+    row.family_kind != null &&
+    row.llm_suggested_family_kind !== row.family_kind
+  ) {
+    return true
+  }
+  return false
 }
 
 function FamilyQualityDashboard({
@@ -554,6 +688,11 @@ function FamilyQualityDashboard({
   expandedRows,
   onToggleRow,
   onRetry,
+  latestReviewByClassification,
+  reviewSummary,
+  reviewSummaryLoading,
+  reviewSummaryError,
+  onSubmitReview,
 }: FamilyQualityDashboardProps) {
   const bucketCounts = deriveBucketCounts(summary, rows)
   const llmFailedCount = rows.filter((r) => isBadLlmStatus(r.llm_status)).length
@@ -613,6 +752,12 @@ function FamilyQualityDashboard({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        <ReviewSummaryCard
+          summary={reviewSummary}
+          loading={reviewSummaryLoading}
+          error={reviewSummaryError}
+        />
+
         {error ? (
           <Alert variant="destructive">
             <XCircle className="h-4 w-4" />
@@ -703,11 +848,15 @@ function FamilyQualityDashboard({
                   <TableHead>Observations</TableHead>
                   <TableHead>Reps</TableHead>
                   <TableHead>Recommended action</TableHead>
+                  <TableHead>Review</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredRows.map((row) => {
                   const expanded = expandedRows.has(row.cluster_id)
+                  const latestReview = row.classification_id
+                    ? latestReviewByClassification[row.classification_id] ?? null
+                    : null
                   return (
                     <Fragment key={row.cluster_id}>
                       <TableRow
@@ -747,6 +896,9 @@ function FamilyQualityDashboard({
                         >
                           {row.recommended_action || "—"}
                         </TableCell>
+                        <TableCell>
+                          <ReviewVerdictBadge review={latestReview} />
+                        </TableCell>
                       </TableRow>
                       {expanded ? (
                         <TableRow>
@@ -754,7 +906,17 @@ function FamilyQualityDashboard({
                             colSpan={TABLE_COLUMN_COUNT}
                             className="bg-muted/20 text-xs"
                           >
-                            <FamilyQualityRowDetails row={row} />
+                            <FamilyQualityRowDetails
+                              row={row}
+                              latestReview={
+                                row.classification_id
+                                  ? latestReviewByClassification[
+                                      row.classification_id
+                                    ] ?? null
+                                  : null
+                              }
+                              onSubmitReview={onSubmitReview}
+                            />
                           </TableCell>
                         </TableRow>
                       ) : null}
@@ -777,7 +939,15 @@ function FamilyQualityDashboard({
   )
 }
 
-function FamilyQualityRowDetails({ row }: { row: QualityRow }) {
+function FamilyQualityRowDetails({
+  row,
+  latestReview,
+  onSubmitReview,
+}: {
+  row: QualityRow
+  latestReview: LatestReview | null
+  onSubmitReview: (input: ReviewSubmitInput) => Promise<{ ok: boolean; error?: string }>
+}) {
   return (
     <div className="grid gap-4 py-3 md:grid-cols-2">
       <section className="space-y-2">
@@ -917,6 +1087,14 @@ function FamilyQualityRowDetails({ row }: { row: QualityRow }) {
       ) : null}
 
       <section className="md:col-span-2">
+        <ReviewFormPanel
+          row={row}
+          latestReview={latestReview}
+          onSubmitReview={onSubmitReview}
+        />
+      </section>
+
+      <section className="md:col-span-2">
         <details className="rounded-md border bg-background/60 px-2 py-1">
           <summary className="cursor-pointer text-[11px] text-muted-foreground">
             Raw row JSON
@@ -926,6 +1104,707 @@ function FamilyQualityRowDetails({ row }: { row: QualityRow }) {
           </pre>
         </details>
       </section>
+    </div>
+  )
+}
+
+function reviewVerdictBadgeVariant(
+  verdict: string | null | undefined,
+): "default" | "secondary" | "destructive" | "outline" {
+  if (verdict === "correct") return "default"
+  if (verdict === "incorrect") return "destructive"
+  if (verdict === "unclear") return "secondary"
+  return "outline"
+}
+
+function ReviewVerdictBadge({ review }: { review: LatestReview | null }) {
+  if (!review) {
+    return (
+      <span className="text-[10px] text-muted-foreground">—</span>
+    )
+  }
+  return (
+    <Badge
+      variant={reviewVerdictBadgeVariant(review.review_verdict)}
+      className="text-[10px] font-normal"
+      title={`reviewed_at ${review.reviewed_at}`}
+    >
+      {humanizeMachineCode(review.review_verdict, REVIEW_VERDICT_LABELS)}
+    </Badge>
+  )
+}
+
+// Inline review form. Lives inside the expanded Family Quality row so
+// reviewers don't lose the evidence context while choosing a verdict.
+// The three verdict buttons toggle which auxiliary fields render below.
+//
+// Submit semantics (mirrored on the server):
+//   * correct: error_source/error_reason are forced to null; one POST.
+//   * incorrect: requires error_source + error_reason; if error_reason
+//     is wrong_family_kind, also requires expected_family_kind.
+//   * unclear: notes optional, nothing else required.
+//   * review_decision (independent of verdict): override_family_kind
+//     also requires expected_family_kind; mark_low_evidence implies
+//     expected_family_kind = low_evidence on the server.
+//
+// On submit success the form switches to a success message and the
+// row's main "Review" pill flips to the new verdict — but the row
+// stays in the dashboard. There is no file/dismiss/defer flow.
+function ReviewFormPanel({
+  row,
+  latestReview,
+  onSubmitReview,
+}: {
+  row: QualityRow
+  latestReview: LatestReview | null
+  onSubmitReview: (input: ReviewSubmitInput) => Promise<{ ok: boolean; error?: string }>
+}) {
+  const [verdict, setVerdict] = useState<"correct" | "incorrect" | "unclear" | null>(null)
+  const [reviewDecision, setReviewDecision] = useState<string>("")
+  const [expectedFamilyKind, setExpectedFamilyKind] = useState<string>("")
+  const [errorSource, setErrorSource] = useState<string>("")
+  const [errorReason, setErrorReason] = useState<string>("")
+  const [notes, setNotes] = useState<string>("")
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitOk, setSubmitOk] = useState(false)
+
+  const disabled = !row.classification_id
+  const tieBreakNeeded = isTieBreakRow(row)
+
+  const reset = () => {
+    setVerdict(null)
+    setReviewDecision("")
+    setExpectedFamilyKind("")
+    setErrorSource("")
+    setErrorReason("")
+    setNotes("")
+    setSubmitError(null)
+  }
+
+  const requiresWrongKind = errorReason === "wrong_family_kind"
+  const decisionRequiresExpectedKind = reviewDecision === "override_family_kind"
+
+  // Mirrors the server-side tie-break contract: when heuristic and LLM
+  // disagreed, the reviewer cannot mark the row "correct" while also
+  // saying "accept_llm". The Stage 5 → Stage 4 feedback signal would
+  // otherwise be ambiguous for the Improvement Workbench.
+  const correctAcceptLlmContradiction =
+    verdict === "correct" &&
+    reviewDecision === "accept_llm" &&
+    row.llm_suggested_family_kind != null &&
+    row.family_kind != null &&
+    row.llm_suggested_family_kind !== row.family_kind
+
+  // Mirrors the server-side should_split_cluster constraint.
+  const splitClusterErrorSourceInvalid =
+    reviewDecision === "should_split_cluster" &&
+    errorSource !== "" &&
+    errorSource !== "stage_3_clustering" &&
+    errorSource !== "representative_selection"
+
+  const canSubmit = (() => {
+    if (!verdict || disabled || submitting) return false
+    if (verdict === "incorrect") {
+      if (!errorSource || !errorReason) return false
+      if (requiresWrongKind && !expectedFamilyKind) return false
+    }
+    if (decisionRequiresExpectedKind && !expectedFamilyKind) return false
+    if (correctAcceptLlmContradiction) return false
+    if (splitClusterErrorSourceInvalid) return false
+    return true
+  })()
+
+  const submit = async () => {
+    if (!verdict) return
+    setSubmitting(true)
+    setSubmitError(null)
+    setSubmitOk(false)
+    const payload: ReviewSubmitInput = {
+      row,
+      reviewVerdict: verdict,
+      ...(reviewDecision
+        ? { reviewDecision: reviewDecision as ReviewDecision }
+        : {}),
+      ...(expectedFamilyKind
+        ? { expectedFamilyKind: expectedFamilyKind as ReviewFamilyKind }
+        : {}),
+      ...(verdict === "incorrect"
+        ? {
+            errorSource: errorSource as ErrorSource,
+            errorReason: errorReason as ErrorReason,
+            ...(notes.trim() ? { notes: notes.trim() } : {}),
+          }
+        : verdict === "unclear"
+          ? notes.trim()
+            ? { notes: notes.trim() }
+            : {}
+          : {}),
+    }
+    try {
+      const result = await onSubmitReview(payload)
+      if (!result.ok) {
+        setSubmitError(result.error ?? "Failed to submit review")
+        return
+      }
+      setSubmitOk(true)
+      reset()
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border bg-background/60 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Review classification quality
+          </div>
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+            Append-only feedback. Does not change the classification or
+            its quality bucket — feeds future precision/recall analysis.
+          </p>
+        </div>
+        {latestReview ? (
+          <div className="text-[11px] text-muted-foreground">
+            <span className="mr-1">Latest:</span>
+            <Badge
+              variant={reviewVerdictBadgeVariant(latestReview.review_verdict)}
+              className="text-[10px] font-normal"
+            >
+              {humanizeMachineCode(latestReview.review_verdict, REVIEW_VERDICT_LABELS)}
+            </Badge>{" "}
+            <span className="tabular-nums">
+              {new Date(latestReview.reviewed_at).toLocaleString()}
+            </span>
+            {latestReview.reviewed_by ? (
+              <span className="ml-1">· {latestReview.reviewed_by}</span>
+            ) : null}
+            {latestReview.review_decision ? (
+              <span className="ml-1">
+                · decision{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">
+                  {humanizeMachineCode(
+                    latestReview.review_decision,
+                    REVIEW_DECISION_LABELS,
+                  )}
+                </code>
+              </span>
+            ) : null}
+            {latestReview.error_source ? (
+              <span className="ml-1">
+                · source{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">
+                  {humanizeMachineCode(latestReview.error_source, ERROR_SOURCE_LABELS)}
+                </code>
+              </span>
+            ) : null}
+            {latestReview.error_reason ? (
+              <span className="ml-1">
+                · reason{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">
+                  {humanizeMachineCode(latestReview.error_reason, ERROR_REASON_LABELS)}
+                </code>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      {disabled ? (
+        <Alert variant="destructive">
+          <AlertTitle className="text-xs">Cannot review this row</AlertTitle>
+          <AlertDescription className="text-[11px]">
+            No classification_id is associated with this row. Re-run the
+            quality endpoint or re-classify this cluster before
+            submitting a review.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={verdict === "correct" ? "default" : "outline"}
+          onClick={() => {
+            setVerdict("correct")
+            setSubmitOk(false)
+            setSubmitError(null)
+          }}
+          disabled={disabled || submitting}
+          className="h-7 px-2 text-xs"
+        >
+          Correct
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={verdict === "incorrect" ? "destructive" : "outline"}
+          onClick={() => {
+            setVerdict("incorrect")
+            setSubmitOk(false)
+            setSubmitError(null)
+          }}
+          disabled={disabled || submitting}
+          className="h-7 px-2 text-xs"
+        >
+          Incorrect
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={verdict === "unclear" ? "secondary" : "outline"}
+          onClick={() => {
+            setVerdict("unclear")
+            setSubmitOk(false)
+            setSubmitError(null)
+          }}
+          disabled={disabled || submitting}
+          className="h-7 px-2 text-xs"
+        >
+          Unclear
+        </Button>
+      </div>
+
+      {verdict === "incorrect" ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="space-y-1 text-[11px]">
+            <span className="uppercase tracking-wide text-muted-foreground">
+              Error source<span className="text-destructive"> *</span>
+            </span>
+            <Select value={errorSource} onValueChange={setErrorSource}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder="Select error source (stage)" />
+              </SelectTrigger>
+              <SelectContent>
+                {ERROR_SOURCES.map((source) => (
+                  <SelectItem key={source} value={source}>
+                    {humanizeMachineCode(source, ERROR_SOURCE_LABELS)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+          <label className="space-y-1 text-[11px]">
+            <span className="uppercase tracking-wide text-muted-foreground">
+              Error reason<span className="text-destructive"> *</span>
+            </span>
+            <Select value={errorReason} onValueChange={setErrorReason}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder="Select error reason" />
+              </SelectTrigger>
+              <SelectContent>
+                {ERROR_REASONS.map((reason) => (
+                  <SelectItem key={reason} value={reason}>
+                    {humanizeMachineCode(reason, ERROR_REASON_LABELS)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+          {requiresWrongKind ? (
+            <label className="space-y-1 text-[11px] sm:col-span-2">
+              <span className="uppercase tracking-wide text-muted-foreground">
+                Expected family kind<span className="text-destructive"> *</span>
+              </span>
+              <Select
+                value={expectedFamilyKind}
+                onValueChange={setExpectedFamilyKind}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Select expected family kind" />
+                </SelectTrigger>
+                <SelectContent>
+                  {FAMILY_KIND_VALUES.map((kind) => (
+                    <SelectItem key={kind} value={kind}>
+                      {humanizeMachineCode(kind, FAMILY_KIND_REVIEW_LABELS)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          ) : null}
+          <label className="space-y-1 text-[11px] sm:col-span-2">
+            <span className="uppercase tracking-wide text-muted-foreground">
+              Notes (optional)
+            </span>
+            <Textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="What went wrong? Anything the next reviewer should know."
+              className="min-h-[60px] text-xs"
+            />
+          </label>
+        </div>
+      ) : null}
+
+      {/* Human tie-break section. Visible only when heuristic and LLM
+          disagreed (canonical `llm_disagrees_with_heuristic` review
+          reason or directly comparing family_kind vs
+          llm_suggested_family_kind). accept_heuristic / accept_llm pair
+          naturally with "correct" / "incorrect" verdicts but the form
+          does not enforce — the dashboard shows summary breakdowns
+          either way. */}
+      {tieBreakNeeded && verdict ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-50/40 p-2 dark:bg-amber-950/20">
+          <div className="flex items-center gap-2">
+            <TriangleAlert className="h-3 w-3 text-amber-600" />
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Human tie-break
+            </span>
+          </div>
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+            Heuristic and LLM disagreed on the family kind. Record which
+            side you took so future precision/recall tiles can split by
+            tie-break outcome.
+          </p>
+          {row.family_kind || row.llm_suggested_family_kind ? (
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+              <span className="text-muted-foreground">heuristic:</span>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                {row.family_kind
+                  ? humanizeMachineCode(row.family_kind, FAMILY_KIND_REVIEW_LABELS)
+                  : "—"}
+              </Badge>
+              <span className="text-muted-foreground">LLM:</span>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                {row.llm_suggested_family_kind
+                  ? humanizeMachineCode(
+                      row.llm_suggested_family_kind,
+                      FAMILY_KIND_REVIEW_LABELS,
+                    )
+                  : "—"}
+              </Badge>
+            </div>
+          ) : null}
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <label className="space-y-1 text-[11px]">
+              <span className="uppercase tracking-wide text-muted-foreground">
+                Decision
+              </span>
+              <Select value={reviewDecision} onValueChange={setReviewDecision}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Select review decision" />
+                </SelectTrigger>
+                <SelectContent>
+                  {REVIEW_DECISIONS.map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {humanizeMachineCode(d, REVIEW_DECISION_LABELS)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            {decisionRequiresExpectedKind ? (
+              <label className="space-y-1 text-[11px]">
+                <span className="uppercase tracking-wide text-muted-foreground">
+                  Expected family kind<span className="text-destructive"> *</span>
+                </span>
+                <Select
+                  value={expectedFamilyKind}
+                  onValueChange={setExpectedFamilyKind}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Select expected family kind" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FAMILY_KIND_VALUES.map((kind) => (
+                      <SelectItem key={kind} value={kind}>
+                        {humanizeMachineCode(kind, FAMILY_KIND_REVIEW_LABELS)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {verdict === "unclear" ? (
+        <label className="space-y-1 text-[11px]">
+          <span className="uppercase tracking-wide text-muted-foreground">
+            Notes (optional)
+          </span>
+          <Textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Why is this unclear? What additional context would resolve it?"
+            className="min-h-[60px] text-xs"
+          />
+        </label>
+      ) : null}
+
+      {correctAcceptLlmContradiction ? (
+        <Alert variant="destructive">
+          <AlertTitle className="text-xs">Contract mismatch</AlertTitle>
+          <AlertDescription className="text-[11px]">
+            &ldquo;Correct&rdquo; with &ldquo;Accept LLM suggestion&rdquo;
+            isn&rsquo;t allowed when heuristic and LLM disagreed on the
+            family kind — pick &ldquo;Incorrect&rdquo; instead.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {splitClusterErrorSourceInvalid ? (
+        <Alert variant="destructive">
+          <AlertTitle className="text-xs">Error source mismatch</AlertTitle>
+          <AlertDescription className="text-[11px]">
+            &ldquo;Should split cluster&rdquo; only blames Stage 3
+            (clustering) or representative selection. Pick one of those.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {verdict ? (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <Button
+            type="button"
+            size="sm"
+            onClick={submit}
+            disabled={!canSubmit}
+            className="h-7 px-2 text-xs"
+          >
+            {submitting ? (
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            ) : null}
+            Submit review
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={reset}
+            disabled={submitting}
+            className="h-7 px-2 text-xs"
+          >
+            Cancel
+          </Button>
+        </div>
+      ) : null}
+
+      {submitError ? (
+        <Alert variant="destructive">
+          <AlertTitle className="text-xs">Could not submit review</AlertTitle>
+          <AlertDescription className="text-[11px]">
+            {submitError}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {submitOk ? (
+        <Alert className="border-green-600/40 bg-green-50/40 dark:bg-green-950/20">
+          <AlertTitle className="text-xs">Review recorded</AlertTitle>
+          <AlertDescription className="text-[11px]">
+            Saved as an append-only review. The classification and its
+            quality bucket are unchanged.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
+  )
+}
+
+// Read-only summary card for the Family Quality section. Tiles are
+// directional, not statistically significant — labelled as such so an
+// operator with three reviews doesn't read precision = 1.0 as a
+// production guarantee.
+function ReviewSummaryCard({
+  summary,
+  loading,
+  error,
+}: {
+  summary: FamilyReviewSummary | null
+  loading: boolean
+  error: string | null
+}) {
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Could not load review summary</AlertTitle>
+        <AlertDescription className="text-xs">{error}</AlertDescription>
+      </Alert>
+    )
+  }
+
+  if (!summary || summary.reviewed_count === 0) {
+    return (
+      <div className="rounded-md border border-dashed bg-background/40 p-3 text-[11px] text-muted-foreground">
+        <div className="font-semibold uppercase tracking-wide">
+          QA review summary
+        </div>
+        <div className="mt-1">
+          {loading
+            ? "Loading review summary…"
+            : "Not enough reviewed rows yet."}
+        </div>
+      </div>
+    )
+  }
+
+  const formatPrecision = (value: number | null): string => {
+    if (value == null || !Number.isFinite(value)) return "—"
+    return `${(value * 100).toFixed(0)}%`
+  }
+
+  return (
+    <div className="rounded-md border bg-background/40 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            QA review summary
+          </div>
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+            Directional precision/recall signal — small samples are not
+            statistically significant. Latest review per classification.
+          </p>
+        </div>
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {summary.reviewed_count} reviewed
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-4">
+        <StatTile
+          label="Reviewed"
+          value={summary.reviewed_count}
+          hint="Distinct classifications with at least one review."
+        />
+        <StatTile
+          label="Correct"
+          value={summary.correct_count}
+        />
+        <StatTile
+          label="Incorrect"
+          value={summary.incorrect_count}
+          emphasis={summary.incorrect_count > 0}
+        />
+        <StatTile
+          label="Unclear"
+          value={summary.unclear_count}
+        />
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div className="rounded-md border p-3">
+          <div className="text-xs text-muted-foreground">
+            Safe-to-trust precision
+          </div>
+          <div className="text-xl font-semibold tabular-nums">
+            {formatPrecision(summary.safe_to_trust_precision)}
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            {summary.safe_to_trust_correct} correct of{" "}
+            {summary.safe_to_trust_reviewed} reviewed in{" "}
+            <code className="rounded bg-muted px-1">safe_to_trust</code>.
+          </div>
+        </div>
+        <div className="rounded-md border p-3">
+          <div className="text-xs text-muted-foreground">
+            Needs-review correct
+          </div>
+          <div className="text-xl font-semibold tabular-nums">
+            {summary.needs_review_correct}
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            of {summary.needs_review_reviewed} reviewed. High → possible
+            over-flagging by the dashboard.
+          </div>
+        </div>
+        <div className="rounded-md border p-3">
+          <div className="text-xs text-muted-foreground">
+            Input-problem confirmed
+          </div>
+          <div className="text-xl font-semibold tabular-nums">
+            {summary.input_problem_confirmed}
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            of {summary.input_problem_reviewed} reviewed. Reviewer
+            agreed the inputs were degraded.
+          </div>
+        </div>
+      </div>
+
+      {summary.top_error_source || summary.top_error_reason ? (
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div className="rounded-md border p-3 text-xs">
+            <div className="text-muted-foreground">Top error source</div>
+            <div className="mt-1 font-medium">
+              {summary.top_error_source
+                ? humanizeMachineCode(
+                    summary.top_error_source,
+                    ERROR_SOURCE_LABELS,
+                  )
+                : "—"}
+            </div>
+          </div>
+          <div className="rounded-md border p-3 text-xs">
+            <div className="text-muted-foreground">Top error reason</div>
+            <div className="mt-1 font-medium">
+              {summary.top_error_reason
+                ? humanizeMachineCode(
+                    summary.top_error_reason,
+                    ERROR_REASON_LABELS,
+                  )
+                : "—"}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {summary.tie_break_reviewed_count > 0 ? (
+        <div className="mt-3 space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Review decisions ({summary.tie_break_reviewed_count})
+          </div>
+          <div className="grid gap-3 md:grid-cols-4">
+            <StatTile
+              label="Heuristic accepted"
+              value={summary.heuristic_accepted_count}
+              hint="Reviewer agreed with the heuristic's stored kind."
+            />
+            <StatTile
+              label="LLM accepted"
+              value={summary.llm_accepted_count}
+              hint="Reviewer agreed with the LLM's suggestion."
+            />
+            <StatTile
+              label="Family kind overridden"
+              value={summary.override_family_kind_count}
+              hint="Reviewer set a different family_kind than either side."
+            />
+            <StatTile
+              label="Low evidence"
+              value={summary.low_evidence_override_count}
+              hint="Marked low_evidence regardless of suggested kind."
+            />
+            <StatTile
+              label="General feedback"
+              value={summary.general_feedback_marked_count}
+              hint="Not actionable as a single issue family."
+            />
+            <StatTile
+              label="Needs more examples"
+              value={summary.needs_more_examples_count}
+              hint="Reviewer wants more reps before deciding."
+            />
+            <StatTile
+              label="Should split cluster"
+              value={summary.should_split_cluster_count}
+              hint="Cluster contains multiple distinct issues."
+            />
+            <StatTile
+              label="Not actionable"
+              value={summary.not_actionable_count}
+              hint="Issue exists but no useful follow-up."
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -957,6 +1836,14 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
   const [qualityError, setQualityError] = useState<string | null>(null)
   const [qualityBucketFilter, setQualityBucketFilter] = useState<BucketFilter>("all")
   const [expandedQualityRows, setExpandedQualityRows] = useState<Set<string>>(new Set())
+  // Latest review per classification_id — drives the row pill and the
+  // "Latest" line above the form. Refetched alongside the summary on
+  // every panel refresh and after each successful submit.
+  const [latestReviewByClassification, setLatestReviewByClassification] =
+    useState<Record<string, LatestReview>>({})
+  const [reviewSummary, setReviewSummary] = useState<FamilyReviewSummary | null>(null)
+  const [reviewSummaryLoading, setReviewSummaryLoading] = useState(false)
+  const [reviewSummaryError, setReviewSummaryError] = useState<string | null>(null)
 
   const loadStats = async () => {
     setStatsLoading(true)
@@ -1006,9 +1893,128 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     }
   }
 
+  const loadReviews = useCallback(async () => {
+    setReviewSummaryLoading(true)
+    setReviewSummaryError(null)
+    try {
+      const res = await fetch(`${REVIEW_ROUTE}?limit=200`, {
+        headers: authHeaders(secret),
+      })
+      if (!res.ok) throw new Error(await explainAdminFailure(res))
+      const data = (await res.json()) as {
+        rows?: LatestReview[]
+        summary?: FamilyReviewSummary
+      }
+      const map: Record<string, LatestReview> = {}
+      for (const row of data.rows ?? []) {
+        if (row?.classification_id) map[row.classification_id] = row
+      }
+      setLatestReviewByClassification(map)
+      setReviewSummary(data.summary ?? null)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setReviewSummaryError(message)
+      logClientError(e, "admin-family-classification-reviews-failed")
+    } finally {
+      setReviewSummaryLoading(false)
+    }
+  }, [secret])
+
+  const submitReview = useCallback(
+    async (input: ReviewSubmitInput): Promise<{ ok: boolean; error?: string }> => {
+      const {
+        row,
+        reviewVerdict,
+        reviewDecision,
+        expectedFamilyKind,
+        errorSource,
+        errorReason,
+        notes,
+      } = input
+      if (!row.classification_id) {
+        return { ok: false, error: "Row is missing classification_id" }
+      }
+      const evidenceSnapshot = buildFamilyReviewEvidenceSnapshot({
+        classification_id: row.classification_id,
+        cluster_id: row.cluster_id,
+        family_title: row.family_title,
+        family_summary: row.family_summary,
+        family_kind: row.family_kind,
+        quality_bucket: row.quality_bucket,
+        quality_reasons: row.quality_reasons,
+        recommended_action: row.recommended_action,
+        confidence: row.confidence,
+        needs_human_review: row.needs_human_review,
+        review_reasons: row.review_reasons,
+        representative_count: row.representative_count,
+        representative_preview: row.representative_preview,
+        common_matched_phrase_count: row.common_matched_phrase_count,
+        common_matched_phrase_preview: row.common_matched_phrase_preview,
+        review_decision: reviewDecision ?? null,
+        llm_suggested_family_kind: row.llm_suggested_family_kind,
+      })
+
+      try {
+        const res = await fetch(REVIEW_ROUTE, {
+          method: "POST",
+          headers: authHeaders(secret),
+          body: JSON.stringify({
+            classificationId: row.classification_id,
+            clusterId: row.cluster_id,
+            reviewVerdict,
+            reviewDecision,
+            expectedFamilyKind,
+            actualFamilyKind: row.family_kind,
+            // Validator uses this to enforce the tie-break contract.
+            llmSuggestedFamilyKind: row.llm_suggested_family_kind,
+            qualityBucket: row.quality_bucket,
+            errorSource,
+            errorReason,
+            notes,
+            evidenceSnapshot,
+          }),
+        })
+        if (!res.ok) {
+          let message: string
+          try {
+            const body = (await res.json()) as { error?: string; details?: unknown }
+            message = body.error
+              ? Array.isArray(body.details)
+                ? `${body.error}: ${(body.details as string[]).join("; ")}`
+                : body.error
+              : await explainAdminFailure(res)
+          } catch {
+            message = await explainAdminFailure(res)
+          }
+          logClientError(new Error(message), "admin-family-classification-review-submit-failed", {
+            classification_id: row.classification_id,
+            cluster_id: row.cluster_id,
+            review_verdict: reviewVerdict,
+          })
+          return { ok: false, error: message }
+        }
+        logClientEvent("admin-family-classification-review-submit-succeeded", {
+          classification_id: row.classification_id,
+          cluster_id: row.cluster_id,
+          review_verdict: reviewVerdict,
+          review_decision: reviewDecision,
+          error_source: errorSource,
+          error_reason: errorReason,
+        })
+        await loadReviews()
+        return { ok: true }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        return { ok: false, error: message }
+      }
+    },
+    [secret, loadReviews],
+  )
+
   useEffect(() => {
     loadStats()
     loadQuality()
+    loadReviews()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secret])
 
@@ -1202,10 +2208,11 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               onClick={() => {
                 loadStats()
                 loadQuality()
+                loadReviews()
               }}
-              disabled={statsLoading || qualityLoading}
+              disabled={statsLoading || qualityLoading || reviewSummaryLoading}
             >
-              {statsLoading || qualityLoading ? (
+              {statsLoading || qualityLoading || reviewSummaryLoading ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="mr-1 h-4 w-4" />
@@ -1478,6 +2485,11 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               })
             }}
             onRetry={loadQuality}
+            latestReviewByClassification={latestReviewByClassification}
+            reviewSummary={reviewSummary}
+            reviewSummaryLoading={reviewSummaryLoading}
+            reviewSummaryError={reviewSummaryError}
+            onSubmitReview={submitReview}
           />
 
           {lastResult ? (
