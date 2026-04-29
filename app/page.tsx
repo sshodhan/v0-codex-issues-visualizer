@@ -839,7 +839,7 @@ const handleHeroLlmCategoryDrill = (
             </div>
             <div>
               <h1 className="text-base sm:text-xl font-bold text-foreground">
-                Issues Visualizer
+                Codex Issues Visualizer
               </h1>
               <p className="hidden sm:block text-xs text-muted-foreground">
                 Track and prioritize OpenAI Codex feedback
