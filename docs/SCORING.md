@@ -579,3 +579,184 @@ than five mid-actionability clusters — volume already feeds `frequency` in
 the per-row score. Ties on mean actionability fall back to the legacy
 `priorityScore` (65% impact + 35% frequency) so the visual regression vs
 pre-PR behavior on lanes without fingerprint signal is minimal.
+
+## 11. Stage 5 — Topic Review Loop (topic_review_events table, scripts/031_topic_review_events.sql)
+
+**What this is.** Stage 5 capture surface for **Stage 1** (the deterministic regex/topic classifier) per the 5-stage classification improvement pipeline (PR #162):
+
+1. **Stage 1** — Regex / deterministic topic signals (`CATEGORY_PATTERNS` in `lib/scrapers/shared.ts`, persisted into `category_assignments` with structured evidence per scripts/026).
+2. **Stage 2** — Embeddings.
+3. **Stage 3** — Clustering.
+4. **Stage 4** — LLM classification + family naming with deterministic fallback.
+5. **Stage 5** — Human-in-the-loop improvement: reviewer feedback that informs future Stage 1 regex / golden-set / taxonomy edits.
+
+This file documents Stage 5 *for Stage 1*. The sibling Stage-5 surface for Stage-4 LLM output is `classification_reviews` (see scripts/030 / PR #163). Both are append-only learning signals; they do not mutate the classifier they review.
+
+### 11.1 Key principles
+
+1. **No classifier mutations.** Review events never change `CATEGORY_PATTERNS` phrases, threshold overrides, or LLM tiebreaker logic. The Stage-1 baseline deterministic assignment in `category_assignments` is preserved verbatim and remains auditable forever.
+2. **Append-only.** Reviewers can flag the same observation multiple times under different `reason_code` values. Rows in `topic_review_events` are never updated or deleted. Status transitions (new → candidate → accepted/rejected/exported/resolved) are reserved for a future admin workflow that will append new event rows rather than mutate existing ones.
+3. **Manual overrides are optional.** A reviewer can record a structured learning event ("This belongs to Stage 3 clustering, not Stage 1 topic") without applying a manual override. Conversely, a "correct this" manual override is still wrapped in a structured event so future automation can learn from it.
+4. **Manual overrides are append-only too.** A manual override appends a new `category_assignments` row with `algorithm_version='manual'` alongside the existing deterministic row. The partial unique index lets manual overrides repeat per observation; the original deterministic verdict is preserved verbatim under `evidence.overridden_assignment`.
+5. **Manual override is a read-time correction, not a permanent override.** `mv_observation_current`'s existing `latest_category` CTE picks `max(computed_at)`, so the freshly-inserted manual row beats every existing deterministic row *immediately*. A *future* full-corpus Stage-1 backfill (rare; only on algorithm-version bumps like v6 → v7) writes a new deterministic row with a fresher `computed_at` and would supersede the override on the dashboard until the reviewer re-records it. The override row itself is preserved permanently in `category_assignments` and is always visible in the Trace panel's Manual override history alert (with `effective` / `superseded` badges per row), independent of which row is currently driving the dashboard. The Trace panel and the post-submit success state both surface this contract to reviewers in plain language. See §11.5 for the full ordering contract, the V1 path-B rationale, and the test that captures both branches.
+
+### 11.2 Vocabulary: stage names, not legacy layer names
+
+The `topic_review_events` schema uses the 5-stage names from PR #162 in its `reason_code` and `suggested_layer` value lists. The DB column is still named `suggested_layer` for historical reasons (the column is unchanged from this PR's first cut to keep the migration small) — but the values it carries are stage-named:
+
+| `suggested_layer` value | Stage |
+|---|---|
+| `regex_topic` | Stage 1 — regex / deterministic topic signals |
+| `embedding` | Stage 2 — embeddings |
+| `clustering` | Stage 3 — semantic clustering |
+| `llm_classification_family` | Stage 4 — LLM classification + family naming |
+| `human_review_workflow` | Stage 5 — review workflow (process / triage / backlog problem) |
+| `data_quality` | upstream evidence problem (raw observation, capture, ingest) |
+| `unknown` | reviewer cannot localise the root cause |
+
+`reason_code` values that previously referenced layers were renamed in lockstep:
+
+| Old value | New value |
+|---|---|
+| `wrong_layer0_topic` | `wrong_regex_topic` |
+| `belongs_to_layer_a_cluster_issue` | `belongs_to_clustering` |
+| `belongs_to_layer_c_llm_taxonomy` | `belongs_to_llm_classification_family` |
+
+Same for `suggested_action`:
+
+| Old value | New value |
+|---|---|
+| `consider_layer_a_split_review` | `consider_clustering_split_review` |
+| `consider_layer_c_taxonomy_update` | `consider_llm_taxonomy_update` |
+
+The contract test in `tests/topic-review-contract.test.ts` keeps the SQL CHECK constraints and the constants in `lib/admin/topic-review.ts` in lockstep — drift would fail CI.
+
+### 11.3 Schema (scripts/031_topic_review_events.sql)
+
+- `topic_review_events` — append-only event log
+  - `observation_id` — which issue was reviewed
+  - `original_topic_slug` / `original_category_id` — the Stage-1 deterministic verdict at review time
+  - `corrected_topic_slug` / `corrected_category_id` — (optional) what the reviewer determined is correct
+  - `reason_code` — structural category of the error (see §11.2)
+  - `suggested_layer` — which stage of the pipeline the reviewer thinks should fix this (see §11.2)
+  - `suggested_action` — `none`, `manual_override_only`, `add_golden_row`, `consider_phrase_addition` / `_removal` / `_demotion`, `consider_clustering_split_review`, `consider_llm_taxonomy_update`, `known_limitation_no_action`
+  - `phrase_candidate` — (optional) a phrase the reviewer thinks should be added or tuned
+  - `rationale` — (optional) free-text explanation
+  - `golden_set_candidate` — JSONB `{ title, body, expected }` for future golden-set seeding
+  - `evidence_snapshot` — the deterministic v5/v6 evidence JSONB at review time, for audit
+  - `status` — `new` (default) → `candidate` → `accepted` / `rejected` / `exported` / `resolved`
+
+### 11.4 Manual override evidence shape
+
+Persisted into `category_assignments(algorithm_version='manual').evidence`:
+
+```json
+{
+  "override": true,
+  "override_type": "topic",
+  "overridden_assignment": {
+    "algorithm_version": "v6",
+    "category_id": "uuid",
+    "slug": "bug",
+    "confidence": 0.85
+  },
+  "corrected": {
+    "category_id": "uuid",
+    "slug": "feature-request"
+  },
+  "reason_code": "phrase_false_positive",
+  "suggested_layer": "regex_topic",
+  "suggested_action": "add_golden_row",
+  "rationale": "...",
+  "reviewer": "alice@example.com",
+  "reviewed_at": "2026-04-28T10:00:00Z"
+}
+```
+
+`overridden_assignment` preserves the original deterministic verdict so audits and future automation can always recover what the classifier said before the review. The Stage-1 baseline row in `category_assignments` itself is also untouched — `evidence.overridden_assignment` is a defensive copy, not the source of truth for audit.
+
+### 11.5 Effective topic precedence — manual overrides are READ-TIME CORRECTIONS, not permanent
+
+**This is the headline operator contract for V1. Read it carefully before applying overrides at scale.**
+
+A manual override is a **read-time correction** that wins on the dashboard because the freshest row in `category_assignments` for the observation is the manual row. It is **NOT** a permanent effective-until-explicitly-changed override — a future Stage-1 deterministic backfill can supersede it on read by writing a fresher deterministic row. The override row itself is preserved permanently; only the MV's "pick latest" tie-breaker shifts.
+
+Concretely, the pick logic is the existing `latest_category` CTE in `mv_observation_current` (scripts/018), unchanged by this PR:
+
+```sql
+select distinct on (observation_id) ...
+from category_assignments
+order by observation_id, computed_at desc
+```
+
+`record_manual_topic_override` inserts the manual row with `now()` as its `computed_at`, so:
+
+- **Right after a manual override is recorded** the manual row is the most recent for that observation and wins on read.
+- **A subsequent Stage-1 deterministic backfill** (admin-driven; rare — happens on a `category` algorithm-version bump like v6 → v7) inserts a new deterministic row with a fresher `computed_at`, which then supersedes the manual override on the dashboard. The manual row itself is **preserved in `category_assignments` and still surfaced by the trace UI** (the trace API returns a `manualOverrideHistory` array of every manual row for the observation, regardless of whether it is currently effective); only the MV's "pick latest" tie-breaker shifts.
+- **The reviewer can re-record the override** after a backfill — append a second manual row, which then has the freshest `computed_at` and wins again. This is the workflow for "re-pinning" an override across an algorithm-version bump.
+- **Retract an override** by appending another manual row whose corrected slug matches the latest deterministic slug. Never DELETE the original manual row; the retracting row carries its own evidence + reason explaining why the override is being reversed.
+
+#### What the UI tells reviewers
+
+The Trace panel on `/admin?tab=topic-review` always renders a **Manual override history** alert when any manual row exists for the observation, with one of two messages:
+
+- *Currently effective* (an `effective` badge on the most recent manual row): "Note: a future Stage 1 backfill may supersede this on the dashboard until the override is re-recorded; the override row itself is preserved permanently."
+- *Currently superseded* (a `superseded` badge on every manual row): "No manual override is currently effective. A deterministic Stage 1 row has superseded the most recent manual override because `mv_observation_current` picks `max(computed_at)`. Re-record the override if the corrected topic should still apply."
+
+After a successful submission with the override checkbox ticked, the success state shows a persistent amber-highlighted box repeating the read-time-correction contract verbatim — reviewers see this on every override they apply.
+
+#### Why this is V1's choice
+
+Making manual rows always win regardless of `computed_at` requires giving them explicit precedence in the CTE:
+
+```sql
+order by observation_id,
+         (algorithm_version = 'manual') desc,
+         computed_at desc
+```
+
+That one-line semantic change costs ~360 lines of drop-and-recreate SQL across `mv_observation_current` plus its dependents (`mv_trend_daily`, `mv_cluster_health_current`) — an operator hop with non-trivial blast radius (initial populate after recreate is heavy, and any drift in the recreated MV bodies breaks every dashboard query that reads them). Combined with the fact that:
+
+- Stage-1 algorithm bumps are rare (one per migration like 027 v6 bump),
+- The trace UI surfaces the full manual override history regardless of effective status, and
+- Re-recording is a one-click admin workflow,
+
+V1 chooses path B (timestamp-based, with explicit visibility) and defers the MV change to a separate, focused follow-up PR if operator feedback shows reviewers actually hit this footgun in practice.
+
+#### Test coverage
+
+`tests/topic-review-precedence.test.ts` locks four branches of the contract: manual-wins-immediately, deterministic-supersedes-after-backfill, re-record-restores, and retract-via-second-override.
+
+### 11.6 Append-only invariants — what stays immutable
+
+Both surfaces are deliberately insert-only from application code:
+
+- **`topic_review_events`** is only ever inserted, via the SECURITY DEFINER `record_topic_review_event` RPC. Application code never issues UPDATE or DELETE against this table. Future status transitions will append new event rows, not mutate existing ones. RLS policies grant `for all` to `service_role` only because the RPC needs INSERT through that role — not because the surface is wider.
+- **Manual overrides on `category_assignments`** are appended via `record_manual_topic_override`. The deterministic Stage-1 row is preserved verbatim; `evidence.overridden_assignment` captures the algorithm version / category id / slug / confidence the classifier produced.
+
+### 11.7 Golden-set candidate is export-only
+
+`golden_set_candidate` JSONB on each `topic_review_events` row carries `{ title, body, expected }` — the same shape consumed by `tests/fixtures/topic-golden-set.jsonl`. The admin UI surfaces it as copyable JSONL on the trace panel; that is the only place it ever leaves the database.
+
+The admin loop **does not**:
+
+- write to `tests/fixtures/topic-golden-set.jsonl` or any other fixture file
+- modify `CATEGORY_PATTERNS` in `lib/scrapers/shared.ts`
+- generate a migration script that bumps the Topic algorithm version
+- create a pull request, push to a branch, or call any GitHub API
+
+Promoting a candidate into the golden set is a separate, human-reviewed PR. Same for `phrase_candidate`: the reviewer is *suggesting* a phrase the classifier should learn — the classifier itself is unchanged until a human writes the migration and the PR.
+
+### 11.8 Queue is sampled from recent assignments, not exhaustive
+
+The `/api/admin/topic-review/queue` route scans recent deterministic `category_assignments` rows, dedupes to one per observation, and applies filters. The scan limit is bounded for latency — broaden filters or raise the `limit` query parameter if expected candidates are missing. The Queue is a sampled-recent triage view, not a complete audit export. (For an exhaustive view, query `category_assignments` directly.)
+
+### 11.9 Future automation path
+
+1. **Collect review events** over a period (e.g. one week of production triage).
+2. **Group by repeated failure modes** (`reason_code`, `suggested_layer` (a.k.a. stage), `suggested_action`, `phrase_candidate` clusters).
+3. **Propose candidates** ("this phrase should be added; here are 12 observations where it would fix the classification").
+4. **Create reviewed PRs** — humans review the proposal and update `CATEGORY_PATTERNS` + the golden-set test fixture.
+5. **Deploy** the PR; future backfill picks it up as a new algorithm version.
+
+Review events themselves do NOT trigger automatic classifier changes, golden-set updates, or PRs. The automation path is async, human-reviewed, and deliberate.

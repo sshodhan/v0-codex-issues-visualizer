@@ -110,6 +110,8 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // Family Classification QA Reviews (030) — append-only reviewer
     // verdicts on whether a classification was correct/incorrect/unclear.
     "family_classification_reviews",
+    // Topic review events (031) — admin-review-loop append-only signals.
+    "topic_review_events",
   ],
   views: [
     // 007: cluster_frequency = view over cluster_members.
@@ -163,6 +165,13 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     "fingerprint_surges",
     // 015.
     "get_schema_snapshot",
+    // 031 — admin-review-loop RPCs. record_topic_review_event appends a
+    // structured-learning-signal row; record_manual_topic_override
+    // appends a manual override into category_assignments
+    // (algorithm_version='manual'). Both are SECURITY DEFINER inserts;
+    // neither updates or deletes existing rows.
+    "record_topic_review_event",
+    "record_manual_topic_override",
   ],
   indexes: [
     // ---- evidence layer (007) ----
@@ -239,6 +248,25 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // ---- processing events (017) ----
     "idx_processing_events_observation_created",
     "idx_processing_events_stage_created",
+    // ---- topic review events (031) ----
+    // Admin Review Loop indexes — observation lookup + the four filter
+    // facets that the queue/events panels expose. Each index is on
+    // (facet, created_at desc) so the panel's "latest matching" sort is
+    // a clean index scan.
+    "idx_topic_review_events_observation_id",
+    "idx_topic_review_events_reason_code",
+    "idx_topic_review_events_suggested_layer",
+    "idx_topic_review_events_suggested_action",
+    "idx_topic_review_events_status",
+    "idx_topic_review_events_created_at",
+    // ---- category_assignments append-only manual overrides (031) ----
+    // The original UNIQUE constraint
+    // (category_assignments_observation_id_algorithm_version_key) was
+    // dropped and replaced with a partial unique index that excludes
+    // algorithm_version='manual', so reviewers can append multiple
+    // manual overrides without mutating the deterministic v6 row.
+    "category_assignments_obs_alg_nonmanual_uniq",
+    "idx_category_assignments_manual_obs",
   ],
   requiredColumns: {
     // 012 added cluster-labeling columns.
@@ -453,12 +481,21 @@ function tableGroup(name: string): string {
     name === "record_category" ||
     name === "record_impact" ||
     name === "record_competitor_mention" ||
+    name === "category_assignments_obs_alg_nonmanual_uniq" ||
     name.startsWith("idx_sentiment") ||
     name.startsWith("idx_category") ||
     name.startsWith("idx_impact") ||
     name.startsWith("idx_competitor_mentions")
   ) {
     return "derivation"
+  }
+  if (
+    name === "topic_review_events" ||
+    name === "record_topic_review_event" ||
+    name === "record_manual_topic_override" ||
+    name.startsWith("idx_topic_review_events")
+  ) {
+    return "admin-review"
   }
   if (
     name === "classifications" ||
