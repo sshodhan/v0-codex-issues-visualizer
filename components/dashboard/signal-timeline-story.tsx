@@ -451,50 +451,7 @@ export function SignalTimelineStory({
               </button>
             </div>
           </div>
-          {legend.length > 0 && (
-            <ul className="flex flex-wrap items-center justify-center gap-2">
-              {legend.map((c) => {
-                const isActive = legendFilter === c.name
-                return (
-                  <li key={c.name}>
-                    <button
-                      type="button"
-                      aria-pressed={isActive}
-                      aria-label={`${c.name}: ${c.count} reports${isActive ? " (filtered)" : ""}`}
-                      onClick={() =>
-                        setLegendFilter((cur) => (cur === c.name ? null : c.name))
-                      }
-                      className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 border-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer ${
-                        isActive
-                          ? "border-current bg-foreground/5 text-foreground shadow-sm scale-105"
-                          : "border-current/30 text-foreground/70 hover:border-current hover:bg-foreground/5 hover:text-foreground"
-                      }`}
-                    >
-                      <span
-                        aria-hidden
-                        className="inline-block h-4 w-4 rounded-full shadow-sm"
-                        style={{ backgroundColor: c.color }}
-                      />
-                      <span className="font-medium">{c.name}</span>
-                      <span className="tabular-nums text-xs opacity-75">{c.count}</span>
-                    </button>
-                  </li>
-                )
-              })}
-              {legendFilter !== null && (
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => setLegendFilter(null)}
-                    className="inline-flex items-center rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-foreground/5 transition-colors"
-                    aria-label="Clear category filter"
-                  >
-                    Clear ×
-                  </button>
-                </li>
-              )}
-            </ul>
-          )}
+
         </figcaption>
       </figure>
     </div>
