@@ -323,45 +323,55 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           purpose={
             <div className="space-y-2">
               <p>
-                Raw observations capture the evidence. Subsequent layers
-                progressively interpret that evidence — each layer reads
-                from earlier layers and writes to its own append-only
-                tables, so every interpretation is reproducible and
-                auditable.
+                Raw observations capture the evidence. Each pipeline
+                transformation (Layer 0, A, C) reads from earlier layers
+                and writes append-only rows so past readings stay
+                reproducible. Read-only tools (Cross-layer Trace, Schema /
+                Contracts) and reviewer overrides do not write to the
+                layered tables. Layer B is UI-only.
               </p>
               <ul className="list-disc space-y-1 pl-5">
                 <li>
                   <strong>Raw Observation</strong> — captured records in{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code>{" "}
                   / <code className="rounded bg-muted px-1 py-0.5 text-xs">observation_revisions</code>.
+                  Precedes the layer letters.
                 </li>
                 <li>
                   <strong>Layer 0 — Deterministic Derivations</strong>:
-                  regex/lexicon-driven sentiment, category, impact,
-                  competitor mentions. Per-observation, explainable.
+                  regex/lexicon-driven sentiment, category (Topic), impact,
+                  competitor mentions. Per-observation, explainable,
+                  append-only.
                 </li>
                 <li>
                   <strong>Layer A — Semantic Clusters &amp; Labels</strong>:
                   embedding-driven clustering of observations into recurring
-                  problem families, with deterministic labels.
+                  problem families, with deterministic labels. Append-only
+                  cluster_members.
                 </li>
                 <li>
-                  <strong>Family Classification</strong>: cluster-level
-                  interpretation that decides{" "}
+                  <strong>Family Classification — Layer A interpretation</strong>:
+                  cluster-level interpretation on top of Layer A that
+                  decides{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">family_kind</code>,{" "}
                   review safety, and a human-readable title/summary.
-                  Heuristic-authoritative; LLM enriches but cannot override.
+                  Heuristic-authoritative; LLM enriches but cannot
+                  override. Sub-aspect of Layer A — does not get its own
+                  letter.
                 </li>
                 <li>
                   <strong>Layer C — LLM Diagnosis</strong>: per-observation
                   classification (category, subcategory, severity, mechanism)
-                  via gpt-5-mini.
+                  via gpt-5-mini. Append-only.
                 </li>
                 <li>
-                  <strong>Reviewer review</strong>: human overrides and
-                  automation feedback captured in{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>.
-                  No layer letter — reviewer decisions sit on top of Layer C.
+                  <strong>Reviewer review</strong>: read-only overrides and
+                  automation feedback captured in append-only review tables
+                  (e.g.{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>;
+                  additional review surfaces may write to their own tables).
+                  No layer letter — reviewer decisions sit on top of Layer C
+                  as a read-time projection.
                 </li>
               </ul>
               <p className="text-xs text-muted-foreground">
@@ -369,9 +379,11 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                 letters: <strong>Layer A</strong> (semantic cluster filter),{" "}
                 <strong>Layer B</strong> (Triage group — a client-side group-by
                 on <code className="rounded bg-muted px-1 py-0.5">(category, subcategory)</code>{" "}
-                over Layer C output; <em>not</em> a pipeline transformation),
-                and <strong>Layer C</strong> (the classification row).
-                Documented in{" "}
+                over Layer C output; <em>not</em> a pipeline transformation
+                and has no admin tab), and <strong>Layer C</strong> (the
+                classification row). Canonical glossary lives in{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §6.0;
+                dashboard explainer in{" "}
                 <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/CLUSTERING_DESIGN.md</code> §7.
               </p>
             </div>
@@ -899,9 +911,11 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               }
               pipelineFit={
                 <p>
-                  <strong>Layer fit:</strong> system contract layer —
-                  validates the objects every other layer depends on. Sits
-                  next to the pipeline rather than inside it. Backed by{" "}
+                  <strong>Pipeline fit:</strong> out-of-band guardrail —
+                  validates schema and algorithm-version contracts that
+                  every other layer depends on. <strong>Not a pipeline
+                  layer</strong> and has no backfill semantics; sits next
+                  to the pipeline rather than inside it. Backed by{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     lib/schema/expected-manifest.ts
                   </code>{" "}
@@ -909,7 +923,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     /api/admin/verify-schema
                   </code>{" "}
-                  endpoint. No pipeline writes happen.
+                  endpoint. No DB writes happen.
                 </p>
               }
               whenToRun={

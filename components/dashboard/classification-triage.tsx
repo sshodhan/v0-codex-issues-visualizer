@@ -1208,8 +1208,8 @@ function LayerExplainerPanel() {
           letter="B"
           icon={<Tag className="h-4 w-4 text-primary" />}
           title="Triage group"
-          body={`Client-side group-by on (effective_category × subcategory). Comes from the LLM classification enum (${SAMPLE_LLM_SLUGS}, …) — distinct from the dashboard's heuristic taxonomy used by the global slider.`}
-          adminLink={{ href: "/admin?tab=classify-backfill", label: "Layer C Backfill" }}
+          body={`Client-side group-by on (effective_category × subcategory). Comes from the LLM classification enum (${SAMPLE_LLM_SLUGS}, …) — distinct from the dashboard's heuristic taxonomy used by the global slider. UI-only filter axis: Layer B has no admin tab and writes nothing; if the chip strip looks empty, the upstream fix is to backfill Layer C source data.`}
+          adminLink={{ href: "/admin?tab=classify-backfill", label: "Backfill Layer C source data" }}
         />
         <LayerExplainerRow
           letter="C"
