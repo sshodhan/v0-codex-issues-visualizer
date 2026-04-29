@@ -118,7 +118,7 @@ test("topic-classifier: global threshold=2 — model-quality classifies when bod
   assert.equal(atThreshold?.slug, "model-quality")
 })
 
-test("topic-classifier v6: evidence object carries matched phrases, scores, margin, runner-up", () => {
+test("topic-classifier v7: evidence object carries matched phrases, scores, margin, runner-up", () => {
   const r = categorizeIssue(
     "Claude hallucinates imports",
     "the model also enters a loop and never stops",
@@ -126,7 +126,7 @@ test("topic-classifier v6: evidence object carries matched phrases, scores, marg
   )
   assert.ok(r)
   const ev = r!.evidence
-  assert.equal(ev.algorithm_version, "v6")
+  assert.equal(ev.algorithm_version, "v7")
   assert.equal(ev.classifier_type, "regex_topic")
   assert.ok(Array.isArray(ev.matched_phrases) && ev.matched_phrases.length > 0)
   assert.equal(typeof ev.scoring.scores, "object")
@@ -164,6 +164,81 @@ test("topic-classifier v6: row 46 — `bypass the approval prompt` wins over ux-
     (r?.evidence.scoring.margin ?? 0) >= 4,
     `expected margin >= 4, got ${r?.evidence.scoring.margin}`,
   )
+})
+
+// v7 structural invariants — the four mechanism changes shipped in v7.
+// Each invariant guards a specific audit-driven decision; a future PR
+// that reverts any of them must update or remove the corresponding
+// test, making the regression deliberate.
+
+test("topic-classifier v7: BODY_TEMPLATE_HEADER_RE strips `### What subscription do you have?\\nPro` so pricing does NOT win on a bug body", () => {
+  // Mirrors the dominant pre-v7 false-positive shape: a Codex GitHub
+  // issue-template field saying "Pro" leaked +3 pricing weight on
+  // every issue. After stripping, only the actual bug text scores.
+  const body = "### What subscription do you have?\nPro\n\nshell argument escaping is broken on the commit path"
+  const r = categorizeIssue("Codex still writes literal backslash-n", body, CATEGORIES)
+  assert.ok(r, "must classify (template stripping does not blank the row)")
+  assert.notEqual(r!.slug, "pricing", `pricing should NOT win; got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
+  // The input flag should record that body-stripping happened.
+  assert.equal(r!.evidence.input.template_stripped, true)
+})
+
+test("topic-classifier v7: BODY_TEMPLATE_HEADER_RE strips `### What plan are you on?\\nPro plan` so pricing does NOT win on a model-quality body", () => {
+  // Covers the `pro plan` / `team plan` / `enterprise plan` leak from
+  // the same template family (visible-list screenshots, 2026-04-29).
+  const body = "### What plan are you on?\nPro plan\n\nthe model is at capacity for every turn and keeps repeating the same step"
+  const r = categorizeIssue("Selected model at capacity", body, CATEGORIES)
+  assert.ok(r)
+  assert.notEqual(r!.slug, "pricing", `pricing should NOT win; got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
+})
+
+test("topic-classifier v7: prose `### Why is plan caching slow?` heading is NOT stripped — keyword whitelist + answer-line cap protect prose", () => {
+  // The `plan` keyword appears in the heading but the answer paragraph
+  // exceeds 120 chars, so BODY_TEMPLATE_HEADER_RE must leave it alone.
+  // Otherwise legitimate prose with metadata words would be silently
+  // erased from scoring.
+  const longProse = "Plan caching takes 30 plus seconds on repositories with more than 10000 files because the cache invalidation strategy is too aggressive and re-walks the entire tree on every small change which makes the agent painfully slow"
+  const body = `### Why is plan caching slow?\n${longProse}`
+  const r = categorizeIssue("plan caching is slow", body, CATEGORIES)
+  assert.ok(r)
+  // Prose is preserved → "painfully slow" still fires (performance, w4).
+  assert.equal(r!.slug, "performance", `expected performance; got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
+})
+
+test("topic-classifier v7: margin-0 abstain — exact-tie scores return slug=other with confidence 0", () => {
+  // Construct a synthetic input that scores exactly equally for two
+  // slugs at body-only weight (no title multiplier). `error` (bug, w2)
+  // and `slow` (performance, w3) — make scores match by adding a
+  // single weight-2 phrase to performance and balancing.
+  // Easiest: use whole-word "lag" (performance, w3) + whole-word
+  // "error" (bug, w2) + whole-word "broken" (bug, w2). bug=4,
+  // performance=3 — not a tie. Use two bug w2 phrases vs one perf w3
+  // + one perf w1? Cleaner: synthesize a 3-vs-3 by relying on a
+  // single w3 phrase per side.
+  // bug "errored" (w3, wholeWord) + performance "slow" (w3, wholeWord)
+  // → bug=3, performance=3. Both clear default threshold 2.
+  const r = categorizeIssue("", "the build errored and the cli is slow", CATEGORIES)
+  assert.ok(r, "must return a result, not null")
+  assert.equal(r!.slug, "other", `expected other (margin-0 abstain); got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
+  assert.equal(r!.confidenceProxy, 0)
+  assert.equal(r!.evidence.scoring.margin, 0)
+  // The runner-up is recorded so the abstain decision is auditable.
+  assert.notEqual(r!.evidence.scoring.runner_up, null)
+})
+
+test("topic-classifier v7: bare `subscription` in body no longer triggers pricing", () => {
+  // Audit (Q5): 92% of body `subscription` matches were template
+  // boilerplate. v7 removes the phrase entirely, so a body containing
+  // only `subscription` and no other pricing vocabulary scores 0 for
+  // pricing.
+  const r = categorizeIssue(
+    "Generic title with no scoring words",
+    "I have a subscription and the cli does something unexpected here",
+    CATEGORIES,
+  )
+  // Either "other" (no slug clears threshold) or any non-pricing slug
+  // (if some other phrase happens to fire) — but never pricing.
+  assert.notEqual(r?.slug, "pricing", `pricing should NOT win; got ${r?.slug}; evidence=${JSON.stringify(r?.evidence)}`)
 })
 
 // Type-level reachability: ensures TopicResult is exported and confidenceProxy is present.
