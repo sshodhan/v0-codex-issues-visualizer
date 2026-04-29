@@ -53,6 +53,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
 import { FamilyClassificationPanel } from "@/components/admin/family-classification-panel"
 import { TopicReviewPanel } from "@/components/admin/topic-review-panel"
+import { BackgroundJobControl } from "@/components/admin/background-job-control"
 import { WhatToKnowCard } from "@/components/admin/what-to-know-card"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import type {
@@ -3549,6 +3550,33 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
               Stop
             </Button>
           )}
+        </div>
+
+        <div className="rounded-md border bg-muted/20 p-3">
+          <div className="mb-2">
+            <p className="text-sm font-medium">Background batch (async)</p>
+            <p className="text-xs text-muted-foreground">
+              Enqueues a job that processes up to <span className="font-mono">{limit}</span>{" "}
+              candidates at threshold{" "}
+              <span className="font-mono">{parsedThreshold}</span> via the cron
+              worker. Returns immediately; progress streams here while the page
+              is open. Safe to close the tab — the cron tick (every 2 min) keeps
+              it draining.
+            </p>
+          </div>
+          <BackgroundJobControl
+            secret={secret}
+            kind="observation"
+            disabled={running !== null || !openaiOk}
+            buildEnqueueParams={() => ({
+              kind: "observation",
+              limit,
+              minImpactScore: thresholdDiverges ? parsedThreshold : undefined,
+            })}
+            onCompleted={() => {
+              loadStats()
+            }}
+          />
         </div>
 
         {dryRunPreview && (

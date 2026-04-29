@@ -47,6 +47,7 @@ import {
   type ReviewDecision,
 } from "@/lib/admin/family-classification-review"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
+import { BackgroundJobControl } from "@/components/admin/background-job-control"
 
 const ROUTE = "/api/admin/family-classification"
 const REVIEW_ROUTE = "/api/admin/family-classification/review"
@@ -2454,8 +2455,38 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               Dry run previews how many clusters would be processed.
               Classify batch applies classifications to unclassified
               clusters in one request — for slow OpenAI calls or large
-              backlogs, prefer the row-by-row list above.
+              backlogs, prefer the row-by-row list above or the
+              background batch below.
             </p>
+          </div>
+
+          <div className="rounded-md border bg-muted/20 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium">Background batch (async)</p>
+                <p className="text-xs text-muted-foreground">
+                  Enqueues a job that processes up to 50 unclassified
+                  clusters via the cron worker. Returns immediately;
+                  progress streams here while the page is open. Safe to
+                  close the tab — the cron tick (every 2 min) keeps it
+                  draining.
+                </p>
+              </div>
+            </div>
+            <BackgroundJobControl
+              secret={secret}
+              kind="cluster"
+              disabled={running !== null || pendingRunningId !== null}
+              buildEnqueueParams={() => ({
+                kind: "cluster",
+                limit: 50,
+              })}
+              onCompleted={() => {
+                loadStats()
+                loadQuality()
+                loadReviews()
+              }}
+            />
           </div>
 
           {runError ? (
