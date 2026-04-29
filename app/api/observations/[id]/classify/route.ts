@@ -4,11 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { extractBugFingerprint, computeCompoundKey } from "@/lib/scrapers/bug-fingerprint"
 import { buildObservationTrace } from "@/lib/processing-events/trace"
-import {
-  classifyReport,
-  ClassificationValidationError,
-  synthesizeObservationReportText,
-} from "@/lib/classification/pipeline"
+import { runClassificationForObservation } from "@/lib/classification/pipeline"
 
 // POST /api/observations/:id/classify
 //
@@ -111,104 +107,52 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   }
 
   const supabase = await createClient()
-  const { data: row, error: fetchError } = await supabase
-    .from("mv_observation_current")
-    .select("observation_id, title, content, url, source_id")
-    .eq("observation_id", parsed.data.id)
-    .maybeSingle()
-
-  if (fetchError) {
-    return NextResponse.json({ error: "Lookup failed", detail: fetchError.message }, { status: 500 })
-  }
-  if (!row) {
-    return NextResponse.json({ error: "Observation not found" }, { status: 404 })
-  }
-
-  const { data: sourceRow } = await supabase
-    .from("sources")
-    .select("slug")
-    .eq("id", row.source_id)
-    .maybeSingle()
-
-  const regex = extractBugFingerprint({ title: row.title, content: row.content ?? null })
-
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json(
-      {
-        error: "Classifier not configured",
-        message: "OPENAI_API_KEY is not set on the server.",
-        regex,
-      },
-      { status: 503 },
-    )
-  }
-
-  const reportText = synthesizeObservationReportText({
-    title: row.title,
-    content: row.content ?? null,
-    url: row.url ?? null,
-    sourceSlug: sourceRow?.slug ?? null,
-  })
-  if (!reportText.trim()) {
-    return NextResponse.json({ error: "Observation has no text to classify" }, { status: 400 })
-  }
-
   const adminAvailable = Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY,
   )
   const admin = adminAvailable ? createAdminClient() : null
 
-  let result
-  try {
-    // classifyReport owns validation, escalation, hard review rules, and
-    // the write to `classifications`. We reuse it rather than replicate.
-    // Thread regex-derived env/repro into the classifier so the user-turn
-    // payload carries structured context beyond title+body. The classifier
-    // schema already accepts both fields (see classifyInputSchema in
-    // lib/classification/pipeline.ts); we are enriching the prompt, not
-    // changing the contract.
-    const env: Record<string, string> = {}
-    if (regex.cli_version) env.cli_version = regex.cli_version
-    if (regex.os) env.os = regex.os
-    if (regex.shell) env.shell = regex.shell
-    if (regex.editor) env.editor = regex.editor
-    if (regex.model_id) env.model_id = regex.model_id
-    result = await classifyReport(
-      {
-        report_text: reportText,
-        observation_id: parsed.data.id,
-        env: Object.keys(env).length > 0 ? env : undefined,
-        repro: regex.repro_markers > 0 ? { count: regex.repro_markers } : undefined,
-      },
-      { supabase: admin },
-    )
-  } catch (error) {
-    if (error instanceof ClassificationValidationError) {
-      return NextResponse.json(
-        { error: "Classification rejected", detail: error.message, regex },
-        { status: error.status },
-      )
+  // The full fetch → regex → synthesize → classifyReport → compound-key
+  // flow lives in lib/classification/pipeline.ts so the unified
+  // /rerun?stage=classification entry shares the same orchestration.
+  // This route maps the structured outcome onto the legacy SignalLayers
+  // response shape ({ regex, llm, compound_key }) — the rerun route
+  // returns its own slimmer shape.
+  const outcome = await runClassificationForObservation(parsed.data.id, { supabase, admin })
+
+  if (!outcome.ok) {
+    switch (outcome.code) {
+      case "not_found":
+        return NextResponse.json({ error: "Observation not found" }, { status: 404 })
+      case "lookup_failed":
+        return NextResponse.json(
+          { error: "Lookup failed", detail: outcome.detail },
+          { status: 500 },
+        )
+      case "missing_api_key":
+        return NextResponse.json(
+          { error: "Classifier not configured", message: "OPENAI_API_KEY is not set on the server." },
+          { status: 503 },
+        )
+      case "no_text":
+        return NextResponse.json(
+          { error: "Observation has no text to classify", regex: outcome.regex },
+          { status: 400 },
+        )
+      case "validation_error":
+        return NextResponse.json(
+          { error: "Classification rejected", detail: outcome.detail, regex: outcome.regex },
+          { status: outcome.status },
+        )
+      case "classifier_error":
+        return NextResponse.json(
+          { error: "Classifier failed", detail: outcome.detail, regex: outcome.regex },
+          { status: outcome.status },
+        )
     }
-    return NextResponse.json(
-      {
-        error: "Classifier failed",
-        detail: error instanceof Error ? error.message : "unknown_error",
-        regex,
-      },
-      { status: 502 },
-    )
   }
 
-  // `classifyReport` already wrote the LLM row to `classifications`
-  // via the admin client (the source of truth). We do not denormalize
-  // those values onto `bug_fingerprints` — mv_observation_current joins
-  // `classifications` directly, so dashboards pick up the new
-  // subcategory / tags / etc. on the next materialized-view refresh.
-  // The compound-key label is pure regex for the same reason; we read
-  // it through `computeCompoundKey` so there's a single read-time
-  // source of truth (outcome E).
-  const compoundKey = (await computeCompoundKey(supabase as any, parsed.data.id)) ?? null
-
+  const { regex, result, compoundKey } = outcome
   return NextResponse.json({
     regex,
     llm: {

@@ -2,10 +2,11 @@
 
 import Link from "next/link"
 import { useParams } from "next/navigation"
-import { useEffect, useState, type ReactNode } from "react"
-import { ArrowLeft, Loader2 } from "lucide-react"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
+import { ArrowLeft, Loader2, RefreshCcw } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { logClientError } from "@/lib/error-tracking/client-logger"
+import { Button } from "@/components/ui/button"
+import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 interface ObservationTraceResponse {
@@ -22,11 +23,24 @@ interface ObservationTraceResponse {
   }
   availability: Record<string, boolean>
   stages: {
-    capture: { captured_at: string | null; published_at: string | null; source_id: string | null }
+    capture: {
+      captured_at: string | null
+      published_at: string | null
+      source_id: string | null
+      source_slug: string | null
+      source_name: string | null
+    }
     fingerprint: { latest_computed_at: string | null; algorithm_version: string | null; total_versions: number; rows: Array<Record<string, unknown>> }
     embedding: { latest_computed_at: string | null; algorithm_version: string | null; model: string | null; dimensions: number | null; total_versions: number; rows: Array<Record<string, unknown>> }
     category: { latest_computed_at: string | null; algorithm_version: string | null; winner_slug: string | null; confidence: number | null; evidence: unknown; total_versions: number; rows: Array<Record<string, unknown>> }
-    clustering: { active_cluster_id: string | null; active_cluster_key: string | null; active_cluster_size: number | null; memberships: Array<Record<string, unknown>> }
+    clustering: {
+      active_cluster_id: string | null
+      active_cluster_key: string | null
+      active_cluster_size: number | null
+      active_cluster_label: string | null
+      active_cluster_status: string | null
+      memberships: Array<Record<string, unknown>>
+    }
     classification: { latest_created_at: string | null; latest_algorithm_version: string | null; latest_model_used: string | null; total_versions: number; chain_head_id: string | null; lineage: Array<Record<string, unknown>> }
     review: { total_reviews: number; latest_reviewed_at: string | null }
   }
@@ -42,32 +56,101 @@ interface ProcessingEventItem {
   created_at: string
 }
 
+type RerunStage = "classification" | "embedding"
+
+// Render a timestamp as `Apr 28, 2026, 8:24 AM UTC` (locale-default month/day,
+// always UTC) plus the raw ISO string in a tooltip. Keeps trace rows scannable
+// while preserving the full-precision value for debugging.
+function FormattedDate({ iso }: { iso: string | null | undefined }) {
+  if (!iso) return <span>—</span>
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return <span>{iso}</span>
+  const formatted = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(date)
+  return (
+    <span title={iso}>
+      {formatted} UTC
+    </span>
+  )
+}
+
+function ShortId({ value }: { value: string | null | undefined }) {
+  if (!value) return null
+  const short = value.length > 12 ? `${value.slice(0, 8)}…` : value
+  return (
+    <span className="font-mono text-[10px] text-muted-foreground" title={value}>
+      {short}
+    </span>
+  )
+}
+
+type MetaValue = ReactNode | string | null
+
 function TraceStage({
   title,
   available,
   meta,
+  action,
   children,
 }: {
   title: string
   available: boolean
-  meta: Array<[string, string | null]>
+  meta: Array<[string, MetaValue]>
+  action?: ReactNode
   children?: ReactNode
 }) {
   return (
     <div className="rounded-md border p-3">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex items-center justify-between gap-2">
         <p className="text-sm font-medium">{title}</p>
-        <Badge variant={available ? "secondary" : "outline"}>{available ? "available" : "missing"}</Badge>
+        <div className="flex items-center gap-2">
+          {action}
+          <Badge variant={available ? "secondary" : "outline"}>{available ? "available" : "missing"}</Badge>
+        </div>
       </div>
       <div className="grid gap-1 text-xs text-muted-foreground md:grid-cols-2">
         {meta.map(([k, v]) => (
-          <p key={k}>
-            <span className="font-mono text-foreground">{k}</span>: {v ?? "—"}
-          </p>
+          <div key={k} className="flex flex-wrap items-baseline gap-1">
+            <span className="font-mono text-foreground">{k}</span>
+            <span>:</span>
+            <span className="break-words">{v ?? "—"}</span>
+          </div>
         ))}
       </div>
       {children ? <div className="mt-2">{children}</div> : null}
     </div>
+  )
+}
+
+function RerunButton({
+  stage,
+  onClick,
+  busy,
+  disabled,
+  hint,
+}: {
+  stage: RerunStage
+  onClick: (stage: RerunStage) => void
+  busy: boolean
+  disabled?: boolean
+  hint?: string
+}) {
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="h-7 px-2 text-xs"
+      onClick={() => onClick(stage)}
+      disabled={busy || disabled}
+      title={hint}
+    >
+      {busy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCcw className="mr-1 h-3 w-3" />}
+      Re-run
+    </Button>
   )
 }
 
@@ -79,55 +162,152 @@ export default function ObservationTracePage() {
   const [events, setEvents] = useState<ProcessingEventItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [rerunBusy, setRerunBusy] = useState<RerunStage | null>(null)
+  const [rerunStatus, setRerunStatus] = useState<{ stage: RerunStage; ok: boolean; message: string } | null>(null)
+
+  const loadTrace = useCallback(
+    async (signal?: AbortSignal, reason: "initial" | "post_rerun" = "initial") => {
+      logClientEvent("reviewer-trace-load-started", { observationId: id, reason })
+
+      const [traceRes, classifyRes] = await Promise.all([
+        fetch(`/api/observations/${id}/trace`, { signal }),
+        fetch(`/api/observations/${id}/classify`, { signal }),
+      ])
+
+      if (!traceRes.ok) {
+        const text = await traceRes.text().catch(() => "")
+        const httpErr = new Error(
+          text ? `HTTP ${traceRes.status}: ${text.slice(0, 200)}` : `HTTP ${traceRes.status}`,
+        )
+        logClientError(httpErr, "reviewer-trace-load-failed", {
+          observationId: id,
+          reason,
+          status: traceRes.status,
+        })
+        if (traceRes.status === 404) throw new Error("Observation not found.")
+        throw httpErr
+      }
+
+      const traceBody = (await traceRes.json()) as ObservationTraceResponse
+      setTrace(traceBody)
+      let eventCount: number | null = null
+      if (classifyRes.ok) {
+        const body = (await classifyRes.json()) as { trace?: { events?: ProcessingEventItem[] } }
+        const eventList = body.trace?.events ?? []
+        setEvents(eventList)
+        eventCount = eventList.length
+      } else {
+        logClientError(
+          new Error(`HTTP ${classifyRes.status}`),
+          "reviewer-trace-classify-companion-failed",
+          { observationId: id, reason, status: classifyRes.status },
+        )
+      }
+      logClientEvent("reviewer-trace-load-succeeded", {
+        observationId: id,
+        reason,
+        eventCount,
+        availability: traceBody.availability,
+      })
+    },
+    [id],
+  )
 
   useEffect(() => {
     if (!id) return
-    let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
 
-    Promise.all([
-      fetch(`/api/observations/${id}/trace`),
-      fetch(`/api/observations/${id}/classify`),
-    ])
-      .then(async ([traceRes, classifyRes]) => {
-        if (cancelled) return
-        if (!traceRes.ok) {
-          if (traceRes.status === 404) {
-            setError("Observation not found.")
-            return
-          }
-          const text = await traceRes.text().catch(() => "")
-          const msg = text ? `HTTP ${traceRes.status}: ${text.slice(0, 200)}` : `HTTP ${traceRes.status}`
-          setError(msg)
-          logClientError(new Error(msg), "reviewer-trace-fetch-non-ok", {
-            observationId: id,
-            status: traceRes.status,
-          })
-          return
-        }
-        const traceBody = (await traceRes.json()) as ObservationTraceResponse
-        if (cancelled) return
-        setTrace(traceBody)
-        if (classifyRes.ok) {
-          const body = (await classifyRes.json()) as { trace?: { events?: ProcessingEventItem[] } }
-          if (cancelled) return
-          setEvents(body.trace?.events ?? [])
-        }
-      })
+    loadTrace(controller.signal, "initial")
       .catch((e) => {
-        if (cancelled) return
-        setError(e instanceof Error ? e.message : "Failed to load trace")
-        logClientError(e, "reviewer-trace-fetch-failed", { observationId: id })
+        if (controller.signal.aborted) return
+        const msg = e instanceof Error ? e.message : "Failed to load trace"
+        setError(msg)
+        // loadTrace already emits reviewer-trace-load-failed for HTTP errors
+        // with status context; log here only when the failure didn't go
+        // through that path (network / TypeError / unhandled).
+        const isHttpError = /^HTTP \d+/.test(msg) || msg === "Observation not found."
+        if (!isHttpError) {
+          logClientError(e instanceof Error ? e : new Error(msg), "reviewer-trace-load-failed", {
+            observationId: id,
+            phase: "network_or_unhandled",
+          })
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!controller.signal.aborted) setLoading(false)
       })
 
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [id])
+  }, [id, loadTrace])
+
+  const handleRerun = useCallback(
+    async (stage: RerunStage) => {
+      if (!id) return
+      setRerunBusy(stage)
+      setRerunStatus(null)
+      logClientEvent("reviewer-trace-rerun-started", { observationId: id, stage })
+      try {
+        const res = await fetch(`/api/observations/${id}/rerun`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stage }),
+        })
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: string
+          detail?: string
+          message?: string
+          classification_id?: string
+          model?: string
+          dimensions?: number
+        }
+        if (!res.ok) {
+          const message = body.error || body.message || `HTTP ${res.status}`
+          const fullMessage = body.detail ? `${message}: ${body.detail}` : message
+          setRerunStatus({ stage, ok: false, message: fullMessage })
+          logClientError(new Error(fullMessage), "reviewer-trace-rerun-failed", {
+            observationId: id,
+            stage,
+            status: res.status,
+            errorCode: body.error ?? null,
+          })
+          return
+        }
+        setRerunStatus({ stage, ok: true, message: `${stage} re-run completed.` })
+        logClientEvent("reviewer-trace-rerun-succeeded", {
+          observationId: id,
+          stage,
+          classificationId: body.classification_id ?? null,
+          model: body.model ?? null,
+          dimensions: body.dimensions ?? null,
+        })
+        await loadTrace(undefined, "post_rerun").catch((refreshErr) => {
+          // The re-run succeeded; refresh failure is non-fatal but worth logging
+          // separately so an operator can tell "rerun ok, refresh failed" apart
+          // from the rerun itself failing.
+          logClientError(
+            refreshErr instanceof Error ? refreshErr : new Error(String(refreshErr)),
+            "reviewer-trace-rerun-refresh-failed",
+            { observationId: id, stage },
+          )
+        })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Re-run failed"
+        setRerunStatus({ stage, ok: false, message })
+        logClientError(e instanceof Error ? e : new Error(message), "reviewer-trace-rerun-failed", {
+          observationId: id,
+          stage,
+          phase: "network_or_unhandled",
+        })
+      } finally {
+        setRerunBusy(null)
+      }
+    },
+    [id, loadTrace],
+  )
 
   return (
     <div className="min-h-screen bg-background">
@@ -174,13 +354,39 @@ export default function ObservationTracePage() {
               ) : null}
             </div>
 
+            {rerunStatus ? (
+              <Alert variant={rerunStatus.ok ? "default" : "destructive"}>
+                <AlertTitle>
+                  Re-run {rerunStatus.stage} {rerunStatus.ok ? "succeeded" : "failed"}
+                </AlertTitle>
+                <AlertDescription>{rerunStatus.message}</AlertDescription>
+              </Alert>
+            ) : null}
+
             <TraceStage
               title="Capture"
               available={trace.availability.capture}
               meta={[
-                ["captured_at", trace.stages.capture.captured_at],
-                ["published_at", trace.stages.capture.published_at],
-                ["source_id", trace.stages.capture.source_id],
+                ["captured_at", <FormattedDate key="captured" iso={trace.stages.capture.captured_at} />],
+                ["published_at", <FormattedDate key="published" iso={trace.stages.capture.published_at} />],
+                [
+                  "source",
+                  trace.stages.capture.source_name || trace.stages.capture.source_slug ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-foreground">
+                        {trace.stages.capture.source_name ?? trace.stages.capture.source_slug}
+                      </span>
+                      {trace.stages.capture.source_slug && trace.stages.capture.source_name ? (
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          ({trace.stages.capture.source_slug})
+                        </span>
+                      ) : null}
+                      <ShortId value={trace.stages.capture.source_id} />
+                    </span>
+                  ) : (
+                    <ShortId value={trace.stages.capture.source_id} />
+                  ),
+                ],
               ]}
             />
             <TraceStage
@@ -188,18 +394,29 @@ export default function ObservationTracePage() {
               available={trace.availability.fingerprint}
               meta={[
                 ["algorithm_version", trace.stages.fingerprint.algorithm_version],
-                ["latest_computed_at", trace.stages.fingerprint.latest_computed_at],
+                ["latest_computed_at", <FormattedDate key="fp" iso={trace.stages.fingerprint.latest_computed_at} />],
                 ["versions", String(trace.stages.fingerprint.total_versions)],
               ]}
             />
             <TraceStage
               title="Embedding"
               available={trace.availability.embedding}
+              action={
+                <RerunButton
+                  stage="embedding"
+                  busy={rerunBusy === "embedding"}
+                  onClick={handleRerun}
+                  hint="Re-call the OpenAI embeddings API and overwrite the stored vector."
+                />
+              }
               meta={[
                 ["algorithm_version", trace.stages.embedding.algorithm_version],
                 ["model", trace.stages.embedding.model],
-                ["dimensions", trace.stages.embedding.dimensions === null ? null : String(trace.stages.embedding.dimensions)],
-                ["latest_computed_at", trace.stages.embedding.latest_computed_at],
+                [
+                  "dimensions",
+                  trace.stages.embedding.dimensions === null ? null : String(trace.stages.embedding.dimensions),
+                ],
+                ["latest_computed_at", <FormattedDate key="emb" iso={trace.stages.embedding.latest_computed_at} />],
               ]}
             />
             <TraceStage
@@ -208,8 +425,11 @@ export default function ObservationTracePage() {
               meta={[
                 ["algorithm_version", trace.stages.category.algorithm_version],
                 ["winner_slug", trace.stages.category.winner_slug],
-                ["confidence", trace.stages.category.confidence === null ? null : trace.stages.category.confidence.toFixed(2)],
-                ["latest_computed_at", trace.stages.category.latest_computed_at],
+                [
+                  "confidence",
+                  trace.stages.category.confidence === null ? null : trace.stages.category.confidence.toFixed(2),
+                ],
+                ["latest_computed_at", <FormattedDate key="cat" iso={trace.stages.category.latest_computed_at} />],
                 ["versions", String(trace.stages.category.total_versions)],
               ]}
             >
@@ -223,19 +443,54 @@ export default function ObservationTracePage() {
               title="Cluster membership"
               available={trace.availability.clustering}
               meta={[
-                ["active_cluster_id", trace.stages.clustering.active_cluster_id],
-                ["active_cluster_key", trace.stages.clustering.active_cluster_key],
-                ["active_cluster_size", trace.stages.clustering.active_cluster_size === null ? null : String(trace.stages.clustering.active_cluster_size)],
+                [
+                  "active_cluster",
+                  trace.stages.clustering.active_cluster_label || trace.stages.clustering.active_cluster_key ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-foreground">
+                        {trace.stages.clustering.active_cluster_label ??
+                          trace.stages.clustering.active_cluster_key}
+                      </span>
+                      {trace.stages.clustering.active_cluster_label &&
+                      trace.stages.clustering.active_cluster_key ? (
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          ({trace.stages.clustering.active_cluster_key})
+                        </span>
+                      ) : null}
+                      <ShortId value={trace.stages.clustering.active_cluster_id} />
+                    </span>
+                  ) : (
+                    <ShortId value={trace.stages.clustering.active_cluster_id} />
+                  ),
+                ],
+                ["status", trace.stages.clustering.active_cluster_status],
+                [
+                  "active_cluster_size",
+                  trace.stages.clustering.active_cluster_size === null
+                    ? null
+                    : String(trace.stages.clustering.active_cluster_size),
+                ],
                 ["memberships", String(trace.stages.clustering.memberships.length)],
               ]}
             />
             <TraceStage
               title="Classification chain"
               available={trace.availability.classification}
+              action={
+                <RerunButton
+                  stage="classification"
+                  busy={rerunBusy === "classification"}
+                  onClick={handleRerun}
+                  hint="Append a fresh LLM classification to the chain."
+                />
+              }
               meta={[
                 ["latest_model", trace.stages.classification.latest_model_used],
                 ["latest_algorithm", trace.stages.classification.latest_algorithm_version],
-                ["latest_created_at", trace.stages.classification.latest_created_at],
+                [
+                  "latest_created_at",
+                  <FormattedDate key="cls" iso={trace.stages.classification.latest_created_at} />,
+                ],
                 ["versions", String(trace.stages.classification.total_versions)],
               ]}
             >
@@ -243,10 +498,13 @@ export default function ObservationTracePage() {
                 <div className="space-y-2">
                   {trace.stages.classification.lineage.map((node, idx) => (
                     <div key={String(node.id)} className="rounded border bg-muted/40 p-2 text-xs">
-                      <p className="font-mono">{String(node.id)}</p>
+                      <p className="font-mono text-[10px] text-muted-foreground" title={String(node.id)}>
+                        {String(node.id)}
+                      </p>
                       <p>{String(node.category ?? "unknown")} · {String(node.severity ?? "unknown")} · {String(node.status ?? "unknown")}</p>
                       <p className="text-muted-foreground">
-                        prior: {String(node.prior_classification_id ?? "none")}{idx === 0 ? " (head)" : ""}
+                        prior: {node.prior_classification_id ? <ShortId value={String(node.prior_classification_id)} /> : "none"}
+                        {idx === 0 ? " (head)" : ""}
                       </p>
                     </div>
                   ))}
@@ -258,8 +516,11 @@ export default function ObservationTracePage() {
               available={trace.availability.review}
               meta={[
                 ["total_reviews", String(trace.stages.review.total_reviews)],
-                ["latest_reviewed_at", trace.stages.review.latest_reviewed_at],
-                ["generated_at", trace.generated_at],
+                [
+                  "latest_reviewed_at",
+                  <FormattedDate key="rev" iso={trace.stages.review.latest_reviewed_at} />,
+                ],
+                ["generated_at", <FormattedDate key="gen" iso={trace.generated_at} />],
               ]}
             />
 
@@ -280,7 +541,7 @@ export default function ObservationTracePage() {
                         {event.algorithm_version_model ? (
                           <span className="font-mono text-muted-foreground">{event.algorithm_version_model}</span>
                         ) : null}
-                        <span className="text-muted-foreground">{new Date(event.created_at).toISOString()}</span>
+                        <FormattedDate iso={event.created_at} />
                       </div>
                       {event.detail_json && Object.keys(event.detail_json).length > 0 ? (
                         <pre className="mt-1 overflow-x-auto rounded bg-muted p-1 text-[10px]">
