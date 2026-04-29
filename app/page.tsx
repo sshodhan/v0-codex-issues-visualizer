@@ -933,22 +933,26 @@ const handleHeroLlmCategoryDrill = (
 
             {/* Dashboard Tab */}
             <TabsContent value="dashboard" className="space-y-8 mt-6">
-              {/* V2: Always show DataProvenanceStrip */}
-              <DataProvenanceStrip
-                lastSyncLabel={lastScrapeTime}
-                issueWindowLabel={globalTimeLabel}
-                asOfActive={asOf != null}
-              />
+              {/* Mobile-first: Hero appears first on mobile, help text above on desktop */}
+              <div className="flex flex-col-reverse md:flex-col gap-6 md:gap-8">
+                {/* V2: Always show DataProvenanceStrip - hidden on mobile for faster access to key content */}
+                <DataProvenanceStrip
+                  lastSyncLabel={lastScrapeTime}
+                  issueWindowLabel={globalTimeLabel}
+                  asOfActive={asOf != null}
+                  className="hidden md:flex"
+                />
 
-              {/* V2: Hero-first narrative, then surges (NYT-style layout) */}
-              <HeroInsight
-                topInsight={heroInsight}
-                onExploreIssues={handleHeroExploreIssues}
-                onNavigateToCategory={handleCategoryViewFullListInTriage}
-                onLlmCategoryDrill={handleHeroLlmCategoryDrill}
-                issueTableTimeLabel={globalTimeLabel}
-                variant="v2"
-              />
+                {/* V2: Hero-first narrative, then surges (NYT-style layout) */}
+                <HeroInsight
+                  topInsight={heroInsight}
+                  onExploreIssues={handleHeroExploreIssues}
+                  onNavigateToCategory={handleCategoryViewFullListInTriage}
+                  onLlmCategoryDrill={handleHeroLlmCategoryDrill}
+                  issueTableTimeLabel={globalTimeLabel}
+                  variant="v2"
+                />
+              </div>
               <FingerprintSurgeCard
                 data={fingerprintSurges}
                 windowHours={24}
