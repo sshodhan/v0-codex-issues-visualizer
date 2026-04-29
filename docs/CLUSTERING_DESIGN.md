@@ -829,26 +829,33 @@ New tab "Family Classification" in `/admin`:
   pass can infer it from `danger level` in the LLM response or map
   family_kind → severity heuristically.
 
-## 5.2) Family Classification Quality Reviews
+## 5.2) Stage 5: Family Classification Quality Reviews (Human-in-the-Loop Tie-Break)
 
 `family_classification_reviews` (migration 030) captures reviewer feedback
-on whether a Family Classification row got the answer right. It is the
-evaluation loop for the classification system, **not** a ticketing or
-routing workflow.
+on whether a Family Classification row got the answer right, and optionally
+breaks ties when the heuristic and LLM disagree. It is the **Stage 5**
+evaluation/feedback loop for the classification system, not a ticketing or
+routing workflow. Output: append-only review evidence for precision/recall
+analysis and future Stage 4 improvements.
 
 ### What this is
 
-- An **append-only** table of reviewer verdicts per `family_classifications`
-  row. One row per review event; older reviews stay queryable for audit.
+- **Stage 5 feedback for Stage 4** — when heuristic and LLM disagree, the
+  reviewer breaks the tie by choosing one, overriding the family kind,
+  marking it low-evidence, or flagging the cluster for a split.
+- **Append-only evaluation table** per `family_classifications` row. One row
+  per review event; older reviews stay queryable for audit.
 - A small **inline form** inside the existing Family Quality Dashboard row
   detail. Reviewers see the same evidence (title, summary, representatives,
-  matched phrases, LLM rationale, quality bucket) the dashboard renders, then
-  pick Correct / Incorrect / Unclear.
+  matched phrases, LLM rationale, quality bucket, heuristic vs. LLM
+  disagreement) the dashboard renders, then pick Correct / Incorrect /
+  Unclear, optionally with a tie-break decision.
 - A **directional precision/recall summary** card at the top of the Family
   Quality section. Tiles include `safe_to_trust_precision`,
-  `needs_review_correct`, `input_problem_confirmed`, top error_layer, top
-  error_reason. Marked as not statistically significant until enough rows
-  exist.
+  `needs_review_correct`, `input_problem_confirmed`, tie-break outcome
+  counts (heuristic accepted, LLM accepted, overridden, etc.), top error
+  source, top error reason. Marked as not statistically significant until
+  enough rows exist.
 
 ### What this is NOT
 
@@ -868,24 +875,32 @@ routing workflow.
 - `id`, `classification_id` (FK → `family_classifications.id`),
   `cluster_id` (FK → `clusters.id`),
 - `review_verdict` ∈ `correct | incorrect | unclear`,
+- `review_decision` (nullable; tie-break outcome when heuristic ↔ LLM disagree):
+  `accept_heuristic | accept_llm | override_family_kind | mark_low_evidence |
+  mark_general_feedback | needs_more_examples | should_split_cluster |
+  not_actionable`,
 - `expected_family_kind` (nullable; required when
   `error_reason = wrong_family_kind`),
 - `actual_family_kind` (snapshot of the classifier's `family_kind` at
   review time),
 - `quality_bucket` (snapshot of the dashboard bucket at review time),
-- `error_layer` ∈ `layer_0_topic | layer_a_cluster | family_classification |
-  representatives | llm_enrichment | data_quality | unknown`,
+- `error_layer` (stage/source where the reviewer believed the error
+  originated): `stage_1_regex_topic | stage_2_embedding | stage_3_clustering |
+  stage_4_llm_classification | stage_4_family_naming | stage_4_fallback |
+  stage_5_review_workflow | representative_selection | data_quality | unknown`,
 - `error_reason` ∈ `wrong_family_kind | bad_family_title | bad_family_summary
-  | bad_representatives | bad_cluster_membership | low_layer0_coverage |
-  wrong_layer0_topic_distribution | llm_hallucinated | llm_too_generic |
-  singleton_not_recurring | mixed_cluster_should_split | false_safe_to_trust
-  | false_needs_review | false_input_problem | other`,
+  | bad_representatives | bad_cluster_membership | llm_hallucinated |
+  llm_too_generic | heuristic_overrode_better_llm_answer |
+  llm_disagreed_but_was_wrong | low_evidence_should_not_be_coherent |
+  general_feedback_not_actionable | singleton_not_recurring |
+  mixed_cluster_should_split | false_safe_to_trust | false_needs_review |
+  false_input_problem | other`,
 - `notes`, `reviewed_by`, `reviewed_at`,
 - `evidence_snapshot` JSONB — bounded freeze of what the reviewer saw
   (family_title, family_summary, family_kind, quality_bucket,
   quality_reasons, representative_preview, common_matched_phrase_preview,
   llm.status / suggested_family_kind / rationale, cluster_topic_metadata
-  fields).
+  fields, classification_coverage_share, mixed_topic_score).
 
 `family_classification_review_current` view: `distinct on (classification_id)
 order by reviewed_at desc` — latest verdict per classification, mirrors the
@@ -899,31 +914,54 @@ order by reviewed_at desc` — latest verdict per classification, mirrors the
 - `incorrect` AND `error_reason = wrong_family_kind`: also requires
   `expected_family_kind`.
 - `unclear`: notes recommended but not required.
+- `review_decision`: optional; when provided, refines the verdict semantics
+  (`accept_heuristic`, `accept_llm`, etc.).
 
 The validator (`lib/admin/family-classification-review.ts →
 validateFamilyClassificationReviewInput`) is shared between the API
 route and the UI form so the 400 response messages match the form
 guards exactly.
 
+### Tie-break decisions and outcomes
+
+When the Family Quality Dashboard detects disagreement or uncertainty
+(e.g., LLM suggests low_evidence but heuristic says coherent), it shows
+a **Human tie-break needed** section with the decision options:
+
+- `accept_heuristic` — reviewer agrees with the heuristic family kind.
+- `accept_llm` — reviewer believes the LLM interpretation is better.
+- `override_family_kind` — reviewer manually corrects the family kind.
+- `mark_low_evidence` — family lacks evidence for coherence.
+- `mark_general_feedback` — observations are broad feedback, not actionable.
+- `needs_more_examples` — cluster has too few members to judge.
+- `should_split_cluster` — members belong in separate families.
+- `not_actionable` — observations are noise or off-topic.
+
+These decisions are captured alongside the verdict so future analysis
+can answer: *How often did humans accept the heuristic when it disagreed
+with the LLM?* This teaches us whether Stage 4 is failing due to family
+naming, fallback, or weak upstream evidence.
+
 ### How errors map to follow-up work
 
 The summary tiles surface trends, not tickets. A spike in any single
-`error_reason` means a specific layer needs work:
+`error_reason` or `error_layer` means a specific stage needs work:
 
-- repeated `wrong_family_kind` → revisit Family Classification heuristic
-  (`lib/storage/family-classification.ts`); consider a v2 bump.
-- repeated `bad_representatives` → fix representative-selection in the
-  family classifier (`mv_cluster_topic_metadata` consumers).
-- repeated `layer_0_topic` (any reason in this layer) → tighten Layer 0
-  guardrails / add to the topic-classifier eval set.
-- repeated `bad_cluster_membership` → revisit clustering threshold or
-  split-review work (Layer A, `lib/storage/semantic-clusters.ts`).
+- repeated `stage_1_regex_topic` errors → tighten Layer 0 guardrails /
+  add to the topic-classifier eval set.
+- repeated `stage_3_clustering` errors → revisit clustering threshold
+  or split-review work.
+- repeated `wrong_family_kind` or `stage_4_family_naming` errors →
+  revisit Family Classification heuristic.
+- repeated `bad_representatives` → fix representative-selection.
 - repeated `llm_hallucinated` / `llm_too_generic` → bump the family
-  prompt template version; consider a stricter strict-mode schema.
+  prompt template version.
 - repeated `false_safe_to_trust` → tighten the strict criteria in
   `computeFamilyQualityBucket`.
-- repeated `false_needs_review` → relax the bucket criteria or improve
-  the upstream signals being used to flag.
+- repeated human `accept_llm` decisions → heuristic is too weak;
+  Stage 4 LLM is better.
+- repeated human `mark_low_evidence` decisions → quality bucketing
+  over-promotes thin evidence.
 
 These are *guidance*, not automatic actions. The reviews surface the
 trend; the actual fix is a deliberate code change in a follow-up PR.

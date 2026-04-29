@@ -35,14 +35,16 @@ import {
   normalizeQualityRow,
 } from "@/lib/admin/family-classification-quality-ui"
 import {
-  ERROR_LAYERS,
+  ERROR_SOURCES,
   ERROR_REASONS,
   FAMILY_KIND_VALUES,
+  REVIEW_DECISIONS,
   buildFamilyReviewEvidenceSnapshot,
-  type ErrorLayer,
+  type ErrorSource,
   type ErrorReason,
   type FamilyKind as ReviewFamilyKind,
   type FamilyReviewSummary,
+  type ReviewDecision,
 } from "@/lib/admin/family-classification-review"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 
@@ -58,15 +60,20 @@ const REVIEW_VERDICT_LABELS: Record<string, string> = {
   unclear: "Unclear",
 }
 
-const ERROR_LAYER_LABELS: Record<string, string> = {
-  layer_0_topic: "Layer 0 (topic)",
-  layer_a_cluster: "Layer A (cluster)",
-  family_classification: "Family classification",
-  representatives: "Representatives",
-  llm_enrichment: "LLM enrichment",
+const ERROR_SOURCE_LABELS: Record<string, string> = {
+  stage_1_regex_topic: "Stage 1 (regex/topic)",
+  stage_2_embedding: "Stage 2 (embedding)",
+  stage_3_clustering: "Stage 3 (clustering)",
+  stage_4_llm_classification: "Stage 4 (LLM classification)",
+  stage_4_family_naming: "Stage 4 (family naming)",
+  stage_4_fallback: "Stage 4 (fallback)",
+  stage_5_review_workflow: "Stage 5 (review)",
+  representative_selection: "Representative selection",
   data_quality: "Data quality",
   unknown: "Unknown",
 }
+
+const ERROR_LAYER_LABELS = ERROR_SOURCE_LABELS
 
 const ERROR_REASON_LABELS: Record<string, string> = {
   wrong_family_kind: "Wrong family kind",
@@ -74,16 +81,29 @@ const ERROR_REASON_LABELS: Record<string, string> = {
   bad_family_summary: "Bad family summary",
   bad_representatives: "Bad representatives",
   bad_cluster_membership: "Bad cluster membership",
-  low_layer0_coverage: "Low Layer 0 coverage",
-  wrong_layer0_topic_distribution: "Wrong Layer 0 topic distribution",
   llm_hallucinated: "LLM hallucinated",
   llm_too_generic: "LLM too generic",
+  heuristic_overrode_better_llm_answer: "Heuristic overrode better LLM answer",
+  llm_disagreed_but_was_wrong: "LLM disagreed but was wrong",
+  low_evidence_should_not_be_coherent: "Low evidence should not be coherent",
+  general_feedback_not_actionable: "General feedback not actionable",
   singleton_not_recurring: "Singleton (not recurring)",
   mixed_cluster_should_split: "Mixed cluster — should split",
   false_safe_to_trust: "False safe-to-trust",
   false_needs_review: "False needs-review",
   false_input_problem: "False input-problem",
   other: "Other",
+}
+
+const REVIEW_DECISION_LABELS: Record<string, string> = {
+  accept_heuristic: "Accept heuristic",
+  accept_llm: "Accept LLM",
+  override_family_kind: "Override family kind",
+  mark_low_evidence: "Mark low evidence",
+  mark_general_feedback: "Mark general feedback",
+  needs_more_examples: "Needs more examples",
+  should_split_cluster: "Should split cluster",
+  not_actionable: "Not actionable",
 }
 
 const FAMILY_KIND_REVIEW_LABELS: Record<string, string> = {
@@ -99,6 +119,7 @@ interface LatestReview {
   classification_id: string
   cluster_id: string
   review_verdict: string
+  review_decision: string | null
   expected_family_kind: string | null
   actual_family_kind: string | null
   quality_bucket: string | null
@@ -625,8 +646,9 @@ interface FamilyQualityDashboardProps {
 interface ReviewSubmitInput {
   row: QualityRow
   reviewVerdict: "correct" | "incorrect" | "unclear"
+  reviewDecision?: ReviewDecision
   expectedFamilyKind?: ReviewFamilyKind
-  errorLayer?: ErrorLayer
+  errorLayer?: ErrorSource
   errorReason?: ErrorReason
   notes?: string
 }
@@ -1110,6 +1132,7 @@ function ReviewFormPanel({
   onSubmitReview: (input: ReviewSubmitInput) => Promise<{ ok: boolean; error?: string }>
 }) {
   const [verdict, setVerdict] = useState<"correct" | "incorrect" | "unclear" | null>(null)
+  const [reviewDecision, setReviewDecision] = useState<string>("")
   const [expectedFamilyKind, setExpectedFamilyKind] = useState<string>("")
   const [errorLayer, setErrorLayer] = useState<string>("")
   const [errorReason, setErrorReason] = useState<string>("")
@@ -1119,9 +1142,14 @@ function ReviewFormPanel({
   const [submitOk, setSubmitOk] = useState(false)
 
   const disabled = !row.classification_id
+  const hasTieBreakContext =
+    row.review_reasons.includes("llm_disagrees_with_heuristic") ||
+    row.needs_human_review ||
+    row.quality_bucket === "needs_review"
 
   const reset = () => {
     setVerdict(null)
+    setReviewDecision("")
     setExpectedFamilyKind("")
     setErrorLayer("")
     setErrorReason("")
@@ -1148,9 +1176,12 @@ function ReviewFormPanel({
     const payload: ReviewSubmitInput = {
       row,
       reviewVerdict: verdict,
+      ...(reviewDecision && reviewDecision.trim()
+        ? { reviewDecision: reviewDecision as ReviewDecision }
+        : {}),
       ...(verdict === "incorrect"
         ? {
-            errorLayer: errorLayer as ErrorLayer,
+            errorLayer: errorLayer as ErrorSource,
             errorReason: errorReason as ErrorReason,
             ...(requiresWrongKind && expectedFamilyKind
               ? { expectedFamilyKind: expectedFamilyKind as ReviewFamilyKind }
@@ -1281,20 +1312,48 @@ function ReviewFormPanel({
         </Button>
       </div>
 
+      {hasTieBreakContext && verdict ? (
+        <div className="space-y-2 rounded-md border-l-2 border-amber-400 bg-amber-50/40 p-2 dark:bg-amber-950/20">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+            Human tie-break decision
+          </div>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            LLM and heuristic differ. How should the reviewer break the tie?
+          </p>
+          <label className="space-y-1 text-[11px]">
+            <span className="uppercase tracking-wide text-muted-foreground">
+              Decision (optional)
+            </span>
+            <Select value={reviewDecision} onValueChange={setReviewDecision}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder="Select tie-break decision" />
+              </SelectTrigger>
+              <SelectContent>
+                {REVIEW_DECISIONS.map((decision) => (
+                  <SelectItem key={decision} value={decision}>
+                    {humanizeMachineCode(decision, REVIEW_DECISION_LABELS)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+        </div>
+      ) : null}
+
       {verdict === "incorrect" ? (
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="space-y-1 text-[11px]">
             <span className="uppercase tracking-wide text-muted-foreground">
-              Error layer<span className="text-destructive"> *</span>
+              Error source<span className="text-destructive"> *</span>
             </span>
             <Select value={errorLayer} onValueChange={setErrorLayer}>
               <SelectTrigger className="h-8 text-xs">
-                <SelectValue placeholder="Select error layer" />
+                <SelectValue placeholder="Select error source" />
               </SelectTrigger>
               <SelectContent>
-                {ERROR_LAYERS.map((layer) => (
-                  <SelectItem key={layer} value={layer}>
-                    {humanizeMachineCode(layer, ERROR_LAYER_LABELS)}
+                {ERROR_SOURCES.map((source) => (
+                  <SelectItem key={source} value={source}>
+                    {humanizeMachineCode(source, ERROR_SOURCE_LABELS)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1679,7 +1738,7 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
 
   const submitReview = useCallback(
     async (input: ReviewSubmitInput): Promise<{ ok: boolean; error?: string }> => {
-      const { row, reviewVerdict, expectedFamilyKind, errorLayer, errorReason, notes } =
+      const { row, reviewVerdict, reviewDecision, expectedFamilyKind, errorLayer, errorReason, notes } =
         input
       if (!row.classification_id) {
         return { ok: false, error: "Row is missing classification_id" }
@@ -1700,6 +1759,10 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
         representative_preview: row.representative_preview,
         common_matched_phrase_count: row.common_matched_phrase_count,
         common_matched_phrase_preview: row.common_matched_phrase_preview,
+        llm_status: row.llm_status,
+        llm_suggested_family_kind: row.llm_status,
+        classification_coverage_share: row.classification_coverage_share,
+        mixed_topic_score: row.mixed_topic_score,
       })
 
       try {
@@ -1710,6 +1773,7 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
             classificationId: row.classification_id,
             clusterId: row.cluster_id,
             reviewVerdict,
+            reviewDecision,
             expectedFamilyKind,
             actualFamilyKind: row.family_kind,
             qualityBucket: row.quality_bucket,

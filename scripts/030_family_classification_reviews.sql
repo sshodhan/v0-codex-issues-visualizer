@@ -76,18 +76,34 @@ create table if not exists family_classification_reviews (
       'needs_review',
       'input_problem'
     )),
-  -- Which architectural layer the reviewer believes caused the error.
+  -- Which stage/source the reviewer believes caused the error.
   -- Required for incorrect verdicts (validated at the API layer);
   -- nullable here so correct/unclear reviews don't have to fake one.
   error_layer text null
     check (error_layer in (
-      'layer_0_topic',
-      'layer_a_cluster',
-      'family_classification',
-      'representatives',
-      'llm_enrichment',
+      'stage_1_regex_topic',
+      'stage_2_embedding',
+      'stage_3_clustering',
+      'stage_4_llm_classification',
+      'stage_4_family_naming',
+      'stage_4_fallback',
+      'stage_5_review_workflow',
+      'representative_selection',
       'data_quality',
       'unknown'
+    )),
+  -- Human tie-break decision: how did the reviewer break disagreement
+  -- between heuristic and LLM, or resolve uncertainty?
+  review_decision text null
+    check (review_decision in (
+      'accept_heuristic',
+      'accept_llm',
+      'override_family_kind',
+      'mark_low_evidence',
+      'mark_general_feedback',
+      'needs_more_examples',
+      'should_split_cluster',
+      'not_actionable'
     )),
   error_reason text null
     check (error_reason in (
@@ -96,10 +112,12 @@ create table if not exists family_classification_reviews (
       'bad_family_summary',
       'bad_representatives',
       'bad_cluster_membership',
-      'low_layer0_coverage',
-      'wrong_layer0_topic_distribution',
       'llm_hallucinated',
       'llm_too_generic',
+      'heuristic_overrode_better_llm_answer',
+      'llm_disagreed_but_was_wrong',
+      'low_evidence_should_not_be_coherent',
+      'general_feedback_not_actionable',
       'singleton_not_recurring',
       'mixed_cluster_should_split',
       'false_safe_to_trust',
@@ -158,6 +176,7 @@ select distinct on (classification_id)
   fr.classification_id,
   fr.cluster_id,
   fr.review_verdict,
+  fr.review_decision,
   fr.expected_family_kind,
   fr.actual_family_kind,
   fr.quality_bucket,

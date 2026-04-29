@@ -28,16 +28,31 @@
 export const REVIEW_VERDICTS = ["correct", "incorrect", "unclear"] as const
 export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number]
 
-export const ERROR_LAYERS = [
-  "layer_0_topic",
-  "layer_a_cluster",
-  "family_classification",
-  "representatives",
-  "llm_enrichment",
+export const REVIEW_DECISIONS = [
+  "accept_heuristic",
+  "accept_llm",
+  "override_family_kind",
+  "mark_low_evidence",
+  "mark_general_feedback",
+  "needs_more_examples",
+  "should_split_cluster",
+  "not_actionable",
+] as const
+export type ReviewDecision = (typeof REVIEW_DECISIONS)[number]
+
+export const ERROR_SOURCES = [
+  "stage_1_regex_topic",
+  "stage_2_embedding",
+  "stage_3_clustering",
+  "stage_4_llm_classification",
+  "stage_4_family_naming",
+  "stage_4_fallback",
+  "stage_5_review_workflow",
+  "representative_selection",
   "data_quality",
   "unknown",
 ] as const
-export type ErrorLayer = (typeof ERROR_LAYERS)[number]
+export type ErrorSource = (typeof ERROR_SOURCES)[number]
 
 export const ERROR_REASONS = [
   "wrong_family_kind",
@@ -45,10 +60,12 @@ export const ERROR_REASONS = [
   "bad_family_summary",
   "bad_representatives",
   "bad_cluster_membership",
-  "low_layer0_coverage",
-  "wrong_layer0_topic_distribution",
   "llm_hallucinated",
   "llm_too_generic",
+  "heuristic_overrode_better_llm_answer",
+  "llm_disagreed_but_was_wrong",
+  "low_evidence_should_not_be_coherent",
+  "general_feedback_not_actionable",
   "singleton_not_recurring",
   "mixed_cluster_should_split",
   "false_safe_to_trust",
@@ -57,6 +74,8 @@ export const ERROR_REASONS = [
   "other",
 ] as const
 export type ErrorReason = (typeof ERROR_REASONS)[number]
+
+export type ErrorLayer = ErrorSource
 
 export const FAMILY_KIND_VALUES = [
   "coherent_single_issue",
@@ -77,8 +96,14 @@ export type QualityBucket = (typeof QUALITY_BUCKET_VALUES)[number]
 export function isReviewVerdict(value: unknown): value is ReviewVerdict {
   return typeof value === "string" && (REVIEW_VERDICTS as readonly string[]).includes(value)
 }
+export function isReviewDecision(value: unknown): value is ReviewDecision {
+  return typeof value === "string" && (REVIEW_DECISIONS as readonly string[]).includes(value)
+}
+export function isErrorSource(value: unknown): value is ErrorSource {
+  return typeof value === "string" && (ERROR_SOURCES as readonly string[]).includes(value)
+}
 export function isErrorLayer(value: unknown): value is ErrorLayer {
-  return typeof value === "string" && (ERROR_LAYERS as readonly string[]).includes(value)
+  return isErrorSource(value)
 }
 export function isErrorReason(value: unknown): value is ErrorReason {
   return typeof value === "string" && (ERROR_REASONS as readonly string[]).includes(value)
@@ -94,10 +119,12 @@ export interface FamilyClassificationReviewInputRaw {
   classificationId?: unknown
   clusterId?: unknown
   reviewVerdict?: unknown
+  reviewDecision?: unknown
   expectedFamilyKind?: unknown
   actualFamilyKind?: unknown
   qualityBucket?: unknown
   errorLayer?: unknown
+  errorSource?: unknown
   errorReason?: unknown
   notes?: unknown
   reviewedBy?: unknown
@@ -108,10 +135,11 @@ export interface FamilyClassificationReviewInputValid {
   classification_id: string
   cluster_id: string
   review_verdict: ReviewVerdict
+  review_decision: ReviewDecision | null
   expected_family_kind: FamilyKind | null
   actual_family_kind: string | null
   quality_bucket: QualityBucket | null
-  error_layer: ErrorLayer | null
+  error_layer: ErrorSource | null
   error_reason: ErrorReason | null
   notes: string | null
   reviewed_by: string | null
@@ -150,6 +178,8 @@ function asPlainRecord(value: unknown): Record<string, unknown> {
 //   * verdict = "incorrect" AND error_reason = "wrong_family_kind":
 //     expected_family_kind also required.
 //   * verdict = "unclear": notes optional but nothing else required.
+//   * review_decision is optional but when provided constrains verdict/error
+//     combinations (e.g., mark_low_evidence implies incorrect).
 //   * notes capped at NOTES_MAX_LENGTH so the JSONB row doesn't blow
 //     up if a reviewer pastes an entire chat transcript.
 export function validateFamilyClassificationReviewInput(
@@ -170,6 +200,17 @@ export function validateFamilyClassificationReviewInput(
     )
   }
 
+  let reviewDecision: ReviewDecision | null = null
+  if (input.reviewDecision != null && input.reviewDecision !== "") {
+    if (!isReviewDecision(input.reviewDecision)) {
+      errors.push(
+        `reviewDecision must be one of: ${REVIEW_DECISIONS.join(", ")}`,
+      )
+    } else {
+      reviewDecision = input.reviewDecision
+    }
+  }
+
   // Optional fields that, when provided, must be from a valid set.
   let expectedFamilyKind: FamilyKind | null = null
   if (input.expectedFamilyKind != null && input.expectedFamilyKind !== "") {
@@ -183,11 +224,6 @@ export function validateFamilyClassificationReviewInput(
   }
 
   const actualFamilyKindRaw = trimToString(input.actualFamilyKind)
-  // We do not constrain actualFamilyKind to FAMILY_KIND_VALUES because
-  // a future classifier version might emit a value the reviewer module
-  // does not know yet; storing the literal string is the audit-safe
-  // behavior. Empty strings collapse to null so summaries don't gain
-  // a synthetic "" bucket.
   const actualFamilyKind = actualFamilyKindRaw
 
   let qualityBucket: QualityBucket | null = null
@@ -201,14 +237,15 @@ export function validateFamilyClassificationReviewInput(
     }
   }
 
-  let errorLayer: ErrorLayer | null = null
-  if (input.errorLayer != null && input.errorLayer !== "") {
-    if (!isErrorLayer(input.errorLayer)) {
+  let errorLayer: ErrorSource | null = null
+  const errorLayerInput = input.errorLayer || input.errorSource
+  if (errorLayerInput != null && errorLayerInput !== "") {
+    if (!isErrorSource(errorLayerInput)) {
       errors.push(
-        `errorLayer must be one of: ${ERROR_LAYERS.join(", ")}`,
+        `errorLayer must be one of: ${ERROR_SOURCES.join(", ")}`,
       )
     } else {
-      errorLayer = input.errorLayer
+      errorLayer = errorLayerInput as ErrorSource
     }
   }
 
@@ -233,8 +270,6 @@ export function validateFamilyClassificationReviewInput(
   // the same root cause.
   if (isReviewVerdict(verdict)) {
     if (verdict === "correct") {
-      // Force-clear error fields on a correct verdict; a misclick on
-      // the form should not pollute the by_error_layer summary.
       errorLayer = null
       errorReason = null
     } else if (verdict === "incorrect") {
@@ -246,9 +281,13 @@ export function validateFamilyClassificationReviewInput(
         )
       }
     }
-    // verdict === "unclear": notes are only recommended, not required.
-    // Cross-field validation intentionally permissive here; downstream
-    // summary helpers can flag "many unclear with no notes" later.
+  }
+
+  // Decision-specific validation.
+  if (isReviewDecision(reviewDecision)) {
+    if (reviewDecision === "mark_low_evidence" && !expectedFamilyKind) {
+      expectedFamilyKind = "low_evidence" as FamilyKind
+    }
   }
 
   if (errors.length > 0) return { ok: false, errors }
@@ -261,6 +300,7 @@ export function validateFamilyClassificationReviewInput(
       classification_id: classificationId!,
       cluster_id: clusterId!,
       review_verdict: verdict as ReviewVerdict,
+      review_decision: reviewDecision,
       expected_family_kind: expectedFamilyKind,
       actual_family_kind: actualFamilyKind,
       quality_bucket: qualityBucket,
@@ -323,6 +363,10 @@ export interface FamilyReviewEvidenceSnapshotInput {
   representative_preview?: string[] | null
   common_matched_phrase_count?: number | null
   common_matched_phrase_preview?: string[] | null
+  llm_status?: string | null
+  llm_suggested_family_kind?: string | null
+  classification_coverage_share?: number | null
+  mixed_topic_score?: number | null
 }
 
 // Builds the JSONB body the API stores alongside each review. Goal:
@@ -391,12 +435,20 @@ export function buildFamilyReviewEvidenceSnapshot(
       0,
       SNAPSHOT_PHRASE_PREVIEW,
     ),
+    classification_coverage_share:
+      row.classification_coverage_share ?? asNumber(
+        clusterTopicMetadata?.classification_coverage_share,
+      ),
+    mixed_topic_score:
+      row.mixed_topic_score ?? asNumber(clusterTopicMetadata?.mixed_topic_score),
   }
 
-  if (llm) {
+  if (llm || row.llm_status || row.llm_suggested_family_kind) {
     snapshot.llm = {
-      status: asString(llm.status),
-      suggested_family_kind: asString(llm.suggested_family_kind),
+      status: asString(row.llm_status ?? (llm ? llm.status : null)),
+      suggested_family_kind: asString(
+        row.llm_suggested_family_kind ?? (llm ? llm.suggested_family_kind : null),
+      ),
       rationale,
     }
   }
@@ -425,7 +477,6 @@ export function buildFamilyReviewEvidenceSnapshot(
     if (v === null) delete snapshot[key]
     else if (Array.isArray(v) && v.length === 0) delete snapshot[key]
   }
-  // suppress unused-helper warning when none of the booleans are set
   void asBool
 
   return snapshot
@@ -441,6 +492,7 @@ export interface FamilyReviewSummaryRow {
   quality_bucket: string | null
   error_layer: string | null
   error_reason: string | null
+  review_decision: string | null
 }
 
 export interface FamilyReviewSummary {
@@ -460,6 +512,14 @@ export interface FamilyReviewSummary {
   input_problem_confirmed: number
   top_error_layer: string | null
   top_error_reason: string | null
+  heuristic_accepted_count: number
+  llm_accepted_count: number
+  override_family_kind_count: number
+  low_evidence_override_count: number
+  general_feedback_marked_count: number
+  should_split_cluster_count: number
+  not_actionable_count: number
+  by_review_decision: Record<string, number>
 }
 
 // Reduces a list of latest-per-classification reviews into the
@@ -485,6 +545,7 @@ export function summarizeFamilyReviewRows(
   const byBucket: FamilyReviewSummary["by_quality_bucket"] = {}
   const byLayer: Record<string, number> = {}
   const byReason: Record<string, number> = {}
+  const byDecision: Record<string, number> = {}
 
   let safeToTrustReviewed = 0
   let safeToTrustCorrect = 0
@@ -492,6 +553,13 @@ export function summarizeFamilyReviewRows(
   let needsReviewCorrect = 0
   let inputProblemReviewed = 0
   let inputProblemConfirmed = 0
+  let heuristicAccepted = 0
+  let llmAccepted = 0
+  let overrideFamilyKind = 0
+  let lowEvidenceOverride = 0
+  let generalFeedbackMarked = 0
+  let shouldSplitCluster = 0
+  let notActionable = 0
 
   for (const row of rows) {
     reviewed += 1
@@ -531,6 +599,16 @@ export function summarizeFamilyReviewRows(
     if (row.error_reason) {
       byReason[row.error_reason] = (byReason[row.error_reason] ?? 0) + 1
     }
+    if (row.review_decision) {
+      byDecision[row.review_decision] = (byDecision[row.review_decision] ?? 0) + 1
+      if (row.review_decision === "accept_heuristic") heuristicAccepted += 1
+      else if (row.review_decision === "accept_llm") llmAccepted += 1
+      else if (row.review_decision === "override_family_kind") overrideFamilyKind += 1
+      else if (row.review_decision === "mark_low_evidence") lowEvidenceOverride += 1
+      else if (row.review_decision === "mark_general_feedback") generalFeedbackMarked += 1
+      else if (row.review_decision === "should_split_cluster") shouldSplitCluster += 1
+      else if (row.review_decision === "not_actionable") notActionable += 1
+    }
   }
 
   const topEntry = (counts: Record<string, number>): string | null => {
@@ -563,5 +641,13 @@ export function summarizeFamilyReviewRows(
     input_problem_confirmed: inputProblemConfirmed,
     top_error_layer: topEntry(byLayer),
     top_error_reason: topEntry(byReason),
+    heuristic_accepted_count: heuristicAccepted,
+    llm_accepted_count: llmAccepted,
+    override_family_kind_count: overrideFamilyKind,
+    low_evidence_override_count: lowEvidenceOverride,
+    general_feedback_marked_count: generalFeedbackMarked,
+    should_split_cluster_count: shouldSplitCluster,
+    not_actionable_count: notActionable,
+    by_review_decision: byDecision,
   }
 }

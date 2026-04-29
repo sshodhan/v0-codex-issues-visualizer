@@ -37,6 +37,7 @@ interface ReviewRow {
   classification_id: string
   cluster_id: string
   review_verdict: string
+  review_decision: string | null
   expected_family_kind: string | null
   actual_family_kind: string | null
   quality_bucket: string | null
@@ -177,7 +178,7 @@ export async function GET(request: NextRequest) {
   let query = supabase
     .from("family_classification_review_current")
     .select(
-      "id, classification_id, cluster_id, review_verdict, expected_family_kind, actual_family_kind, quality_bucket, error_layer, error_reason, notes, reviewed_by, reviewed_at, evidence_snapshot",
+      "id, classification_id, cluster_id, review_verdict, review_decision, expected_family_kind, actual_family_kind, quality_bucket, error_layer, error_reason, notes, reviewed_by, reviewed_at, evidence_snapshot",
     )
     .order("reviewed_at", { ascending: false })
     .limit(5000)
@@ -214,6 +215,7 @@ export async function GET(request: NextRequest) {
     quality_bucket: r.quality_bucket,
     error_layer: r.error_layer,
     error_reason: r.error_reason,
+    review_decision: r.review_decision,
   }))
   const summary = summarizeFamilyReviewRows(summaryRows)
 

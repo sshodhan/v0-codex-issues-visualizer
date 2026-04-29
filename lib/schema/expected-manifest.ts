@@ -312,12 +312,13 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     ],
     // 030 — Family Classification QA Reviews record shape. Append-only
     // verdicts on `family_classifications` rows, with optional
-    // error_layer/error_reason for incorrect verdicts. See
-    // docs/CLUSTERING_DESIGN.md §5.2.
+    // error_layer/error_reason for incorrect verdicts and review_decision
+    // for tie-break outcomes. See docs/CLUSTERING_DESIGN.md §5.2.
     family_classification_reviews: [
       "classification_id",
       "cluster_id",
       "review_verdict",
+      "review_decision",
       "expected_family_kind",
       "actual_family_kind",
       "quality_bucket",
