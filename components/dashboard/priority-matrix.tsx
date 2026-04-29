@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -112,6 +112,15 @@ export function PriorityMatrix({
   onFilterChange,
   variant = "v2",
 }: PriorityMatrixProps) {
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 640)
+    checkMobile()
+    window.addEventListener("resize", checkMobile)
+    return () => window.removeEventListener("resize", checkMobile)
+  }, [])
+
   const { chartData, avgPriority, zoneCategories } = useMemo(() => {
     const groupedByCategory = data.reduce<
       Record<
@@ -287,11 +296,11 @@ export function PriorityMatrix({
 
   return (
     <Card className="bg-card border-border col-span-full lg:col-span-2">
-      <CardHeader className="pb-2">
+      <CardHeader className="pb-2 px-3 sm:px-6">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <div className="flex items-center gap-2">
-              <CardTitle className="text-lg font-semibold text-foreground">Fix-First Queue (Actionability)</CardTitle>
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <CardTitle className="text-sm sm:text-lg font-semibold text-foreground">Fix-First Queue (Actionability)</CardTitle>
               {variant === "v2" && (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -314,31 +323,31 @@ export function PriorityMatrix({
                 </Tooltip>
               )}
             </div>
-            <p className="text-sm text-muted-foreground mt-1">
+            <p className="hidden sm:block text-sm text-muted-foreground mt-1">
               Ranked by actionability — impact, code-addressability, repro quality, and cross-source confirmation.
               Zone badges stay on legacy queue thresholds so long-running team norms remain stable.
             </p>
           </div>
-          <div className="flex gap-3 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#ef4444]" />
+          <div className="flex gap-2 sm:gap-3 text-[10px] sm:text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 sm:h-2.5 sm:w-2.5 rounded-full bg-[#ef4444]" />
               Negative
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#6b7280]" />
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 sm:h-2.5 sm:w-2.5 rounded-full bg-[#6b7280]" />
               Neutral
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#22c55e]" />
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 sm:h-2.5 sm:w-2.5 rounded-full bg-[#22c55e]" />
               Positive
             </span>
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="h-[380px]">
+      <CardContent className="px-2 sm:px-6">
+        <div className="h-[380px] sm:h-[380px]">
           <ResponsiveContainer width="100%" height="100%">
-            <ScatterChart margin={{ top: 20, right: 30, bottom: 50, left: 100 }}>
+            <ScatterChart margin={isMobile ? { top: 15, right: 10, bottom: 40, left: 60 } : { top: 20, right: 30, bottom: 50, left: 100 }}>
               {/* Background zones for visual context */}
               <ReferenceArea
                 x1={ESCALATE_THRESHOLD}
@@ -371,9 +380,10 @@ export function PriorityMatrix({
                 name="Actionability Score"
                 domain={[0, 100]}
                 stroke="hsl(var(--muted-foreground))"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
+                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: isMobile ? 9 : 11 }}
                 tickLine={{ stroke: "hsl(var(--border))" }}
                 axisLine={{ stroke: "hsl(var(--border))" }}
+                ticks={isMobile ? [0, 25, 50, 100] : undefined}
               />
               <YAxis
                 type="number"
@@ -381,15 +391,22 @@ export function PriorityMatrix({
                 domain={[-0.5, maxY]}
                 ticks={chartData.map((entry) => entry.y)}
                 stroke="hsl(var(--muted-foreground))"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
+                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: isMobile ? 9 : 11 }}
                 tickLine={{ stroke: "hsl(var(--border))" }}
                 axisLine={{ stroke: "hsl(var(--border))" }}
                 tickFormatter={(value) => {
                   const lane = chartData[value]
                   if (!lane) return ""
+                  if (isMobile) {
+                    // Truncate category name on mobile
+                    const shortName = lane.category.length > 8 
+                      ? lane.category.slice(0, 7) + "…" 
+                      : lane.category
+                    return `${shortName} (${lane.issueCount})`
+                  }
                   return `${lane.category} (${lane.issueCount})`
                 }}
-                width={95}
+                width={isMobile ? 55 : 95}
               />
               
               {/* Threshold lines with labels */}
