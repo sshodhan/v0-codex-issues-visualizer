@@ -486,10 +486,10 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           }
           howToRun={
             <p>
-              Pick the tab matching the layer you suspect. Start with{" "}
+              Pick the tab matching the stage you suspect. Start with{" "}
               <strong>Cross-layer Trace</strong> if you don&apos;t know
-              which layer is responsible — it walks one observation through
-              every layer and usually identifies the source of the problem.
+              which stage is responsible — it walks one observation through
+              every stage and usually identifies the source of the problem.
             </p>
           }
         />
@@ -509,13 +509,16 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               summary="Stage 1: re-run the deterministic enrichment pass (sentiment, category, impact, competitor mentions) under the current algorithm versions. Append-only, idempotent."
               purpose={
                 <p>
-                  Layer 0 is the deterministic enrichment layer. This walks the
-                  entire <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code> table
-                  and recomputes its four derivations — sentiment, category,
-                  impact score, and competitor mentions — under the registry
-                  versions currently configured in code. Each pass inserts
-                  new rows alongside the old ones rather than mutating
-                  anything, so prior readings stay reproducible.
+                  Stage 1 is the deterministic-signals stage of the
+                  improvement pipeline. This walks the entire{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code>{" "}
+                  table and recomputes its four derivations — sentiment,
+                  category (Topic), impact score, and competitor mentions
+                  — under the registry versions currently configured in
+                  code. Each pass inserts new rows alongside the old ones
+                  rather than mutating anything, so prior readings stay
+                  reproducible. Tab keeps the legacy name "Layer 0
+                  Backfill" for deep-link compatibility.
                 </p>
               }
               pipelineFit={
@@ -589,7 +592,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     stamp; nothing is destroyed or overwritten.
                   </li>
                   <li>
-                    Layer 0 is a broad signal, not ground truth — judge
+                    Stage 1 is a broad signal, not ground truth — judge
                     quality by evidence and margins, not by the headline
                     label.
                   </li>
@@ -621,9 +624,10 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               summary="Stage 4 (per-observation classification): manual catch-up for the gpt-5-mini classifier (category, subcategory, severity, mechanism). Same orchestrator as the daily 03:00 UTC cron, just behind the admin secret."
               purpose={
                 <p>
-                  Layer C is the per-observation LLM diagnosis layer. This
-                  routes canonical observations that have never been classified
-                  through the OpenAI classifier (gpt-5-mini) so they pick up
+                  Stage 4 (per-observation LLM classification) of the
+                  improvement pipeline. This routes canonical observations
+                  that have never been classified through the OpenAI
+                  classifier (gpt-5-mini) so they pick up
                   category, subcategory, severity, and mechanism labels. The
                   dedupe guard skips already-classified rows.
                 </p>
@@ -739,12 +743,14 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               summary="Stages 2–3: embeddings + clustering — live stats and on-demand rebuild. Stage 2 generates missing embeddings on demand, then Stage 3 groups them. Topic is not a hard membership gate. Attach-only is safe to re-run."
               purpose={
                 <p>
-                  Layer A answers: which reports are about the same recurring
-                  problem? This panel shows live counts from the aggregation
-                  layer (observations, clusters, active memberships, orphans)
-                  and lets you trigger the same clustering pass that runs
-                  after every scrape — attaching observations to existing
-                  clusters or forming new ones.
+                  Stages 2–3 answer: which reports are about the same
+                  recurring problem? This panel shows live counts from the
+                  aggregation storage tier (observations, clusters, active
+                  memberships, orphans) and lets you trigger the same
+                  embedding + clustering pass that runs after every scrape
+                  — generating any missing Stage 2 embeddings, then
+                  attaching observations to existing clusters or forming
+                  new ones in Stage 3.
                 </p>
               }
               pipelineFit={
@@ -1044,7 +1050,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     Schema verification checks object existence and expected
                     contracts. It does not prove the data quality of any
                     classification or family — only that the storage shape is
-                    what every layer expects.
+                    what every stage expects.
                   </p>
                 </div>
               }
@@ -1309,8 +1315,9 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                         lib/admin/family-classification-quality.ts
                       </code>
                       ). Clear the <code className="rounded bg-muted px-1 py-0.5">input_problem</code>{" "}
-                      bucket by fixing the upstream evidence (Layer 0 / Layer
-                      A) before re-classifying — re-running the classifier
+                      bucket by fixing the upstream evidence (Stage 1
+                      signals / Stages 2–3 cluster shape) before
+                      re-classifying — re-running the classifier
                       over malformed evidence just produces another
                       malformed classification.
                     </li>
@@ -1362,7 +1369,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   </li>
                   <li>
                     <strong>Non-goals:</strong> does not split or merge
-                    clusters, does not change Layer 0 topics, does not update{" "}
+                    clusters, does not change Stage 1 Topics, does not update{" "}
                     <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters.label</code>,
                     and does not make family classifications ground truth by
                     default — reviewer review remains the authority.
@@ -2348,7 +2355,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
                     semantic:&lt;hash&gt;
                   </code>{" "}
                   cluster keys. This is the architectural default for
-                  Layer A.
+                  Stage 3 clustering.
                 </p>
               </div>
             </label>
