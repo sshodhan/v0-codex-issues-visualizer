@@ -832,45 +832,41 @@ const handleHeroLlmCategoryDrill = (
 
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container mx-auto flex h-12 sm:h-16 items-center justify-between px-3 sm:px-4">
-          <div className="flex items-center gap-2 sm:gap-3">
-            <div className="rounded-lg bg-primary p-1.5 sm:p-2">
-              <BarChart3 className="h-4 w-4 sm:h-5 sm:w-5 text-primary-foreground" />
+        <div className="container mx-auto flex h-10 sm:h-16 items-center justify-between px-2 sm:px-4">
+          <div className="flex items-center gap-1.5 sm:gap-3">
+            <div className="rounded-md sm:rounded-lg bg-primary p-1 sm:p-2">
+              <BarChart3 className="h-3.5 w-3.5 sm:h-5 sm:w-5 text-primary-foreground" />
             </div>
-            <div>
-              <h1 className="text-base sm:text-xl font-bold text-foreground">
-                Codex Issues Visualizer
-              </h1>
-              <p className="hidden sm:block text-xs text-muted-foreground">
-                Track and prioritize OpenAI Codex feedback
-              </p>
-            </div>
+            <h1 className="text-sm sm:text-xl font-bold text-foreground">
+              <span className="sm:hidden">Codex Issues</span>
+              <span className="hidden sm:inline">Codex Issues Visualizer</span>
+            </h1>
           </div>
-          <div className="flex items-center gap-1.5 sm:gap-4">
+          <div className="flex items-center gap-1 sm:gap-4">
             <div className="hidden sm:block text-right text-sm">
               <p className="text-muted-foreground">Last synced</p>
               <p className="font-medium text-foreground">{lastScrapeTime}</p>
             </div>
-            <Button asChild variant="ghost" size="icon" title="Admin" className="h-8 w-8 sm:h-9 sm:w-9">
+            <Button asChild variant="ghost" size="icon" title="Admin" className="h-7 w-7 sm:h-9 sm:w-9">
               <Link href="/admin" aria-label="Admin">
-                <Settings className="h-4 w-4" />
+                <Settings className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               </Link>
             </Button>
             <Button
               onClick={handleRefresh}
               disabled={isRefreshing}
-              className="gap-1 sm:gap-2 text-xs sm:text-sm px-2 sm:px-4 h-8 sm:h-9 shrink-0"
+              className="gap-1 text-[11px] sm:text-sm px-1.5 sm:px-4 h-7 sm:h-9 shrink-0"
             >
               {isRefreshing ? (
-                <Loader2 className="h-3.5 w-3.5 sm:h-4 sm:w-4 animate-spin" />
+                <Loader2 className="h-3 w-3 sm:h-4 sm:w-4 animate-spin" />
               ) : (
-                <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                <RefreshCw className="h-3 w-3 sm:h-4 sm:w-4" />
               )}
               <span className="hidden sm:inline">
                 {isRefreshing ? "Scraping..." : "Refresh Data"}
               </span>
               <span className="sm:hidden">
-                {isRefreshing ? "..." : "Refresh"}
+                {isRefreshing ? "..." : "Sync"}
               </span>
             </Button>
           </div>
@@ -878,7 +874,7 @@ const handleHeroLlmCategoryDrill = (
       </header>
 
       {/* Main Content */}
-      <main className="container mx-auto px-4 py-6 space-y-6">
+      <main className="container mx-auto px-2 sm:px-4 py-3 sm:py-6 space-y-3 sm:space-y-6">
 
         {statsLoading ? (
           <DashboardSkeleton />
@@ -895,26 +891,25 @@ const handleHeroLlmCategoryDrill = (
             isRefreshing={isRefreshing}
           />
         ) : (
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-            <TabsList className="grid w-full max-w-2xl grid-cols-4 mx-auto h-auto p-1 gap-0">
-              <TabsTrigger value="dashboard" className="gap-1.5 text-xs sm:text-sm py-2.5">
-                <TrendingUp className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="truncate">Dashboard</span>
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3 sm:space-y-6">
+            <TabsList className="grid w-full max-w-2xl grid-cols-4 mx-auto h-auto p-0.5 sm:p-1 gap-0">
+              <TabsTrigger value="dashboard" className="gap-1 sm:gap-1.5 text-[10px] sm:text-sm py-1.5 sm:py-2.5 px-1 sm:px-3">
+                <TrendingUp className="h-3 w-3 sm:h-4 sm:w-4 shrink-0" />
+                <span className="hidden sm:inline">Dashboard</span>
               </TabsTrigger>
-              <TabsTrigger value="v3" className="gap-1.5 text-xs sm:text-sm py-2.5">
-                <BarChart3 className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="truncate">Triage</span>
+              <TabsTrigger value="v3" className="gap-1 sm:gap-1.5 text-[10px] sm:text-sm py-1.5 sm:py-2.5 px-1 sm:px-3">
+                <BarChart3 className="h-3 w-3 sm:h-4 sm:w-4 shrink-0" />
+                <span className="hidden sm:inline">Triage</span>
               </TabsTrigger>
-  <TabsTrigger value="story" className="gap-1.5 text-xs sm:text-sm py-2.5">
-  <BookOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-  <span className="truncate">Birds Eye View</span>
-  </TabsTrigger>
-              <TabsTrigger value="classifications" className="gap-1.5 text-xs sm:text-sm py-2.5 relative">
-                <BrainCircuit className="h-3.5 w-3.5 sm:h-4 sm:w-4 shrink-0" />
-                <span className="truncate sm:hidden">AI</span>
-                <span className="hidden sm:inline truncate">Classifications</span>
+              <TabsTrigger value="story" className="gap-1 sm:gap-1.5 text-[10px] sm:text-sm py-1.5 sm:py-2.5 px-1 sm:px-3">
+                <BookOpen className="h-3 w-3 sm:h-4 sm:w-4 shrink-0" />
+                <span className="hidden sm:inline">Birds Eye View</span>
+              </TabsTrigger>
+              <TabsTrigger value="classifications" className="gap-1 sm:gap-1.5 text-[10px] sm:text-sm py-1.5 sm:py-2.5 px-1 sm:px-3 relative">
+                <BrainCircuit className="h-3 w-3 sm:h-4 sm:w-4 shrink-0" />
+                <span className="hidden sm:inline">Classifications</span>
                 {pendingReviewCount > 0 && (
-                  <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground sm:static sm:ml-1 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-xs">
+                  <span className="absolute -right-0.5 -top-0.5 inline-flex h-3.5 min-w-3.5 sm:h-4 sm:min-w-4 items-center justify-center rounded-full bg-destructive px-0.5 sm:px-1 text-[9px] sm:text-[10px] font-medium text-destructive-foreground sm:static sm:ml-1 sm:h-5 sm:min-w-5 sm:px-1.5 sm:text-xs">
                     {pendingReviewCount}
                   </span>
                 )}
