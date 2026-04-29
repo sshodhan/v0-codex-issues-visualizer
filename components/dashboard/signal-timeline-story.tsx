@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import {
   groupCategoriesByCount,
+  groupFamiliesByCount,
   type StoryTimelinePoint,
 } from "@/lib/dashboard/story-timeline"
 import { differenceInCalendarDays, format, parseISO } from "date-fns"
@@ -150,8 +151,13 @@ export function SignalTimelineStory({
   // Local legend filter — clicking a chip in the figcaption dims non-matching dots.
   // Composes with the external `highlight` prop: a dot is dimmed when EITHER the
   // external highlight is active and this dot doesn't match, OR the local legend
-  // filter is set and this dot's category doesn't match.
+  // filter is set and this dot's category/family doesn't match.
   const [legendFilter, setLegendFilter] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<"topic" | "family">("topic")
+  const handleViewModeChange = (newMode: "topic" | "family") => {
+    setViewMode(newMode)
+    setLegendFilter(null)
+  }
   const placed = useMemo(() => placePoints(points), [points])
   const extent = useMemo(() => {
     if (points.length === 0) return null
@@ -177,7 +183,9 @@ export function SignalTimelineStory({
     () => (extent ? buildWeekendBands(extent.startMs, extent.endMs) : []),
     [extent],
   )
-  const legend = useMemo(() => groupCategoriesByCount(points).slice(0, 6), [points])
+  const topicLegend = useMemo(() => groupCategoriesByCount(points).slice(0, 6), [points])
+  const familyLegend = useMemo(() => groupFamiliesByCount(points).slice(0, 6), [points])
+  const legend = viewMode === "topic" ? topicLegend : familyLegend
   const highImpactCount = useMemo(
     () => placed.filter((p) => p.impact >= 7).length,
     [placed],
@@ -320,8 +328,10 @@ export function SignalTimelineStory({
           {placed
             .filter((p) => p.impact >= 7)
             .map((p) => {
+              const currentName = viewMode === "topic" ? p.categoryName : p.familyName
+              const color = viewMode === "topic" ? p.categoryColor : p.familyColor
               const dimByHighlight = !!highlight && !isMatch(p, highlight)
-              const dimByLegend = legendFilter !== null && p.categoryName !== legendFilter
+              const dimByLegend = legendFilter !== null && currentName !== legendFilter
               const dim = dimByHighlight || dimByLegend
               return (
                 <circle
@@ -330,7 +340,7 @@ export function SignalTimelineStory({
                   cy={p.cy}
                   r={p.r + 4}
                   fill="none"
-                  stroke={p.categoryColor}
+                  stroke={color}
                   strokeOpacity={dim ? 0.06 : 0.25}
                   strokeWidth={2}
                   style={{ transition: "stroke-opacity 200ms ease" }}
@@ -340,13 +350,17 @@ export function SignalTimelineStory({
 
           {/* Dots */}
           {placed.map((p) => {
+            const currentName = viewMode === "topic" ? p.categoryName : p.familyName
+            const color = viewMode === "topic" ? p.categoryColor : p.familyColor
             const dimByHighlight = !!highlight && !isMatch(p, highlight)
-            const dimByLegend = legendFilter !== null && p.categoryName !== legendFilter
+            const dimByLegend = legendFilter !== null && currentName !== legendFilter
             const dim = dimByHighlight || dimByLegend
             const fillOpacity = dim ? 0.14 : 0.85
             const titleEl = (
               <title>
                 {p.title}
+                {`\n`}
+                {viewMode === "topic" ? p.categoryName : p.familyName}
                 {`\n`}
                 {format(parseISO(p.publishedAt), "MMM d, yyyy")} · Impact {p.impact.toFixed(1)} ·{" "}
                 {p.sourceSlug}
@@ -358,7 +372,7 @@ export function SignalTimelineStory({
                 cx={p.cx}
                 cy={p.cy}
                 r={p.r}
-                fill={p.categoryColor}
+                fill={color}
                 fillOpacity={fillOpacity}
                 stroke="hsl(var(--background))"
                 strokeWidth={1.2}
@@ -395,21 +409,48 @@ export function SignalTimelineStory({
           })}
         </svg>
 
-        <figcaption className="mt-3 space-y-2 text-xs text-muted-foreground max-w-2xl mx-auto">
-          <p className="text-center">
-            Each dot is a public report in your filter ({points.length} shown). Size ≈ impact (1–10);
-            high-impact dots (≥7) carry a halo
-            {highImpactCount > 0 ? ` — ${highImpactCount} in this window` : ""}. Color = heuristic
-            category. Weekend days are shaded faintly.
-            {legendFilter !== null && (
-              <>
-                {" "}
-                Showing <span className="font-medium text-foreground">{legendFilter}</span> only.
-              </>
-            )}
-          </p>
+        <figcaption className="mt-3 space-y-3 text-xs text-muted-foreground max-w-2xl mx-auto">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <p className="flex-1 min-w-[12rem]">
+              Each dot is a public report in your filter ({points.length} shown). Size ≈ impact
+              (1–10); high-impact dots (≥7) carry a halo
+              {highImpactCount > 0 ? ` — ${highImpactCount} in this window` : ""}. Color ={" "}
+              {viewMode === "topic" ? "heuristic category" : "report family"}. Weekend days are
+              shaded faintly.
+              {legendFilter !== null && (
+                <>
+                  {" "}
+                  Showing <span className="font-medium text-foreground">{legendFilter}</span> only.
+                </>
+              )}
+            </p>
+            <div
+              role="group"
+              aria-label="Legend grouping"
+              className="inline-flex items-center rounded-full bg-muted/30 p-1"
+            >
+              {(["topic", "family"] as const).map((mode) => {
+                const isActive = viewMode === mode
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={isActive}
+                    onClick={() => handleViewModeChange(mode)}
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      isActive
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
           {legend.length > 0 && (
-            <ul className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5">
+            <ul className="flex flex-wrap items-center justify-center gap-2">
               {legend.map((c) => {
                 const isActive = legendFilter === c.name
                 return (
@@ -421,18 +462,23 @@ export function SignalTimelineStory({
                       onClick={() =>
                         setLegendFilter((cur) => (cur === c.name ? null : c.name))
                       }
-                      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      style={
                         isActive
-                          ? "border-foreground/40 bg-muted/60 text-foreground"
-                          : "border-transparent hover:border-border hover:bg-muted/30"
+                          ? { borderColor: c.color, backgroundColor: `${c.color}14` }
+                          : undefined
+                      }
+                      className={`inline-flex items-center gap-2 rounded-lg border-2 px-3 py-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        isActive
+                          ? "scale-[1.02] text-foreground shadow-sm"
+                          : "border-border/60 hover:scale-[1.02] hover:border-border hover:bg-muted/40"
                       }`}
                     >
                       <span
                         aria-hidden
-                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        className="inline-block h-4 w-4 rounded-full shadow-sm"
                         style={{ backgroundColor: c.color }}
                       />
-                      <span className="text-foreground/80">{c.name}</span>
+                      <span className="font-medium text-foreground/90">{c.name}</span>
                       <span className="tabular-nums text-muted-foreground">{c.count}</span>
                     </button>
                   </li>
@@ -443,8 +489,8 @@ export function SignalTimelineStory({
                   <button
                     type="button"
                     onClick={() => setLegendFilter(null)}
-                    className="inline-flex items-center rounded-full px-2 py-0.5 text-muted-foreground hover:text-foreground"
-                    aria-label="Clear category filter"
+                    className="inline-flex items-center rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground"
+                    aria-label="Clear filter"
                   >
                     Clear ×
                   </button>

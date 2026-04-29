@@ -16,6 +16,8 @@ function mkPoint(overrides: Partial<StoryTimelinePoint>): StoryTimelinePoint {
     categoryName: overrides.categoryName ?? "Bug",
     categorySlug: overrides.categorySlug ?? "bug",
     categoryColor: overrides.categoryColor ?? "#ef4444",
+    familyName: overrides.familyName ?? "Unclustered",
+    familyColor: overrides.familyColor ?? "#6b7280",
     sourceSlug: overrides.sourceSlug ?? "github",
     errorCode: overrides.errorCode ?? null,
     clusterId: overrides.clusterId ?? null,
