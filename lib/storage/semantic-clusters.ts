@@ -85,7 +85,9 @@ async function readOpenAiErrorBody(response: Response): Promise<{
   return { envelope, raw: raw.slice(0, 500) }
 }
 
-async function createEmbedding(input: string): Promise<number[] | null> {
+export const SEMANTIC_EMBEDDING_MODEL = DEFAULT_EMBEDDING_MODEL
+
+export async function createEmbedding(input: string): Promise<number[] | null> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
     logServer({

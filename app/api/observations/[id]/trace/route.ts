@@ -114,7 +114,10 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
   const clusterIds = Array.from(new Set(clusterMemberships.map((m) => m.cluster_id).filter(Boolean)))
   const classificationIds = classifications.map((c) => c.id)
 
-  const [clustersRes, reviewsRes] = await Promise.all([
+  // Source row is fetched alongside cluster + review details so the trace
+  // page can render a human-readable source name/slug instead of just the
+  // raw `sources.id` UUID surfaced on `mv_observation_current.source_id`.
+  const [clustersRes, reviewsRes, sourceRes] = await Promise.all([
     clusterIds.length
       ? supabase
           .from("clusters")
@@ -132,19 +135,32 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
           .in("classification_id", classificationIds)
           .order("reviewed_at", { ascending: false })
       : Promise.resolve({ data: [], error: null }),
+    observation.source_id
+      ? supabase
+          .from("sources")
+          .select("id, slug, name")
+          .eq("id", observation.source_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
   ])
 
-  if (clustersRes.error || reviewsRes.error) {
+  if (clustersRes.error || reviewsRes.error || sourceRes.error) {
     return NextResponse.json(
       {
         error: "Failed to enrich trace",
-        detail: clustersRes.error?.message || reviewsRes.error?.message || "unknown",
+        detail:
+          clustersRes.error?.message ||
+          reviewsRes.error?.message ||
+          sourceRes.error?.message ||
+          "unknown",
       },
       { status: 500 },
     )
   }
 
+  const sourceRow = (sourceRes.data ?? null) as { id: string; slug: string; name: string } | null
   const clustersById = new Map((clustersRes.data ?? []).map((c) => [c.id, c]))
+  const activeCluster = observation.cluster_id ? clustersById.get(observation.cluster_id) ?? null : null
   const reviewsByClassification = new Map<string, unknown[]>()
   for (const review of reviewsRes.data ?? []) {
     const key = review.classification_id as string
@@ -188,6 +204,8 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
         captured_at: observation.captured_at,
         published_at: observation.published_at,
         source_id: observation.source_id,
+        source_slug: sourceRow?.slug ?? null,
+        source_name: sourceRow?.name ?? null,
       },
       fingerprint: {
         latest_computed_at: fingerprints[0]?.computed_at ?? null,
@@ -222,6 +240,8 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
         active_cluster_id: observation.cluster_id,
         active_cluster_key: observation.cluster_key,
         active_cluster_size: observation.frequency_count,
+        active_cluster_label: activeCluster?.label ?? null,
+        active_cluster_status: activeCluster?.status ?? null,
         memberships: clusterMemberships.map((membership) => ({
           ...membership,
           cluster: clustersById.get(membership.cluster_id) ?? null,
