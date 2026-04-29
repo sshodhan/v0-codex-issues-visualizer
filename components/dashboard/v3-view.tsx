@@ -342,8 +342,8 @@ function RailEmptyState({
     if (degraded_reason === "classify_backfill_failed") {
       return (
         <div className="space-y-2 text-sm text-muted-foreground">
-          <p>Classify backfill failed — rankings may be outdated.</p>
-          <Link href="/admin?tab=classify-backfill" className="text-xs text-primary hover:underline">Re-run classify backfill</Link>
+          <p>Layer C Backfill failed — rankings may be outdated.</p>
+          <Link href="/admin?tab=classify-backfill" className="text-xs text-primary hover:underline">Re-run Layer C Backfill</Link>
         </div>
       )
     }

@@ -235,7 +235,7 @@ export function ClusterLabelBackfillPanel({ secret }: { secret: string }) {
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div className="space-y-1">
-            <CardTitle className="text-lg">Cluster-label backfill</CardTitle>
+            <CardTitle className="text-lg">Layer A Labels — Cluster-label backfill</CardTitle>
             <CardDescription>
               Walks every cluster where{" "}
               <code className="rounded bg-muted px-1 py-0.5 text-[11px]">

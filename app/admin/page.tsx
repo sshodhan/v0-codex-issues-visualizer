@@ -316,47 +316,248 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
       </header>
 
       <main className="container mx-auto space-y-6 py-6">
+        <WhatToKnowCard
+          title="Classification improvement pipeline"
+          summary="A 5-stage learning loop: raw evidence → deterministic signals → embeddings → clustering → LLM classification + family naming → reviewer feedback. Stage 5 reviewer signals improve Stages 1–4."
+          defaultOpen
+          purpose={
+            <div className="space-y-2">
+              <p>
+                Five stages, each consuming the previous and producing
+                signals the next stage builds on. Stage 5 reviewer
+                feedback is the learning-loop input that improves
+                precision/recall in Stages 1–4 — that is what makes this
+                an improvement pipeline rather than a one-way
+                interpretation pipeline.
+              </p>
+              <ul className="list-disc space-y-1 pl-5">
+                <li>
+                  <strong>Raw observation</strong> — captured upstream
+                  evidence in{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code>{" "}
+                  /{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">observation_revisions</code>.
+                  Precedes Stage 1.
+                </li>
+                <li>
+                  <strong>Stage 1 — Regex + deterministic signals.</strong>{" "}
+                  Per-observation regex/lexicon: Topic/category, sentiment,
+                  impact, competitor mentions. Explainable, append-only.
+                  Admin tab: <em>Layer 0 Backfill</em>.
+                </li>
+                <li>
+                  <strong>Stage 2 — Embeddings.</strong> Vector
+                  representation per observation
+                  (<code className="rounded bg-muted px-1 py-0.5 text-xs">text-embedding-3-small</code>),
+                  cached per row. Stage 3 fails or degrades when Stage 2
+                  is missing or stale. No standalone admin tab — exercised
+                  via Stage 3.
+                </li>
+                <li>
+                  <strong>Stage 3 — Clustering.</strong> Groups
+                  observations into recurring semantic problem families
+                  via{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">runSemanticClusteringForBatch</code>{" "}
+                  (similarity threshold {`>=`} 0.86, min size 2).
+                  Append-only{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_members</code>.
+                  Admin tab: <em>Layer A Clustering</em>.
+                </li>
+                <li>
+                  <strong>Stage 4 — LLM classification + family naming
+                  with fallback.</strong> Three sub-products, all
+                  append-only:
+                  <ul className="mt-1 list-disc space-y-1 pl-5">
+                    <li>
+                      Per-observation structured classification (category,
+                      subcategory, severity, mechanism) via gpt-5-mini.
+                      Admin tab: <em>Layer C Backfill</em>.
+                    </li>
+                    <li>
+                      Cluster-level family naming + interpretation
+                      (<code className="rounded bg-muted px-1 py-0.5 text-xs">family_kind</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">family_title</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">family_summary</code>,
+                      review safety). Heuristic-authoritative; LLM
+                      enriches but cannot override. Admin tab:{" "}
+                      <em>Family Classification</em>.
+                    </li>
+                    <li>
+                      Deterministic label fallback when the LLM is weak
+                      or unavailable. Admin tab: <em>Layer A Labels</em>{" "}
+                      (the tab name keeps the legacy letter — the operation
+                      is the Stage 4 fallback path).
+                    </li>
+                  </ul>
+                </li>
+                <li>
+                  <strong>Stage 5 — Human-in-the-loop improvement.</strong>{" "}
+                  Reviewer labels, overrides, and automation feedback
+                  captured in append-only review tables (e.g.{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>;
+                  additional review surfaces may write to their own
+                  tables). Stage 5 is the canonical learning signal back
+                  into Stages 1–4: structured error reasons inform regex
+                  tuning, threshold sweeps, prompt edits, and family
+                  taxonomy revisions.
+                </li>
+              </ul>
+              <p className="text-xs text-muted-foreground">
+                <strong>Legacy vocabulary still in use</strong> — the
+                admin tab labels
+                (<em>Layer 0 Backfill</em> /{" "}
+                <em>Layer A Clustering</em> /{" "}
+                <em>Layer A Labels</em> /{" "}
+                <em>Layer C Backfill</em>) and the dashboard&apos;s
+                three-axis filter explainer
+                (<strong>Layer A</strong> = semantic cluster filter,{" "}
+                <strong>Layer B</strong> = Triage group on{" "}
+                <code className="rounded bg-muted px-1 py-0.5">(category, subcategory)</code>{" "}
+                over Stage 4 output, <strong>Layer C</strong> = the
+                classification row) preserve operator deep-link muscle
+                memory and reviewer filter-axis vocabulary. Stage model
+                in{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §6.0
+                is the canonical model for reasoning about precision/recall;
+                letter glossary in the same section is the
+                backward-compatibility vocabulary;{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/CLUSTERING_DESIGN.md</code> §7
+                covers the dashboard explainer.
+              </p>
+            </div>
+          }
+          pipelineFit={
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                <strong>Layer 0 Backfill</strong> → <strong>Stage 1</strong>:
+                regex + deterministic signals (sentiment, Topic, impact,
+                competitor mention).
+              </li>
+              <li>
+                <strong>Layer A Clustering</strong> →{" "}
+                <strong>Stages 2–3</strong>: embeddings (text-embedding-3-small,
+                cached) and clustering (semantic membership, similarity
+                threshold {`>=`} 0.86).
+              </li>
+              <li>
+                <strong>Layer C Backfill</strong> → <strong>Stage 4</strong>:
+                per-observation LLM classification (gpt-5-mini).
+              </li>
+              <li>
+                <strong>Family Classification</strong> →{" "}
+                <strong>Stage 4</strong>: cluster-level family naming +
+                interpretation with deterministic fallback.
+              </li>
+              <li>
+                <strong>Layer A Labels</strong> → <strong>Stage 4</strong>:
+                deterministic label fallback for clusters where the LLM
+                labeller was weak or unavailable.
+              </li>
+              <li>
+                <strong>Cross-layer Trace</strong> → diagnostic walk
+                through every stage for a single observation: raw evidence
+                → Stage 1 signals → Stage 2 embedding → Stage 3 cluster
+                membership → Stage 4 classification + family → Stage 5
+                reviewer feedback.
+              </li>
+              <li>
+                <strong>Schema / Contracts</strong> → out-of-band
+                guardrail; validates schema and algorithm-version
+                contracts every stage depends on. Not a stage; no
+                backfill semantics.
+              </li>
+              <li>
+                <strong>(future) Reviewer panels</strong> →{" "}
+                <strong>Stage 5</strong>: HITL improvement signals back
+                into Stages 1–4.
+              </li>
+            </ul>
+          }
+          whenToRun={
+            <p>
+              This card is informational — there is nothing to run from
+              here. Use the per-tab cards below for the actual operations.
+            </p>
+          }
+          impact={
+            <p>
+              <strong>None.</strong> This card does not write anything.
+            </p>
+          }
+          howToRun={
+            <p>
+              Pick the tab matching the stage you suspect. Start with{" "}
+              <strong>Cross-layer Trace</strong> if you don&apos;t know
+              which stage is responsible — it walks one observation through
+              every stage and usually identifies the source of the problem.
+            </p>
+          }
+        />
         <Tabs defaultValue={initialTab} className="space-y-4">
           <TabsList>
-            <TabsTrigger value="backfill">Backfill</TabsTrigger>
-            <TabsTrigger value="classify-backfill">Classify backfill</TabsTrigger>
-            <TabsTrigger value="clustering">Clustering</TabsTrigger>
-            <TabsTrigger value="trace">Observation trace</TabsTrigger>
-            <TabsTrigger value="schema">Schema verification</TabsTrigger>
-            <TabsTrigger value="cluster-labels">Cluster-label backfill</TabsTrigger>
-            <TabsTrigger value="family-classification">Family classification</TabsTrigger>
+            <TabsTrigger value="backfill">Layer 0 Backfill</TabsTrigger>
+            <TabsTrigger value="classify-backfill">Layer C Backfill</TabsTrigger>
+            <TabsTrigger value="clustering">Layer A Clustering</TabsTrigger>
+            <TabsTrigger value="trace">Cross-layer Trace</TabsTrigger>
+            <TabsTrigger value="schema">Schema / Contracts</TabsTrigger>
+            <TabsTrigger value="cluster-labels">Layer A Labels</TabsTrigger>
+            <TabsTrigger value="family-classification">Family Classification</TabsTrigger>
           </TabsList>
           <TabsContent value="backfill" className="space-y-4">
             <WhatToKnowCard
-              title="Backfill derivations"
-              summary="Re-run the deterministic enrichment pass over every observation under the current algorithm versions. Append-only, idempotent."
+              title="Layer 0 Backfill — Deterministic Derivations"
+              summary="Stage 1: re-run the deterministic enrichment pass (sentiment, category, impact, competitor mentions) under the current algorithm versions. Append-only, idempotent."
               purpose={
                 <p>
-                  Walks the entire <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code> table
-                  and recomputes the deterministic derivations — sentiment,
-                  category, impact score, and competitor mentions — under the
-                  registry versions currently configured in code. Each pass
-                  inserts new rows alongside the old ones rather than mutating
-                  anything, so prior readings stay reproducible.
+                  Stage 1 is the deterministic-signals stage of the
+                  improvement pipeline. This walks the entire{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code>{" "}
+                  table and recomputes its four derivations — sentiment,
+                  category (Topic), impact score, and competitor mentions
+                  — under the registry versions currently configured in
+                  code. Each pass inserts new rows alongside the old ones
+                  rather than mutating anything, so prior readings stay
+                  reproducible. Tab keeps the legacy name "Layer 0
+                  Backfill" for deep-link compatibility.
                 </p>
               }
               pipelineFit={
-                <p>
-                  This is the same enrich pass described in
-                  {" "}<code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §3.1b
-                  that normally runs after every ingest. The admin button lets
-                  you replay it across the existing evidence layer when you
-                  bump an algorithm version, without waiting for new scrapes.
-                  Writes go through{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    lib/storage/derivations.ts
-                  </code>{" "}
-                  into{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">sentiment_scores</code>,{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">category_assignments</code>,{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">impact_scores</code>, and{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">competitor_mentions</code>.
-                </p>
+                <div className="space-y-2">
+                  <p>
+                    <strong>Stage 1 — Regex + deterministic signals.</strong>{" "}
+                    Per-observation, regex/lexicon-driven, explainable. Same
+                    enrich pass described in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §3.1b
+                    that runs inline during ingest. The admin button replays
+                    it across existing evidence after an algorithm-version
+                    bump, without waiting for new scrapes. Writes go
+                    through{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      lib/storage/derivations.ts
+                    </code>{" "}
+                    into{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">sentiment_scores</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">category_assignments</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">impact_scores</code>, and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">competitor_mentions</code>.
+                  </p>
+                  <p>
+                    <strong>Same orchestrator as ingest, no extra knobs.</strong>{" "}
+                    Calls the same{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">analyzeSentiment</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">categorizeIssue</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">calculateImpactScore</code>, and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">detectCompetitorMentions</code>{" "}
+                    functions from{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">lib/scrapers/shared.ts</code>{" "}
+                    and the same writers in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">lib/storage/derivations.ts</code>{" "}
+                    that run inline during ingest — no shortcuts. The
+                    difference is timing: scrape stamps at the algorithm
+                    version current at ingest; this button re-stamps at the
+                    version current in code now.
+                  </p>
+                </div>
               }
               whenToRun={
                 <ul className="list-disc space-y-1 pl-5">
@@ -390,6 +591,11 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     Idempotent — re-running just appends another version
                     stamp; nothing is destroyed or overwritten.
                   </li>
+                  <li>
+                    Stage 1 is a broad signal, not ground truth — judge
+                    quality by evidence and margins, not by the headline
+                    label.
+                  </li>
                 </ul>
               }
               howToRun={
@@ -414,36 +620,64 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           </TabsContent>
           <TabsContent value="classify-backfill" className="space-y-4">
             <WhatToKnowCard
-              title="Classify backfill (LLM)"
-              summary="Manual catch-up for the LLM classifier. Same orchestrator as the daily 03:00 UTC cron, just behind the admin secret."
+              title="Layer C Backfill — LLM Classifier"
+              summary="Stage 4 (per-observation classification): manual catch-up for the gpt-5-mini classifier (category, subcategory, severity, mechanism). Same orchestrator as the daily 03:00 UTC cron, just behind the admin secret."
               purpose={
                 <p>
-                  Routes canonical observations that have never been
-                  classified through the OpenAI classifier (gpt-5-mini) so
-                  they pick up category, subcategory, severity, and mechanism
-                  labels. The dedupe guard skips already-classified rows.
+                  Stage 4 (per-observation LLM classification) of the
+                  improvement pipeline. This routes canonical observations
+                  that have never been classified through the OpenAI
+                  classifier (gpt-5-mini) so they pick up
+                  category, subcategory, severity, and mechanism labels. The
+                  dedupe guard skips already-classified rows.
                 </p>
               }
               pipelineFit={
-                <p>
-                  Shares{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    runClassifyBackfill
-                  </code>{" "}
-                  with the daily cron at{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    /api/cron/classify-backfill
-                  </code>{" "}
-                  (see §3.1d / §3.5). The cron's 10-row/day cap is sized for
-                  steady-state catch-up; this admin path is what you use to
-                  clear a real backlog. Writes land in{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">classifications</code>;
-                  run summaries are recorded to{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    scrape_logs(source_id = NULL)
-                  </code>
-                  .
-                </p>
+                <div className="space-y-2">
+                  <p>
+                    <strong>Stage 4 — Per-observation LLM classification.</strong>{" "}
+                    LLM-driven structured diagnosis (category, subcategory,
+                    severity, mechanism) for one observation at a time
+                    via gpt-5-mini. Sibling Stage 4 sub-products live in
+                    the Family Classification tab (cluster-level family
+                    naming + interpretation) and Layer A Labels (Stage 4
+                    deterministic label fallback). See{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §3.1d / §3.5.
+                    Writes land in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">classifications</code>;
+                    run summaries are recorded to{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      scrape_logs(source_id = NULL)
+                    </code>
+                    .
+                  </p>
+                  <p>
+                    <strong>Same orchestrator as the daily cron; admin
+                    exposes one-off knobs.</strong> Both this admin route
+                    and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      /api/cron/classify-backfill
+                    </code>{" "}
+                    delegate to{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      runClassifyBackfill
+                    </code>{" "}
+                    in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      lib/classification/run-backfill.ts
+                    </code>{" "}
+                    — same orchestrator, same write paths, same dedupe
+                    guard. The only knobs admin exposes that the cron does
+                    not are the per-request{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">minImpactScore</code>{" "}
+                    override and the per-batch MV-refresh toggle; the cron
+                    keeps the policy default so ephemeral admin
+                    experiments never change steady-state behavior. The
+                    cron&apos;s 10-row/day cap is sized for steady-state
+                    catch-up; this admin path is what you use to clear a
+                    real backlog.
+                  </p>
+                </div>
               }
               whenToRun={
                 <ul className="list-disc space-y-1 pl-5">
@@ -505,31 +739,67 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           </TabsContent>
           <TabsContent value="clustering" className="space-y-4">
             <WhatToKnowCard
-              title="Clustering"
-              summary="Live cluster stats and on-demand rebuild. Pick Semantic mode for embedding-based grouping (the architectural default) or Title-hash for the deterministic fallback."
+              title="Layer A Clustering — Semantic Families"
+              summary="Stages 2–3: embeddings + clustering — live stats and on-demand rebuild. Stage 2 generates missing embeddings on demand, then Stage 3 groups them. Topic is not a hard membership gate. Attach-only is safe to re-run."
               purpose={
                 <p>
-                  Shows live counts from the aggregation layer (observations,
-                  clusters, active memberships, orphans) and lets you trigger
-                  the same clustering pass that runs after every scrape —
-                  attaching observations to existing clusters or forming new
-                  ones.
+                  Stages 2–3 answer: which reports are about the same
+                  recurring problem? This panel shows live counts from the
+                  aggregation storage tier (observations, clusters, active
+                  memberships, orphans) and lets you trigger the same
+                  embedding + clustering pass that runs after every scrape
+                  — generating any missing Stage 2 embeddings, then
+                  attaching observations to existing clusters or forming
+                  new ones in Stage 3.
                 </p>
               }
               pipelineFit={
-                <p>
-                  Implements §3.1c. Cluster membership is append-only via{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_members</code>{" "}
-                  (attaches and detaches both leave a row;{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">detached_at IS NULL</code>{" "}
-                  is the active set). Cluster shape is independent of the
-                  evidence layer — observations are never mutated by this
-                  step. Semantic mode produces{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">semantic:&lt;hash&gt;</code>{" "}
-                  keys; Title-hash mode produces deterministic title-derived
-                  keys (every cluster on this path becomes{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_path = &apos;fallback&apos;</code>).
-                </p>
+                <div className="space-y-2">
+                  <p>
+                    <strong>Stages 2–3 — Embeddings + clustering.</strong> This
+                    tab triggers both: Stage 2 generates any missing
+                    observation embeddings
+                    (<code className="rounded bg-muted px-1 py-0.5 text-xs">text-embedding-3-small</code>;
+                    cached, only new rows pay), then Stage 3 groups
+                    embedded observations into recurring semantic problem
+                    families. Failures cleave on the seam between them: a
+                    Stage 2 miss (missing/stale embedding) looks identical
+                    to a Stage 3 miss (cluster did not form) in the orphans
+                    tile — Cross-layer Trace breaks the tie. Implements{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §3.1c.
+                  </p>
+                  <p>
+                    Cluster membership is append-only via{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_members</code>{" "}
+                    (attaches and detaches both leave a row;{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">detached_at IS NULL</code>{" "}
+                    is the active set). Cluster shape is independent of
+                    Stage 1 evidence — observations are never mutated by
+                    this step. Stage 1 Topic distribution per cluster is
+                    surfaced as a downstream read model
+                    (<code className="rounded bg-muted px-1 py-0.5 text-xs">mv_cluster_topic_metadata</code>),
+                    not a membership gate. Semantic mode produces{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">semantic:&lt;hash&gt;</code>{" "}
+                    keys; Title-hash mode (admin-only fallback when Stage 2
+                    embeddings are unavailable) produces deterministic
+                    title-derived keys with{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">cluster_path = &apos;fallback&apos;</code>.
+                  </p>
+                  <p>
+                    <strong>Same orchestrator as the post-scrape pass; admin
+                    exposes one-off knobs.</strong> Semantic mode calls{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">runSemanticClusteringForBatch</code>{" "}
+                    in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">lib/storage/semantic-clusters.ts</code>{" "}
+                    — the same code path that runs after every scrape via{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">runPostLoopSemanticClustering</code>.
+                    Production uses fixed defaults
+                    (<code className="rounded bg-muted px-1 py-0.5 text-xs">similarityThreshold = 0.86</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">minClusterSize = 2</code>);
+                    the admin form lets you override those for one-off
+                    rebuilds without changing system policy.
+                  </p>
+                </div>
               }
               whenToRun={
                 <ul className="list-disc space-y-1 pl-5">
@@ -622,22 +892,29 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           </TabsContent>
           <TabsContent value="trace" className="space-y-4">
             <WhatToKnowCard
-              title="Observation trace"
-              summary="Read-only inspector for one observation's full lineage — capture, fingerprint, cluster, classification, review."
+              title="Cross-layer Observation Trace"
+              summary="Read-only inspector that walks one observation through every stage — raw evidence → Stage 1 signals → Stage 2 embedding → Stage 3 cluster membership → Stage 4 classification + family → Stage 5 reviewer feedback."
               purpose={
                 <p>
-                  Walks a single observation backwards through every layer:
-                  the original capture and revisions, the regex bug
-                  fingerprint, the embedding, the cluster membership chain,
-                  every LLM classification attempt (including retries), and
-                  any reviewer overrides. The append-only processing event
-                  stream shows what happened to the row over time.
+                  Use this when a row looks wrong and you need to find the
+                  responsible stage. Walks a single observation forward
+                  through the improvement pipeline: the original capture
+                  and revisions (raw evidence), the regex bug fingerprint
+                  and Stage 1 deterministic signals, the Stage 2 embedding,
+                  the Stage 3 cluster membership chain, every Stage 4
+                  classification attempt (including large-model retries)
+                  and the Stage 4 family classification of its cluster,
+                  and any Stage 5 reviewer overrides. The append-only
+                  processing event stream shows what happened to the row
+                  over time so the failing stage is unambiguous.
                 </p>
               }
               pipelineFit={
                 <p>
-                  Implements the analyst-grade traceability flow in §3.4. It
-                  is the operator-facing equivalent of joining{" "}
+                  <strong>Cross-stage debugging surface.</strong> Implements
+                  the analyst-grade traceability flow in{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/ARCHITECTURE.md</code> §3.4.
+                  Operator-facing equivalent of joining{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">observations</code>,{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">observation_revisions</code>,{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">bug_fingerprints</code>,{" "}
@@ -645,23 +922,35 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">classifications</code>,
                   and{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>{" "}
-                  by hand.
+                  by hand. Tab name keeps "Cross-layer Trace" for
+                  deep-link compatibility — the underlying walk is now
+                  cross-stage.
                 </p>
               }
               whenToRun={
                 <ul className="list-disc space-y-1 pl-5">
                   <li>
-                    Debugging "why did this observation cluster here?" or
-                    "why did it get this label?".
+                    Debugging &quot;why did this observation cluster
+                    here?&quot; (Stages 2–3) or &quot;why did it get this
+                    label?&quot; (Stage 4).
                   </li>
                   <li>
-                    Reproducing a dashboard number from raw evidence for an
-                    audit.
+                    Reproducing a dashboard number from raw evidence for
+                    an audit.
                   </li>
                   <li>
-                    Triaging a row that a reviewer flagged as wrong — see
-                    every prior classification attempt with its confidence
-                    and prompt context.
+                    Triaging a row that a reviewer flagged as wrong —
+                    Stage 5 feedback only routes back into the right
+                    upstream stage if you know which one is responsible.
+                    See every prior Stage 4 classification attempt with
+                    its confidence and prompt context.
+                  </li>
+                  <li>
+                    Start here before changing classifier rules — a wrong
+                    display can come from bad raw input, bad Stage 1
+                    evidence, missing/stale Stage 2 embedding, bad Stage 3
+                    cluster membership, weak Stage 4 diagnosis or family
+                    naming, or a stale materialized view downstream.
                   </li>
                 </ul>
               }
@@ -698,11 +987,12 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           </TabsContent>
           <TabsContent value="schema" className="space-y-4">
             <WhatToKnowCard
-              title="Schema verification"
-              summary="Diff the live database schema against the expected post-014 manifest. Read-only guardrail."
+              title="Schema and Algorithm Contracts"
+              summary="Verifies that database schema, materialized views, indexes, functions, and algorithm versions match the application's expectations. Read-only guardrail."
               purpose={
                 <p>
-                  Compares the live{" "}
+                  Protects the layered system from silent drift. Compares the
+                  live{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">public</code>{" "}
                   schema against the expected manifest and reports per-object
                   pass/fail across tables, views, materialized views, indexes,
@@ -712,8 +1002,12 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               }
               pipelineFit={
                 <p>
-                  Out-of-band guardrail — sits next to the pipeline rather
-                  than inside it. Backed by{" "}
+                  <strong>Pipeline fit:</strong> out-of-band guardrail —
+                  validates schema and algorithm-version contracts that
+                  every stage (1–5) depends on. <strong>Not a pipeline
+                  stage</strong> itself, has no backfill semantics, and
+                  sits next to the pipeline rather than inside it. Backed
+                  by{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     lib/schema/expected-manifest.ts
                   </code>{" "}
@@ -721,7 +1015,10 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     /api/admin/verify-schema
                   </code>{" "}
-                  endpoint. No pipeline writes happen.
+                  endpoint. No DB writes happen. Drift here often
+                  manifests as a Stage 4 or Stage 5 surface bug — run
+                  this first if rows look correct upstream but render
+                  wrong downstream.
                 </p>
               }
               whenToRun={
@@ -740,14 +1037,22 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                 </ul>
               }
               impact={
-                <p>
-                  <strong>None.</strong> Read-only catalog queries against{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">information_schema</code>{" "}
-                  / <code className="rounded bg-muted px-1 py-0.5 text-xs">pg_catalog</code>.
-                  Failing checks are diagnostic — fixing them means writing
-                  and applying a migration script, not clicking anything in
-                  this panel.
-                </p>
+                <div className="space-y-2">
+                  <p>
+                    <strong>None.</strong> Read-only catalog queries against{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">information_schema</code>{" "}
+                    / <code className="rounded bg-muted px-1 py-0.5 text-xs">pg_catalog</code>.
+                    Failing checks are diagnostic — fixing them means writing
+                    and applying a migration script, not clicking anything in
+                    this panel.
+                  </p>
+                  <p>
+                    Schema verification checks object existence and expected
+                    contracts. It does not prove the data quality of any
+                    classification or family — only that the storage shape is
+                    what every stage expects.
+                  </p>
+                </div>
               }
               howToRun={
                 <ol className="list-decimal space-y-1 pl-5">
@@ -771,18 +1076,19 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           </TabsContent>
           <TabsContent value="cluster-labels" className="space-y-4">
             <WhatToKnowCard
-              title="Cluster-label backfill"
-              summary="Recompute deterministic cluster labels for clusters with weak or fallback labels. Idempotent."
+              title="Layer A Labels — Cluster-label Backfill"
+              summary="Stage 4 (deterministic label fallback): recompute deterministic cluster labels for clusters where the LLM labeller was weak or unavailable. Display aid only — does not change Stage 3 membership or Stage 4 family classification."
               purpose={
                 <p>
-                  Walks every cluster where{" "}
+                  Names embedding-built clusters so the dashboard is easier to
+                  read. Walks every cluster where{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">label IS NULL</code>,{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
                     label_confidence &lt; 0.6
                   </code>
                   , or{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    label_model = 'fallback:title'
+                    label_model = &apos;fallback:title&apos;
                   </code>{" "}
                   and recomputes a deterministic label via the
                   Topic+ErrorCode → Topic → ErrorCode → Title ladder shared
@@ -790,16 +1096,41 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                 </p>
               }
               pipelineFit={
-                <p>
-                  Aggregation-layer cleanup over the{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters</code>{" "}
-                  table (§5.3). Calls the same{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    composeDeterministicLabel
-                  </code>{" "}
-                  helper used at cluster creation, so the corpus and the
-                  live producer cannot drift.
-                </p>
+                <div className="space-y-2">
+                  <p>
+                    <strong>Stage 4 — Deterministic label fallback.</strong>{" "}
+                    The "with fallback" piece of Stage 4: when the LLM
+                    cluster-labeller is weak or unavailable, this recomputes
+                    a deterministic label from cluster members and
+                    representative observations. Does not change cluster
+                    membership (Stage 3), does not split/merge clusters,
+                    and does not override family classification (the other
+                    Stage 4 sub-product). Aggregation-layer cleanup over
+                    the{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters</code>{" "}
+                    table (§5.3). Calls the same{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                      composeDeterministicLabel
+                    </code>{" "}
+                    helper used at cluster creation, so the corpus and the
+                    live producer cannot drift. The tab keeps the legacy
+                    name "Layer A Labels" for deep-link compatibility.
+                  </p>
+                  <p>
+                    <strong>Trigger model:</strong> labels are normally
+                    written inline by{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">labelSemanticCluster</code>{" "}
+                    during semantic clustering
+                    (<code className="rounded bg-muted px-1 py-0.5 text-xs">lib/storage/semantic-clusters.ts</code>).
+                    This admin tool
+                    (<code className="rounded bg-muted px-1 py-0.5 text-xs">runClusterLabelBackfill</code>{" "}
+                    in{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">lib/storage/run-cluster-label-backfill.ts</code>)
+                    is the only path that recomputes labels for clusters that
+                    landed with a weak or fallback label — there is no
+                    scheduled cron equivalent.
+                  </p>
+                </div>
               }
               whenToRun={
                 <ul className="list-disc space-y-1 pl-5">
@@ -837,6 +1168,12 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     Idempotent — re-running only revisits rows still under
                     the threshold.
                   </li>
+                  <li>
+                    A label can be too generic or misleading. Use Family
+                    Classification and cluster topic metadata to judge
+                    whether the family is coherent — the label alone is just
+                    a display aid.
+                  </li>
                 </ul>
               }
               howToRun={
@@ -864,91 +1201,150 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="family-classification" className="space-y-4">
             <WhatToKnowCard
               title="Family Classification"
-              summary="Heuristic-authoritative cluster interpretation. The deterministic rules decide family_kind and review requirements; the LLM enriches title/summary and flags disagreement, but never overrides the heuristic."
+              summary="Stage 4 sub-product: cluster-level family naming and interpretation with deterministic fallback. Heuristics decide family_kind and review safety; the LLM enriches title/summary but cannot override the heuristic."
               purpose={
+                <p>
+                  Family Classification answers: what does this semantic
+                  family represent, how coherent is it, and does it need
+                  human review? Generates a per-cluster classification
+                  record that is heuristic-first (always deterministic)
+                  with optional LLM refinement for title/summary plus a
+                  disagreement signal. The "with fallback" property of
+                  Stage 4 is enforced here: when the LLM is weak,
+                  unavailable, or disagrees with the heuristic, the
+                  heuristic verdict survives. See{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                    docs/CLUSTERING_DESIGN.md
+                  </code>{" "}
+                  §5.1.
+                </p>
+              }
+              pipelineFit={
                 <div className="space-y-2">
                   <p>
-                    Generates a per-cluster family classification record that
-                    summarizes what the semantic family represents, how
-                    coherent it is, and whether it needs human review.
-                    Heuristic-first (always deterministic) with optional
-                    LLM refinement for title/summary plus a disagreement
-                    signal. See{" "}
+                    <strong>Stage 4 — Family naming + interpretation with
+                    fallback.</strong> Cluster-level sub-product of
+                    Stage 4 (sibling to per-observation classification in
+                    Layer C Backfill, and to deterministic label fallback
+                    in Layer A Labels). Reads Stage 3 cluster membership
+                    and Stage 1 Topic distribution to interpret each
+                    cluster; does not touch Stage 2 embeddings or Stage 3
+                    membership. Append-only into{" "}
                     <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                      docs/CLUSTERING_DESIGN.md
-                    </code>{" "}
-                    §5.1.
+                      family_classifications
+                    </code>
+                    .
                   </p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    <li>
+                      <strong>Consumes:</strong> Stage 3 cluster
+                      membership,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        mv_cluster_topic_metadata
+                      </code>
+                      , Stage 1 Topic distribution, common matched
+                      phrases, representative observations
+                      (canonical-first; each carries{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">observation_id</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">title</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">body_snippet</code>,
+                      and{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">topic_slug</code>),
+                      and optional LLM enrichment.
+                    </li>
+                    <li>
+                      <strong>Produces:</strong>{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">family_title</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">family_summary</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">family_kind</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">confidence</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">needs_human_review</code>,{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">review_reasons</code>,
+                      and an evidence snapshot with an{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">llm</code>{" "}
+                      block carrying status + provenance + disagreement
+                      signal. Stage 5 reviewer feedback on these outputs
+                      is what tunes the heuristic and the LLM prompt over
+                      time.
+                    </li>
+                    <li>
+                      <strong>Trigger model:</strong> Family Classification
+                      is currently admin-driven only — no cron or
+                      post-cluster hook runs{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">classifyClusterFamily</code>{" "}
+                      automatically. New clusters stay unclassified until
+                      an operator runs this panel.
+                    </li>
+                  </ul>
+                </div>
+              }
+              whenToRun={
+                <div className="space-y-2">
+                  <ul className="list-disc space-y-1 pl-5">
+                    <li>
+                      After the first ingest to interpret existing clusters.
+                    </li>
+                    <li>
+                      After a clustering rebuild with{" "}
+                      <strong>Re-detach first</strong> ticked. The rebuild
+                      moves observations to new cluster_ids; existing
+                      family_classifications still point to the old shape
+                      and surface as <em>Pointing to dead clusters</em> in
+                      the stats. Re-classify on the new cluster_ids to
+                      reconcile.
+                    </li>
+                    <li>
+                      Periodically to flag clusters that may have changed
+                      composition and need review.
+                    </li>
+                    <li>
+                      <strong>Triage existing classifications first.</strong>{" "}
+                      The panel surfaces a <em>Quality dashboard</em> that
+                      buckets every current family classification into{" "}
+                      <code className="rounded bg-muted px-1 py-0.5">safe_to_trust</code>{" "}
+                      /{" "}
+                      <code className="rounded bg-muted px-1 py-0.5">needs_review</code>{" "}
+                      /{" "}
+                      <code className="rounded bg-muted px-1 py-0.5">input_problem</code>{" "}
+                      via{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        /api/admin/family-classification/quality
+                      </code>{" "}
+                      (logic in{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        lib/admin/family-classification-quality.ts
+                      </code>
+                      ). Clear the <code className="rounded bg-muted px-1 py-0.5">input_problem</code>{" "}
+                      bucket by fixing the upstream evidence (Stage 1
+                      signals / Stages 2–3 cluster shape) before
+                      re-classifying — re-running the classifier
+                      over malformed evidence just produces another
+                      malformed classification.
+                    </li>
+                  </ul>
                   <p className="text-xs text-muted-foreground">
-                    <strong>Trust contract:</strong> the heuristic&apos;s{" "}
+                    <strong>Trust contract:</strong> the heuristic is
+                    authoritative for{" "}
                     <code className="rounded bg-muted px-1 py-0.5">family_kind</code>{" "}
-                    is authoritative. LLM enrichment cannot downgrade
-                    deterministic{" "}
+                    and{" "}
                     <code className="rounded bg-muted px-1 py-0.5">needs_human_review</code>.
-                    The LLM&apos;s{" "}
+                    The LLM enriches{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">family_title</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">family_summary</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">primary_failure_mode</code>,{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">affected_surface</code>, and{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">likely_owner_area</code>.
+                    LLM{" "}
                     <code className="rounded bg-muted px-1 py-0.5">suggested_family_kind</code>{" "}
-                    is captured as a disagreement signal only — when it
-                    differs from the heuristic, the heuristic verdict is
-                    preserved and{" "}
+                    is only a disagreement signal — when it differs from the
+                    heuristic, the heuristic verdict is preserved and{" "}
                     <code className="rounded bg-muted px-1 py-0.5">llm_disagrees_with_heuristic</code>{" "}
                     is appended to{" "}
                     <code className="rounded bg-muted px-1 py-0.5">review_reasons</code>.
+                    The LLM never changes cluster membership or overrides the
+                    heuristic.
                   </p>
                 </div>
-              }
-              pipelineFit={
-                <p>
-                  Append-only interpretation layer on top of Layer A
-                  (cluster membership) and{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    mv_cluster_topic_metadata
-                  </code>
-                  . Writes to{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    family_classifications
-                  </code>
-                  . Evidence rows store structured representatives
-                  (canonical-first; each carries{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    observation_id
-                  </code>
-                  ,{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">title</code>,{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    body_snippet
-                  </code>
-                  , and{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">topic_slug</code>),
-                  the cluster&apos;s Layer A signals, and an{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">llm</code>{" "}
-                  block with status + provenance + disagreement
-                  signal. Does NOT mutate cluster membership,
-                  embeddings, or{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                    clusters.label
-                  </code>
-                  .
-                </p>
-              }
-              whenToRun={
-                <ul className="list-disc space-y-1 pl-5">
-                  <li>
-                    After the first ingest to interpret existing clusters.
-                  </li>
-                  <li>
-                    After a clustering rebuild with{" "}
-                    <strong>Re-detach first</strong> ticked. The rebuild
-                    moves observations to new cluster_ids; existing
-                    family_classifications still point to the old shape
-                    and surface as <em>Pointing to dead clusters</em> in
-                    the stats. Re-classify on the new cluster_ids to
-                    reconcile.
-                  </li>
-                  <li>
-                    Periodically to flag clusters that may have changed
-                    composition and need review.
-                  </li>
-                </ul>
               }
               impact={
                 <ul className="list-disc space-y-1 pl-5">
@@ -970,6 +1366,13 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                       family_classification_current
                     </code>{" "}
                     view picks the latest per cluster.
+                  </li>
+                  <li>
+                    <strong>Non-goals:</strong> does not split or merge
+                    clusters, does not change Stage 1 Topics, does not update{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters.label</code>,
+                    and does not make family classifications ground truth by
+                    default — reviewer review remains the authority.
                   </li>
                 </ul>
               }
@@ -1952,7 +2355,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
                     semantic:&lt;hash&gt;
                   </code>{" "}
                   cluster keys. This is the architectural default for
-                  Layer A.
+                  Stage 3 clustering.
                 </p>
               </div>
             </label>
@@ -3093,7 +3496,7 @@ function SchemaVerificationPanel({ secret }: { secret: string }) {
       <CardHeader>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <CardTitle>Schema verification</CardTitle>
+            <CardTitle>Schema / Contracts</CardTitle>
             <CardDescription>
               Compares the live <code>public</code> schema against the
               expected post-014 manifest. Reports per-object pass/fail

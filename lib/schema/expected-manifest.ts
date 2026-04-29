@@ -1,7 +1,7 @@
 /**
  * Expected `public`-schema state after migration 016 (cluster health read model).
  *
- * The admin "Schema verification" tab calls `get_schema_snapshot()`
+ * The admin "Schema / Contracts" tab calls `get_schema_snapshot()`
  * (added by 015) and diffs the live snapshot against this manifest.
  *
  * The contents below were reconciled against a live ground-truth

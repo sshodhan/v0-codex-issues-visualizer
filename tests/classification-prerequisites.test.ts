@@ -173,17 +173,17 @@ test("lastScrape and lastClassifyBackfill are independent timestamps", () => {
 })
 
 // --- Impact-threshold gating ----------------------------------------------
-// The admin classify-backfill panel only processes observations with
+// The admin Layer C Backfill panel only processes observations with
 // impact_score >= MIN_IMPACT_SCORE. When every pending row is below that
-// threshold, "Run classify-backfill" is a no-op and linking the reviewer
+// threshold, "Run Layer C Backfill" is a no-op and linking the reviewer
 // to it is the exact confusion that prompted adding
 // `highImpactPendingClassification` to the prereq contract.
 
 test("pickPrimaryCta suppresses classify-backfill when all pending rows are below impact threshold", () => {
   // 110 unclassified observations but 0 meet impact >= MIN_IMPACT_SCORE.
-  // Clicking "Run classify-backfill" would do nothing; the helper must
+  // Clicking "Run Layer C Backfill" would do nothing; the helper must
   // return `none` so pipeline-freshness.ts can substitute a different
-  // CTA (e.g. "View classify-backfill policy").
+  // CTA (e.g. "View Layer C Backfill policy").
   const cta = pickPrimaryCta(
     mkPrereq({
       observationsInWindow: 113,
