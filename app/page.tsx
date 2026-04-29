@@ -34,7 +34,7 @@ import { QuickStatsBar } from "@/components/dashboard/quick-stats-bar"
 
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { TopFamiliesSection } from "@/components/dashboard/family-card"
-import { UxVersionToggle, isUxV2 } from "@/components/dashboard/ux-version-toggle"
+import { isUxV2 } from "@/components/dashboard/ux-version-toggle"
 import { DashboardUxProvider, useDashboardUxVersion } from "@/lib/context/dashboard-ux-context"
 import {
   useDashboardStats,
@@ -847,7 +847,6 @@ const handleHeroLlmCategoryDrill = (
             </div>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-4">
-            <UxVersionToggle />
             <div className="hidden sm:block text-right text-sm">
               <p className="text-muted-foreground">Last synced</p>
               <p className="font-medium text-foreground">{lastScrapeTime}</p>
