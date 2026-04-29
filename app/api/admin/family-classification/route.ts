@@ -5,12 +5,16 @@ import { classifyClusterFamily } from "@/lib/storage/family-classification"
 import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
-// Admin endpoint for Family Classification backfill (Layer A interpretation).
+// Admin endpoint for Family Classification backfill — Stage 4 sub-product
+// (family naming + interpretation with fallback) in the 5-stage classification
+// improvement pipeline. See docs/ARCHITECTURE.md §6.0.
 //
 // Classifies clusters into family_kind + optional LLM title/summary.
 // This is NOT a clustering or labelling change — just a per-cluster
-// interpretation layer that sits on top of `mv_cluster_topic_metadata`
-// and optional manual review signals. See docs/CLUSTERING_DESIGN.md §4.7.
+// interpretation that reads Stage 3 cluster membership and Stage 1 Topic
+// distribution via `mv_cluster_topic_metadata` and optional manual review
+// signals. Also documented at docs/CLUSTERING_DESIGN.md §4.7 (legacy
+// "Layer A interpretation" framing).
 //
 // Parallel to /api/admin/classify-backfill and
 // /api/admin/cluster-label-backfill: same orchestrator shape, same

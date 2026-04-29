@@ -506,7 +506,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="backfill" className="space-y-4">
             <WhatToKnowCard
               title="Layer 0 Backfill — Deterministic Derivations"
-              summary="Layer 0: re-run the deterministic enrichment pass (sentiment, category, impact, competitor mentions) under the current algorithm versions. Append-only, idempotent."
+              summary="Stage 1: re-run the deterministic enrichment pass (sentiment, category, impact, competitor mentions) under the current algorithm versions. Append-only, idempotent."
               purpose={
                 <p>
                   Layer 0 is the deterministic enrichment layer. This walks the
@@ -618,7 +618,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="classify-backfill" className="space-y-4">
             <WhatToKnowCard
               title="Layer C Backfill — LLM Classifier"
-              summary="Layer C: manual catch-up for the gpt-5-mini classifier (category, subcategory, severity, mechanism). Same orchestrator as the daily 03:00 UTC cron, just behind the admin secret."
+              summary="Stage 4 (per-observation classification): manual catch-up for the gpt-5-mini classifier (category, subcategory, severity, mechanism). Same orchestrator as the daily 03:00 UTC cron, just behind the admin secret."
               purpose={
                 <p>
                   Layer C is the per-observation LLM diagnosis layer. This
@@ -736,7 +736,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="clustering" className="space-y-4">
             <WhatToKnowCard
               title="Layer A Clustering — Semantic Families"
-              summary="Layer A: live cluster stats and on-demand rebuild. Embedding-driven; topic is not a hard membership gate. Attach-only is safe to re-run."
+              summary="Stages 2–3: embeddings + clustering — live stats and on-demand rebuild. Stage 2 generates missing embeddings on demand, then Stage 3 groups them. Topic is not a hard membership gate. Attach-only is safe to re-run."
               purpose={
                 <p>
                   Layer A answers: which reports are about the same recurring
@@ -1071,7 +1071,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="cluster-labels" className="space-y-4">
             <WhatToKnowCard
               title="Layer A Labels — Cluster-label Backfill"
-              summary="Layer A label generation: recompute deterministic cluster labels for clusters with weak or fallback labels. Display aid only — does not change membership or family classification."
+              summary="Stage 4 (deterministic label fallback): recompute deterministic cluster labels for clusters where the LLM labeller was weak or unavailable. Display aid only — does not change Stage 3 membership or Stage 4 family classification."
               purpose={
                 <p>
                   Names embedding-built clusters so the dashboard is easier to
