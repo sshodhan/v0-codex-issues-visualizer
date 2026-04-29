@@ -85,9 +85,7 @@ async function readOpenAiErrorBody(response: Response): Promise<{
   return { envelope, raw: raw.slice(0, 500) }
 }
 
-export const SEMANTIC_EMBEDDING_MODEL = DEFAULT_EMBEDDING_MODEL
-
-export async function createEmbedding(input: string): Promise<number[] | null> {
+async function createEmbedding(input: string): Promise<number[] | null> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
     logServer({
@@ -218,36 +216,79 @@ async function ensureEmbedding(
     }
   }
 
-  const input = buildEmbeddingInputText(observation.title, observation.content)
+  const outcome = await recomputeObservationEmbedding(supabase, observation, { trigger: "ensure" })
+  return outcome.ok ? outcome.vector : null
+}
+
+// Force-recompute the observation_embedding for a single row and upsert
+// via record_observation_embedding (the RPC is on-conflict-do-update,
+// scripts/012_semantic_clustering.sql §record_observation_embedding).
+// Always writes the corresponding processing event so the trace stream
+// stays append-complete regardless of trigger. Used by:
+//   - ensureEmbedding (above) when no row exists at the current
+//     algorithm_version.
+//   - app/api/observations/[id]/rerun for the user-triggered "Re-run"
+//     button on the trace page.
+// The `trigger` option is only persisted into the processing event's
+// detail_json so we can distinguish batch fills from manual reruns
+// when reading the audit log later.
+export async function recomputeObservationEmbedding(
+  supabase: AdminClient,
+  observation: { id: string; title: string; content?: string | null },
+  options: { trigger?: string } = {},
+): Promise<
+  | { ok: true; vector: number[]; model: string; algorithmVersion: string; dimensions: number }
+  | { ok: false; reason: string }
+> {
+  const trigger = options.trigger ?? "unspecified"
+  const algorithmVersionModel = `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`
+
+  const input = buildEmbeddingInputText(observation.title, observation.content ?? null)
   const embedding = await createEmbedding(input)
   if (!embedding) {
     await recordProcessingEvent(supabase, {
       observationId: observation.id,
       stage: "embedding",
       status: "failed",
-      algorithmVersionModel: `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`,
-      detail: { reason: "embedding_api_failed" },
+      algorithmVersionModel,
+      detail: { reason: "embedding_api_failed", trigger },
     })
-    return null
+    return { ok: false, reason: "embedding_api_failed" }
   }
 
-  await supabase.rpc("record_observation_embedding", {
+  const { error: rpcError } = await supabase.rpc("record_observation_embedding", {
     obs_id: observation.id,
     ver: CURRENT_VERSIONS.observation_embedding,
     model_name: DEFAULT_EMBEDDING_MODEL,
     dims: embedding.length,
     input_text: input,
-    vec: embedding,
+    vec: embedding as any,
   })
+  if (rpcError) {
+    await recordProcessingEvent(supabase, {
+      observationId: observation.id,
+      stage: "embedding",
+      status: "failed",
+      algorithmVersionModel,
+      detail: { reason: "rpc_failed", message: rpcError.message, trigger },
+    })
+    return { ok: false, reason: rpcError.message }
+  }
   await recordProcessingEvent(supabase, {
     observationId: observation.id,
     stage: "embedding",
     status: "completed",
-    algorithmVersionModel: `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`,
-    detail: { dimensions: embedding.length },
+    algorithmVersionModel,
+    detail: { dimensions: embedding.length, trigger },
   })
 
-  return embedding
+  return {
+    ok: true,
+    vector: embedding,
+    model: DEFAULT_EMBEDDING_MODEL,
+    algorithmVersion: CURRENT_VERSIONS.observation_embedding,
+    dimensions: embedding.length,
+  }
 }
 
 function semanticClusterKey(observationIds: string[]): string {
