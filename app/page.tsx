@@ -46,6 +46,7 @@ import {
   useClusterRollup,
 } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
+import { logClientEvent } from "@/lib/error-tracking/client-logger"
 import { formatDistanceToNow } from "date-fns"
 
 const UUID_RE =
@@ -163,12 +164,14 @@ function DashboardContentInner() {
 
   const setGlobalCategoryWithReset = useCallback(
     (slug: string) => {
+      const previousLlmCategory = searchParams.get("llm_category")
       setGlobalCategory(slug)
       // Selecting "All" topic also clears the LLM subcategory drill-down,
       // since `llm_category` is shown to the user as a sub-filter scoped to
       // a topic. Both Dashboard and Triage tab issue tables read this from
       // the URL, so dropping it here clears the filter consistently in both.
-      if (slug === "all" && searchParams.has("llm_category")) {
+      const clearedLlmCategory = slug === "all" && searchParams.has("llm_category")
+      if (clearedLlmCategory) {
         const next = new URLSearchParams(searchParams.toString())
         next.delete("llm_category")
         next.delete("issues_page")
@@ -177,6 +180,11 @@ function DashboardContentInner() {
       } else {
         resetIssuesPageInUrl()
       }
+      logClientEvent("dashboard-topic-changed", {
+        slug,
+        clearedLlmCategory,
+        previousLlmCategory,
+      })
     },
     [pathname, resetIssuesPageInUrl, router, searchParams],
   )
@@ -540,16 +548,34 @@ const handleHeroLlmCategoryDrill = (
   // pattern as `handleHeroExploreIssues` — a single rAF fires before the
   // tab content has committed, which is what caused the "first click does
   // nothing, second click works" behavior.
+  logClientEvent("dashboard-hero-llm-category-drill-started", {
+    categorySlug,
+    llmCategorySlug,
+    fromTab: activeTab,
+    previousGlobalCategory: globalCategory,
+  })
   setActiveTab("v3")
   setGlobalCategoryWithReset(categorySlug)
   applyIssueSearchParams({ llmCategory: llmCategorySlug })
   if (typeof window !== "undefined") {
-    const scrollToElement = (retries = 10) => {
+    const MAX_RETRIES = 10
+    const scrollToElement = (retries = MAX_RETRIES) => {
       const element = document.getElementById("issues-table-anchor")
       if (element) {
         element.scrollIntoView({ behavior: "smooth", block: "start" })
+        logClientEvent("dashboard-hero-llm-category-drill-scrolled", {
+          categorySlug,
+          llmCategorySlug,
+          retriesUsed: MAX_RETRIES - retries,
+        })
       } else if (retries > 0) {
         setTimeout(() => scrollToElement(retries - 1), 50)
+      } else {
+        logClientEvent("dashboard-hero-llm-category-drill-scroll-failed", {
+          categorySlug,
+          llmCategorySlug,
+          reason: "issues-table-anchor not mounted within retry window",
+        })
       }
     }
     setTimeout(() => scrollToElement(), 50)
