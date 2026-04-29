@@ -152,7 +152,6 @@ export function SignalTimelineStory({
   // external highlight is active and this dot doesn't match, OR the local legend
   // filter is set and this dot's category doesn't match.
   const [legendFilter, setLegendFilter] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<"topic" | "family">("topic")
   const placed = useMemo(() => placePoints(points), [points])
   const extent = useMemo(() => {
     if (points.length === 0) return null
@@ -401,7 +400,7 @@ export function SignalTimelineStory({
             <p className="text-center flex-1">
               Each dot is a public report in your filter ({points.length} shown). Size ≈ impact (1–10);
               high-impact dots (≥7) carry a halo
-              {highImpactCount > 0 ? ` — ${highImpactCount} in this window` : ""}. Color = {viewMode === "topic" ? "heuristic topic" : "family"}.
+              {highImpactCount > 0 ? ` — ${highImpactCount} in this window` : ""}. Color = heuristic category. Weekend days are shaded faintly.
               {legendFilter !== null && (
                 <>
                   {" "}
@@ -409,32 +408,7 @@ export function SignalTimelineStory({
                 </>
               )}
             </p>
-            <div className="flex items-center gap-2 rounded-full bg-muted/30 p-1">
-              <button
-                type="button"
-                onClick={() => setViewMode("topic")}
-                className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                  viewMode === "topic"
-                    ? "bg-foreground/10 text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                aria-pressed={viewMode === "topic"}
-              >
-                Topic
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("family")}
-                className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                  viewMode === "family"
-                    ? "bg-foreground/10 text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                aria-pressed={viewMode === "family"}
-              >
-                Family
-              </button>
-            </div>
+
           </div>
           {legend.length > 0 && (
             <ul className="flex flex-wrap items-center justify-center gap-2">
