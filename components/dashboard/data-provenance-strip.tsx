@@ -63,7 +63,7 @@ export function DataProvenanceStrip({
         </span>
       ) : (
         <span>
-          <span className="font-medium text-foreground">How to use:</span> Click any category card to filter issues, or use the tabs above to switch between Dashboard and AI Classifications views.
+          <span className="font-medium text-foreground">How to use:</span> Click any category card to filter issues, or use the tabs above to switch between Dashboard and Classifications views.
         </span>
       )}
     </div>
