@@ -10,7 +10,7 @@ import {
   type TimelineAnnotation,
   type TimelineHighlight,
 } from "@/components/dashboard/signal-timeline-story"
-import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
+import { buildStoryTimeline, type ClusterInfo } from "@/lib/dashboard/story-timeline"
 import { computeStoryLede } from "@/lib/dashboard/story-lede"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
@@ -192,8 +192,19 @@ export function DashboardStoryView({
   onOpenDashboardFromAtlas,
   selectedLlmCategorySlug,
 }: DashboardStoryViewProps) {
-  const points = useMemo(() => buildStoryTimeline(issues), [issues])
-  const topCats = useMemo(() => groupCategoriesByCount(points).slice(0, 4), [points])
+  const clusterLookup = useMemo(() => {
+    const map = new Map<string, ClusterInfo>()
+    if (clusterRows) {
+      for (const row of clusterRows) {
+        map.set(row.id, { id: row.id, label: row.label })
+      }
+    }
+    return map
+  }, [clusterRows])
+  const points = useMemo(
+    () => buildStoryTimeline(issues, clusterLookup),
+    [issues, clusterLookup],
+  )
   const surges = fingerprintSurges?.surges ?? []
   const newCodes = fingerprintSurges?.new_in_window ?? []
   const showClusterSection = (clusterRows?.length ?? 0) > 0
@@ -366,20 +377,6 @@ export function DashboardStoryView({
             />
           </CardContent>
         </Card>
-        {topCats.length > 0 && (
-          <ul className="flex flex-wrap gap-3 text-sm">
-            {topCats.map((c) => (
-              <li
-                key={c.name}
-                className="inline-flex items-center gap-2 rounded-full border border-border/80 px-3 py-1.5"
-              >
-                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
-                <span className="font-medium">{c.name}</span>
-                <span className="text-muted-foreground">({c.count})</span>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
 
       {showClusterSection && (
