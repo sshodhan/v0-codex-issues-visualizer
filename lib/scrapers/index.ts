@@ -8,11 +8,14 @@ import { scrapeGitHubDiscussions } from "@/lib/scrapers/providers/github-discuss
 import { scrapeStackOverflow } from "@/lib/scrapers/providers/stackoverflow"
 import { scrapeOpenAICommunity } from "@/lib/scrapers/providers/openai-community"
 import {
+  findDuplicateByCanonicalUrl,
+  recordDuplicateObservationEvent,
   recordObservation,
   recordEngagementSnapshot,
   recordRevision,
   recordIngestionArtifact,
 } from "@/lib/storage/evidence"
+import { canonicalizeUrl } from "@/lib/scrapers/url"
 import {
   recordSentiment,
   recordCategory,
@@ -108,6 +111,32 @@ async function persistIssueRecord(
 } | null> {
   if (!issue.source_id || !issue.external_id || !issue.title) return null
 
+  // Second-tier dedup: same outbound URL, fresh upstream submission id.
+  // The `(source_id, external_id)` PK can't catch this on its own — HN
+  // re-submissions get distinct objectIDs, but the canonical URL is
+  // identical, so without this gate the same article lands in observations
+  // multiple times and creates phantom 2-member semantic clusters at cosine
+  // ≈ 0.99. See scripts/030_observations_canonical_url.sql for rationale.
+  // Re-scrapes of the same submission (`external_id` matches) are NOT
+  // duplicates — they fall through to the regular revision-capture path.
+  const canonicalUrl = canonicalizeUrl(issue.url ?? null)
+  if (canonicalUrl) {
+    const duplicate = await findDuplicateByCanonicalUrl(supabase, {
+      sourceId: issue.source_id,
+      canonicalUrl,
+      externalId: issue.external_id,
+    })
+    if (duplicate) {
+      await recordDuplicateObservationEvent(supabase, {
+        sourceId: issue.source_id,
+        canonicalUrl,
+        duplicateExternalId: issue.external_id,
+        canonicalObservationId: duplicate.observationId,
+      })
+      return null
+    }
+  }
+
   // 3.1a Evidence — detect pre-existing observation so we can distinguish
   // "first sighting" from "rescrape with edits". Select before insert so
   // the diff is computed against the frozen original.
@@ -124,6 +153,7 @@ async function persistIssueRecord(
     title: issue.title,
     content: issue.content ?? null,
     url: issue.url ?? null,
+    canonical_url: canonicalUrl,
     author: issue.author ?? null,
     published_at: issue.published_at ?? null,
     upvotes: issue.upvotes ?? 0,

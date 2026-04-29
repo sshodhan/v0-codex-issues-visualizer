@@ -13,6 +13,12 @@ export interface CapturedRecord {
   title: string
   content: string | null
   url: string | null
+  // Normalized form of `url` — see lib/scrapers/url.ts. Null when the source
+  // produced no URL or when the URL was unparseable. The migration in
+  // scripts/030_observations_canonical_url.sql persists this onto
+  // observations.canonical_url so the scraper's second-tier dedup can find
+  // re-submissions under different external_ids.
+  canonical_url: string | null
   author: string | null
   published_at: string | null
   upvotes: number
@@ -30,6 +36,7 @@ export async function recordObservation(
       title: record.title,
       content: record.content,
       url: record.url,
+      canonical_url: record.canonical_url,
       author: record.author,
       published_at: record.published_at,
     },
@@ -77,6 +84,75 @@ export async function recordEngagementSnapshot(
     return null
   }
   return data as string | null
+}
+
+export interface DuplicateObservationMatch {
+  observationId: string
+  externalId: string
+}
+
+/**
+ * Find an existing observation that matches `(source_id, canonical_url)` but
+ * has a *different* `external_id` than the candidate. Returns null if no
+ * match — the candidate is treated as a fresh submission and the regular
+ * insert path proceeds.
+ *
+ * The match is the second-tier dedup signal: same source, same outbound
+ * URL, but a fresh upstream submission ID. This is the case the
+ * `(source_id, external_id)` PK cannot catch on its own (see
+ * scripts/030_observations_canonical_url.sql for the full rationale).
+ *
+ * Re-scrapes of the same submission (`source_id` + `external_id` match)
+ * are deliberately NOT treated as duplicates here — they go through the
+ * normal `record_observation` upsert and become revision-stream updates.
+ */
+export async function findDuplicateByCanonicalUrl(
+  supabase: AdminClient,
+  args: { sourceId: string; canonicalUrl: string; externalId: string },
+): Promise<DuplicateObservationMatch | null> {
+  const { data, error } = await supabase
+    .from("observations")
+    .select("id, external_id")
+    .eq("source_id", args.sourceId)
+    .eq("canonical_url", args.canonicalUrl)
+    .neq("external_id", args.externalId)
+    .order("captured_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    console.error("[evidence] findDuplicateByCanonicalUrl failed:", error)
+    return null
+  }
+  if (!data) return null
+  return { observationId: data.id, externalId: data.external_id }
+}
+
+/**
+ * Append a row to `duplicate_observation_events`. This is the visibility
+ * mechanism for the second-tier dedup: every time we *would* have inserted
+ * a duplicate but chose not to, we log the (source, canonical_url,
+ * duplicate_external_id) triple so operators can quantify cross-stream
+ * resubmission volume per source.
+ */
+export async function recordDuplicateObservationEvent(
+  supabase: AdminClient,
+  args: {
+    sourceId: string
+    canonicalUrl: string
+    duplicateExternalId: string
+    canonicalObservationId: string
+  },
+): Promise<void> {
+  const { error } = await supabase.from("duplicate_observation_events").insert({
+    source_id: args.sourceId,
+    canonical_url: args.canonicalUrl,
+    duplicate_external_id: args.duplicateExternalId,
+    canonical_observation_id: args.canonicalObservationId,
+  })
+  if (error) {
+    console.error("[evidence] recordDuplicateObservationEvent failed:", error)
+  }
 }
 
 export async function recordIngestionArtifact(
