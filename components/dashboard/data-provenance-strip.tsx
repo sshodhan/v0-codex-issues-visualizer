@@ -46,7 +46,7 @@ export function DataProvenanceStrip({
 
   return (
     <div
-      className={`flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1 text-sm text-muted-foreground ${className ?? ""}`}
+      className={`flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1 text-sm text-muted-foreground -my-3 ${className ?? ""}`}
     >
       {reviewerPipelineText && (
         <span>
