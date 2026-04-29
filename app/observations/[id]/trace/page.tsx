@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react"
 import { ArrowLeft, Loader2, RefreshCcw } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { logClientError } from "@/lib/error-tracking/client-logger"
+import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 interface ObservationTraceResponse {
@@ -166,27 +166,49 @@ export default function ObservationTracePage() {
   const [rerunStatus, setRerunStatus] = useState<{ stage: RerunStage; ok: boolean; message: string } | null>(null)
 
   const loadTrace = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal, reason: "initial" | "post_rerun" = "initial") => {
+      logClientEvent("reviewer-trace-load-started", { observationId: id, reason })
+
       const [traceRes, classifyRes] = await Promise.all([
         fetch(`/api/observations/${id}/trace`, { signal }),
         fetch(`/api/observations/${id}/classify`, { signal }),
       ])
 
       if (!traceRes.ok) {
-        if (traceRes.status === 404) {
-          throw new Error("Observation not found.")
-        }
         const text = await traceRes.text().catch(() => "")
-        const msg = text ? `HTTP ${traceRes.status}: ${text.slice(0, 200)}` : `HTTP ${traceRes.status}`
-        throw new Error(msg)
+        const httpErr = new Error(
+          text ? `HTTP ${traceRes.status}: ${text.slice(0, 200)}` : `HTTP ${traceRes.status}`,
+        )
+        logClientError(httpErr, "reviewer-trace-load-failed", {
+          observationId: id,
+          reason,
+          status: traceRes.status,
+        })
+        if (traceRes.status === 404) throw new Error("Observation not found.")
+        throw httpErr
       }
 
       const traceBody = (await traceRes.json()) as ObservationTraceResponse
       setTrace(traceBody)
+      let eventCount: number | null = null
       if (classifyRes.ok) {
         const body = (await classifyRes.json()) as { trace?: { events?: ProcessingEventItem[] } }
-        setEvents(body.trace?.events ?? [])
+        const eventList = body.trace?.events ?? []
+        setEvents(eventList)
+        eventCount = eventList.length
+      } else {
+        logClientError(
+          new Error(`HTTP ${classifyRes.status}`),
+          "reviewer-trace-classify-companion-failed",
+          { observationId: id, reason, status: classifyRes.status },
+        )
       }
+      logClientEvent("reviewer-trace-load-succeeded", {
+        observationId: id,
+        reason,
+        eventCount,
+        availability: traceBody.availability,
+      })
     },
     [id],
   )
@@ -197,14 +219,21 @@ export default function ObservationTracePage() {
     setLoading(true)
     setError(null)
 
-    loadTrace(controller.signal)
+    loadTrace(controller.signal, "initial")
       .catch((e) => {
         if (controller.signal.aborted) return
         const msg = e instanceof Error ? e.message : "Failed to load trace"
         setError(msg)
-        logClientError(e instanceof Error ? e : new Error(msg), "reviewer-trace-fetch-failed", {
-          observationId: id,
-        })
+        // loadTrace already emits reviewer-trace-load-failed for HTTP errors
+        // with status context; log here only when the failure didn't go
+        // through that path (network / TypeError / unhandled).
+        const isHttpError = /^HTTP \d+/.test(msg) || msg === "Observation not found."
+        if (!isHttpError) {
+          logClientError(e instanceof Error ? e : new Error(msg), "reviewer-trace-load-failed", {
+            observationId: id,
+            phase: "network_or_unhandled",
+          })
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false)
@@ -220,21 +249,50 @@ export default function ObservationTracePage() {
       if (!id) return
       setRerunBusy(stage)
       setRerunStatus(null)
+      logClientEvent("reviewer-trace-rerun-started", { observationId: id, stage })
       try {
         const res = await fetch(`/api/observations/${id}/rerun`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ stage }),
         })
-        const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string; message?: string }
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: string
+          detail?: string
+          message?: string
+          classification_id?: string
+          model?: string
+          dimensions?: number
+        }
         if (!res.ok) {
           const message = body.error || body.message || `HTTP ${res.status}`
-          setRerunStatus({ stage, ok: false, message: body.detail ? `${message}: ${body.detail}` : message })
+          const fullMessage = body.detail ? `${message}: ${body.detail}` : message
+          setRerunStatus({ stage, ok: false, message: fullMessage })
+          logClientError(new Error(fullMessage), "reviewer-trace-rerun-failed", {
+            observationId: id,
+            stage,
+            status: res.status,
+            errorCode: body.error ?? null,
+          })
           return
         }
         setRerunStatus({ stage, ok: true, message: `${stage} re-run completed.` })
-        await loadTrace().catch(() => {
-          // The re-run succeeded; a refresh failure is non-fatal — surface it but keep the success status.
+        logClientEvent("reviewer-trace-rerun-succeeded", {
+          observationId: id,
+          stage,
+          classificationId: body.classification_id ?? null,
+          model: body.model ?? null,
+          dimensions: body.dimensions ?? null,
+        })
+        await loadTrace(undefined, "post_rerun").catch((refreshErr) => {
+          // The re-run succeeded; refresh failure is non-fatal but worth logging
+          // separately so an operator can tell "rerun ok, refresh failed" apart
+          // from the rerun itself failing.
+          logClientError(
+            refreshErr instanceof Error ? refreshErr : new Error(String(refreshErr)),
+            "reviewer-trace-rerun-refresh-failed",
+            { observationId: id, stage },
+          )
         })
       } catch (e) {
         const message = e instanceof Error ? e.message : "Re-run failed"
@@ -242,6 +300,7 @@ export default function ObservationTracePage() {
         logClientError(e instanceof Error ? e : new Error(message), "reviewer-trace-rerun-failed", {
           observationId: id,
           stage,
+          phase: "network_or_unhandled",
         })
       } finally {
         setRerunBusy(null)
