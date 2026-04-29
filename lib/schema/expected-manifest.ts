@@ -339,6 +339,24 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
       "evidence",
       "computed_at",
     ],
+    // 032 — view extension. The Family Quality Dashboard route at
+    // `app/api/admin/family-classification/quality` selects these
+    // columns directly from the view; their absence is what produced
+    // the original 500 (`column ... .observation_count does not
+    // exist`). Listing them here makes a partially-applied 032 (or a
+    // future drop-and-recreate that forgets one) surface on the admin
+    // Schema / Contracts tab instead of as a runtime 500.
+    family_classification_current: [
+      "cluster_path",
+      "observation_count",
+      "classification_coverage_share",
+      "mixed_topic_score",
+      "llm_status",
+      "llm_model",
+      "llm_classified_at",
+      "classified_at",
+      "updated_at",
+    ],
     // 030 — Family Classification QA Reviews record shape. Append-only
     // verdicts on `family_classifications` rows, with optional
     // review_decision (tie-break outcome) and error_source/error_reason
