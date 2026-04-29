@@ -10,7 +10,7 @@ import {
   type TimelineAnnotation,
   type TimelineHighlight,
 } from "@/components/dashboard/signal-timeline-story"
-import { buildStoryTimeline, groupCategoriesByCount, type ClusterInfo } from "@/lib/dashboard/story-timeline"
+import { buildStoryTimeline, type ClusterInfo } from "@/lib/dashboard/story-timeline"
 import { computeStoryLede } from "@/lib/dashboard/story-lede"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
@@ -204,7 +204,6 @@ export function DashboardStoryView({
   }, [clusterRows])
   
   const points = useMemo(() => buildStoryTimeline(issues, clusterLookup), [issues, clusterLookup])
-  const topCats = useMemo(() => groupCategoriesByCount(points).slice(0, 4), [points])
   const surges = fingerprintSurges?.surges ?? []
   const newCodes = fingerprintSurges?.new_in_window ?? []
   const showClusterSection = (clusterRows?.length ?? 0) > 0
@@ -377,20 +376,7 @@ export function DashboardStoryView({
             />
           </CardContent>
         </Card>
-        {topCats.length > 0 && (
-          <ul className="flex flex-wrap gap-3 text-sm">
-            {topCats.map((c) => (
-              <li
-                key={c.name}
-                className="inline-flex items-center gap-2 rounded-full border border-border/80 px-3 py-1.5"
-              >
-                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
-                <span className="font-medium">{c.name}</span>
-                <span className="text-muted-foreground">({c.count})</span>
-              </li>
-            ))}
-          </ul>
-        )}
+
       </section>
 
       {showClusterSection && (
