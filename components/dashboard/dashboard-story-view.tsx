@@ -10,7 +10,7 @@ import {
   type TimelineAnnotation,
   type TimelineHighlight,
 } from "@/components/dashboard/signal-timeline-story"
-import { buildStoryTimeline, groupCategoriesByCount, type ClusterInfo } from "@/lib/dashboard/story-timeline"
+import { buildStoryTimeline, groupCategoriesByCount } from "@/lib/dashboard/story-timeline"
 import { computeStoryLede } from "@/lib/dashboard/story-lede"
 import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
@@ -192,18 +192,7 @@ export function DashboardStoryView({
   onOpenDashboardFromAtlas,
   selectedLlmCategorySlug,
 }: DashboardStoryViewProps) {
-  // Build a lookup map from cluster ID to cluster info for family labels
-  const clusterLookup = useMemo(() => {
-    const map = new Map<string, ClusterInfo>()
-    if (clusterRows) {
-      for (const row of clusterRows) {
-        map.set(row.id, { id: row.id, label: row.label })
-      }
-    }
-    return map
-  }, [clusterRows])
-  
-  const points = useMemo(() => buildStoryTimeline(issues, clusterLookup), [issues, clusterLookup])
+  const points = useMemo(() => buildStoryTimeline(issues), [issues])
   const topCats = useMemo(() => groupCategoriesByCount(points).slice(0, 4), [points])
   const surges = fingerprintSurges?.surges ?? []
   const newCodes = fingerprintSurges?.new_in_window ?? []
