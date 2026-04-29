@@ -164,9 +164,21 @@ function DashboardContentInner() {
   const setGlobalCategoryWithReset = useCallback(
     (slug: string) => {
       setGlobalCategory(slug)
-      resetIssuesPageInUrl()
+      // Selecting "All" topic also clears the LLM subcategory drill-down,
+      // since `llm_category` is shown to the user as a sub-filter scoped to
+      // a topic. Both Dashboard and Triage tab issue tables read this from
+      // the URL, so dropping it here clears the filter consistently in both.
+      if (slug === "all" && searchParams.has("llm_category")) {
+        const next = new URLSearchParams(searchParams.toString())
+        next.delete("llm_category")
+        next.delete("issues_page")
+        const qs = next.toString()
+        router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+      } else {
+        resetIssuesPageInUrl()
+      }
     },
-    [resetIssuesPageInUrl],
+    [pathname, resetIssuesPageInUrl, router, searchParams],
   )
 
   const setGlobalDaysWithReset = useCallback(
@@ -522,14 +534,25 @@ const handleHeroLlmCategoryDrill = (
   categorySlug: string,
   llmCategorySlug: string,
   ) => {
-  // Stay on Dashboard tab and scroll to issues table with LLM category filter
+  // Switch to Triage tab and scroll to its issues table with the LLM
+  // category filter applied. The Triage tab's IssuesTable renders only
+  // when `activeTab === "v3"`, so we need the same retry-until-mounted
+  // pattern as `handleHeroExploreIssues` — a single rAF fires before the
+  // tab content has committed, which is what caused the "first click does
+  // nothing, second click works" behavior.
+  setActiveTab("v3")
   setGlobalCategoryWithReset(categorySlug)
   applyIssueSearchParams({ llmCategory: llmCategorySlug })
   if (typeof window !== "undefined") {
-  requestAnimationFrame(() => {
-  const el = document.getElementById("dashboard-issues-table-anchor")
-  el?.scrollIntoView({ behavior: "smooth", block: "start" })
-  })
+    const scrollToElement = (retries = 10) => {
+      const element = document.getElementById("issues-table-anchor")
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "start" })
+      } else if (retries > 0) {
+        setTimeout(() => scrollToElement(retries - 1), 50)
+      }
+    }
+    setTimeout(() => scrollToElement(), 50)
   }
   }
 
@@ -1047,6 +1070,7 @@ const handleHeroLlmCategoryDrill = (
                   activeCompoundKey={compoundKeyFromUrl}
                   activeClusterId={clusterIdFromUrl ?? undefined}
                   activeClusterLabel={activeClusterLabel ?? undefined}
+                  activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
                   onClearGlobalCategory={() => setGlobalCategoryWithReset("all")}
                   selectedSourceSlugs={sourcesFromUrl}
                   onSourceSelectionChange={handleIssueSourceSelectionChange}
