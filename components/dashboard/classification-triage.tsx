@@ -1194,8 +1194,10 @@ function LayerExplainerPanel() {
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-3 p-3 pt-0 text-sm">
         <p className="text-xs text-muted-foreground">
-          Every reviewable item is anchored at three layers. Filters compose with AND across
-          Layer A and Layer B; Layer C is the row you click.
+          Every reviewable item is anchored at three filter axes. Filters compose with AND across
+          Layer A and Layer B; Layer C is the row you click. Layer A and Layer C correspond to
+          pipeline Stages 3 and 4 in the admin console; Layer B is a UI grouping over Stage 4
+          output. Reviewer overrides here are Stage 5 — feedback into the upstream stages.
         </p>
         <LayerExplainerRow
           letter="A"
@@ -1208,7 +1210,7 @@ function LayerExplainerPanel() {
           letter="B"
           icon={<Tag className="h-4 w-4 text-primary" />}
           title="Triage group"
-          body={`Client-side group-by on (effective_category × subcategory). Comes from the LLM classification enum (${SAMPLE_LLM_SLUGS}, …) — distinct from the dashboard's heuristic taxonomy used by the global slider. UI-only filter axis: Layer B has no admin tab and writes nothing; if the chip strip looks empty, the upstream fix is to backfill Layer C source data.`}
+          body={`Client-side group-by on (effective_category × subcategory). Comes from the Stage 4 LLM classification enum (${SAMPLE_LLM_SLUGS}, …) — distinct from the dashboard's Stage 1 heuristic Topic taxonomy used by the global slider. UI-only filter axis that helps you scope Stage 5 review work: Layer B has no admin tab and writes nothing. If the chip strip looks empty, the upstream fix is to backfill Stage 4 (per-observation LLM classification) source data.`}
           adminLink={{ href: "/admin?tab=classify-backfill", label: "Backfill Layer C source data" }}
         />
         <LayerExplainerRow

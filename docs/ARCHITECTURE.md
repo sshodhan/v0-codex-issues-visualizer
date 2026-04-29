@@ -658,35 +658,62 @@ Decisions and rationale for the names:
 - **"Family"** for the semantic cluster as a user-facing concept: the dashboard already had a "Top Families" section before this glossary; the term spreads to active-drill-down chips for consistency. Layer-A methodology language stays "Semantic cluster" so reviewer documentation remains literal.
 - **"Family name"** for the cluster label: ties the labeller-produced string to the user-facing noun and removes the verb-form awkwardness of "label/unlabelled". The labeller pipeline (`semantic_cluster_label` v2) tries the small LLM first, escalates to the large LLM on low confidence, and falls through to a deterministic Topic+error fallback (`lib/storage/cluster-label-fallback.ts`) so every cluster has a displayable label at confidence `>= MIN_DISPLAYABLE_LABEL_CONFIDENCE` (currently `0.4`). The UI show-threshold imports the same constant from `cluster-label-fallback.ts`, so the producer/consumer floor cannot drift; `tests/label-confidence-contract.test.ts` fails the build if any UI file regresses to a hardcoded `0.4` literal. The legacy "Unnamed family" placeholder is replaced by `Cluster #<short-id>` for the rare `label IS NULL` defence-in-depth case. See `docs/CLUSTERING_DESIGN.md` §4.4 for the full source-priority chain.
 
-#### Layer letter glossary
+#### Classification improvement pipeline (canonical model)
 
-Several places (admin tabs, `LayerExplainerPanel` in classification-triage,
-`LayerBreadcrumb`, this doc, `docs/CLUSTERING_DESIGN.md`) use single-letter
-shorthands like "Layer A" / "Layer C". The set of letters is closed and
-canonical. New code MUST use only the letters defined here and MUST NOT
-introduce new ones (e.g. "Layer D", "Layer 1") — extensions need a doc
-update first.
+The canonical operator mental model is a **5-stage classification
+improvement pipeline** with a feedback loop. This is the model to use
+when reasoning about precision/recall, debugging, prompt-tuning, and
+where reviewer feedback should route. The legacy "Layer A / B / C"
+letter glossary that used to anchor reviewer-dashboard surfaces still
+exists below as backward-compat vocabulary, but the stage model is the
+source of truth for new code, new admin surfaces, and architecture
+discussion.
 
-| Letter        | Concept                                                  | Type                                  | Authoring layer                                                                  | Source of truth                                                                                                  |
-|---------------|----------------------------------------------------------|---------------------------------------|----------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| **Layer 0**   | Deterministic enrichment per observation                 | Pipeline transformation               | `lib/scrapers/shared.ts` (`analyzeSentiment`, `categorizeIssue`, `calculateImpactScore`, `detectCompetitorMentions`) → `lib/storage/derivations.ts` | `docs/CLUSTERING_DESIGN.md` §3.1 / §4.6; admin tab "Layer 0 Backfill"                                            |
-| **Layer A**   | Semantic cluster (embedding-driven cluster membership)   | Pipeline transformation               | `lib/storage/semantic-clusters.ts:runSemanticClusteringForBatch`                  | This doc §6.0 above; `docs/CLUSTERING_DESIGN.md` §4; admin tab "Layer A Clustering" + "Layer A Labels"           |
-| Layer A interpretation | Family Classification (cluster-level interpretation) | Read-only interpretation       | `lib/storage/family-classification.ts:classifyClusterFamily`                     | `docs/CLUSTERING_DESIGN.md` §5.1; admin tab "Family Classification". Sub-aspect of Layer A; no separate letter.   |
-| **Layer B**   | Triage group (client-side group-by on `(category, subcategory)`) | **UI affordance, not a transformation** | `components/dashboard/classification-triage.tsx` (`groupFilter`)        | `docs/CLUSTERING_DESIGN.md` §7. Layer B exists only on the reviewer dashboard; no admin tab and no DB writes.    |
-| **Layer C**   | LLM classification per observation (gpt-5-mini)          | Pipeline transformation               | `lib/classification/pipeline.ts:classifyReport` → `classifications` table        | `docs/CLUSTERING_DESIGN.md` §7; admin tab "Layer C Backfill"; cron `/api/cron/classify-backfill`                 |
-| (no letter)   | Reviewer review                                          | Read-only override on top of Layer C  | `recordClassificationReview` → `classification_reviews` (append-only)            | This doc §3.3. Reviewer decisions never change Layer C rows; `effective_*` fields resolve at read time.          |
-| (no letter)   | Raw observation capture                                  | Evidence ingest, before any layer     | `lib/storage/evidence.ts:recordObservation`                                      | This doc §3.1a; precedes Layer 0.                                                                                  |
+| Stage     | What it does                                                                                                 | Authoring code                                                                                                                              | Admin surfaces                                                  | Append-only writes                                              |
+|-----------|--------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------|------------------------------------------------------------------|
+| **0 (raw)** | Upstream evidence capture — precedes Stage 1                                                                | `lib/storage/evidence.ts:recordObservation`                                                                                                 | (none)                                                          | `observations`, `observation_revisions`, `engagement_snapshots`  |
+| **Stage 1** — Regex + deterministic signals | Per-observation regex/lexicon: Topic/category, sentiment, impact, competitor mention             | `lib/scrapers/shared.ts` (`analyzeSentiment`, `categorizeIssue`, `calculateImpactScore`, `detectCompetitorMentions`) → `lib/storage/derivations.ts` | "Layer 0 Backfill" tab                                          | `sentiment_scores`, `category_assignments`, `impact_scores`, `competitor_mentions` |
+| **Stage 2** — Embeddings                  | Vector representation per observation; cached per row                                                       | OpenAI `text-embedding-3-small`; cache in `embeddings`                                                                                       | (exercised via Stage 3 admin)                                   | `embeddings`                                                     |
+| **Stage 3** — Clustering                  | Groups observations into recurring semantic problem families                                                | `lib/storage/semantic-clusters.ts:runSemanticClusteringForBatch`                                                                             | "Layer A Clustering" tab                                        | `clusters`, `cluster_members`                                    |
+| **Stage 4** — LLM classification + family naming with fallback | Per-observation classification, cluster-level family naming + interpretation, deterministic label fallback | `lib/classification/pipeline.ts:classifyReport`; `lib/storage/family-classification.ts:classifyClusterFamily`; `lib/storage/run-cluster-label-backfill.ts:runClusterLabelBackfill`; `lib/storage/cluster-label-fallback.ts:composeDeterministicLabel` | "Layer C Backfill" tab; "Family Classification" tab; "Layer A Labels" tab | `classifications`, `family_classifications`, `clusters.label`    |
+| **Stage 5** — Human-in-the-loop improvement | Reviewer labels, overrides, error reasons, automation feedback. Routes back into Stages 1–4 as the learning signal | `recordClassificationReview` → `classification_reviews`; future review tables (e.g. `topic_review_events`, `family_classification_reviews`) | (future review panels)                                          | `classification_reviews`, additional review tables               |
 
-Rules:
+Rules for new code:
 
-1. **Pipeline letters (0, A, C) belong to transformations** that write to a derivation or aggregation table. They are append-only and re-runnable.
-2. **Layer B is a UI grouping**, not a pipeline letter. It composes over Layer C output at render time. The admin console has no Layer B tab because there is nothing to backfill or rebuild.
-3. **Family Classification is a sub-aspect of Layer A** (per `CLUSTERING_DESIGN.md` §5.1: "Layer A interpretation"). It does not get its own letter.
-4. **Reviewer review is not a layer letter.** Reviewer overrides sit on top of Layer C and never produce new rows in any layered transformation table.
-5. **Admin tabs use the letter where the canonical scheme has one** ("Layer 0 Backfill", "Layer A Clustering", "Layer A Labels", "Layer C Backfill") and use full names where it does not ("Family Classification", "Cross-layer Trace", "Schema / Contracts"). Cross-surface CTAs that deep-link to an admin tab MUST use that tab's exact label.
-6. **Dashboard surfaces** (`LayerExplainerPanel`, `LayerBreadcrumb`, layer badges) keep their canonical Layer A / Layer B / Layer C presentation as documented in `CLUSTERING_DESIGN.md` §7 — operator-facing pipeline copy and reviewer-facing filter-axis copy converge on the same letters where they overlap (A and C).
+1. **Reason in stages, not letters.** When debugging precision/recall, ask "which stage produced the wrong signal?" — the trace card walks 0 → 1 → 2 → 3 → 4 → 5.
+2. **Stage 4 is plural.** Per-observation LLM classification, cluster-level family naming, and deterministic label fallback are all Stage 4 sub-products. Three admin tabs share Stage 4.
+3. **Stage 5 is a learning input, not a sink.** Reviewer feedback should route back into Stage 1 regex tuning, Stage 2 embedding refresh / threshold sweeps, Stage 3 clustering parameter tuning, or Stage 4 prompt / family-taxonomy edits. New review surfaces SHOULD record structured error reasons that name the responsible upstream stage.
+4. **Out-of-band tools are not stages.** Schema / Contracts and Cross-layer Trace are admin guardrails that read across stages but do not write to them.
+5. **The dashboard's Layer A / B / C filter axes are not stages.** They are UI scoping affordances over Stage 3 (cluster) and Stage 4 (classification row) output, with a UI-only middle axis (group-by). See the legacy glossary below.
+6. **No "Stage 6" or new layer letters without a doc update first.** This table is the source of truth.
 
-History: §6.1 ("Heuristic category model") and §6.3 ("LLM triage quality controls") have always treated these as separate concepts in the doc; the drift was at the UI label level. The original §6.0 glossary closed the noun-level gap (Topic vs LLM category vs Family); the layer-letter glossary above closes the layered-pipeline-vocabulary gap between admin and dashboard surfaces.
+#### Layer letter glossary (legacy / backward-compat)
+
+The single-letter "Layer A / B / C" shorthand predates the stage model
+and is still the canonical vocabulary in three places: the
+**`LayerExplainerPanel`** + **`LayerBreadcrumb`** in
+`components/dashboard/classification-triage.tsx`, the four admin tab
+labels that lead with "Layer 0 / A / C", and historical references in
+`docs/CLUSTERING_DESIGN.md`. The set of letters is closed; new code
+MUST NOT introduce new ones (e.g. "Layer D", "Layer 1") — extensions
+must adopt the stage vocabulary above instead.
+
+| Letter        | Concept                                                  | Maps to                                            | Where it appears                                                                                                  |
+|---------------|----------------------------------------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| **Layer 0**   | Deterministic enrichment per observation                 | Stage 1                                            | Admin tab "Layer 0 Backfill"; `docs/CLUSTERING_DESIGN.md` §3.1 / §4.6                                              |
+| **Layer A**   | Semantic cluster (embedding-driven cluster membership)   | Stage 3 (with Stage 2 as upstream dependency)       | Admin tabs "Layer A Clustering" / "Layer A Labels"; `LayerExplainerPanel`; `LayerBreadcrumb`                       |
+| Layer A interpretation | Family Classification (cluster-level interpretation) | Stage 4 (sub-product: family naming with fallback) | Admin tab "Family Classification"; `docs/CLUSTERING_DESIGN.md` §5.1. Naming legacy: it sits *on top of* Layer A but is a Stage 4 operation. |
+| **Layer B**   | Triage group (client-side group-by on `(category, subcategory)`) | UI affordance only — composes over Stage 4 output | `components/dashboard/classification-triage.tsx` (`groupFilter`); `docs/CLUSTERING_DESIGN.md` §7. No admin tab, no DB writes. |
+| **Layer C**   | LLM classification per observation (gpt-5-mini)          | Stage 4 (sub-product: per-observation classification) | Admin tab "Layer C Backfill"; cron `/api/cron/classify-backfill`; `LayerExplainerPanel`; `LayerBreadcrumb`        |
+
+Compatibility rules:
+
+1. **Tab `value=` strings are stable** (`backfill`, `classify-backfill`, `clustering`, `trace`, `schema`, `cluster-labels`, `family-classification`). Deep-link contract from `/admin?tab=...` and from the reviewer dashboard CTAs is preserved indefinitely.
+2. **Tab visible labels MAY shift to stage vocabulary in a follow-up**, but until then, cross-surface CTAs that deep-link to an admin tab MUST use that tab's exact rendered label.
+3. **`LayerExplainerPanel` keeps Layer A / B / C** because reviewer filter-axis composition is what the panel actually teaches. Letters here mean filter axes, not pipeline stages.
+4. **Reviewer review and raw observation capture have no letter.** Stage 5 is reviewer review, Stage 0 is raw capture; neither needs a letter shorthand.
+
+History: the original §6.0 glossary closed the noun-level gap (Topic vs LLM category vs Family). The first iteration of this layer-letter subsection established the closed letter set. The stage model added at the top of this section is the next iteration: it gives operators a stable mental model that supports the V1 goal — high-precision/recall classification with a clean feedback loop from review into upstream stages — without forcing every reasoning context to think in single letters.
 
 ### 6.1 Heuristic category model
 
