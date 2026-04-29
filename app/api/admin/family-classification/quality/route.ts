@@ -68,27 +68,62 @@ export async function GET(request: NextRequest) {
   const sort = SORT_OPTIONS.has(sortRaw) ? sortRaw : "updated_at_desc"
 
   const supabase = createAdminClient()
-  const { data, error } = await supabase.from("family_classification_current").select("id,cluster_id,family_kind,family_title,family_summary,confidence,observation_count,classification_coverage_share,mixed_topic_score,cluster_path,needs_human_review,review_reasons,evidence,llm_status,llm_model,llm_classified_at,algorithm_version,classified_at,updated_at").limit(5000)
+  // Schema note: family_classification_current (view, scripts/029) exposes
+  // family_kind/title/summary/confidence/needs_human_review/review_reasons/
+  // evidence/algorithm_version/computed_at — and nothing else. The cluster
+  // topic-metadata numbers (observation_count, classification_coverage_share,
+  // mixed_topic_score, cluster_path) and the LLM status/model live inside
+  // the `evidence` JSONB snapshot the classifier wrote at classify time
+  // (lib/storage/family-classification.ts → evidence.cluster_topic_metadata,
+  // evidence.llm). Selecting them as top-level columns here triggered
+  // "column family_classification_current.observation_count does not exist".
+  const { data, error } = await supabase
+    .from("family_classification_current")
+    .select(
+      "id,cluster_id,family_kind,family_title,family_summary,confidence,needs_human_review,review_reasons,evidence,algorithm_version,computed_at",
+    )
+    .limit(5000)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   let rows: QualityRow[] = ((data ?? []) as Record<string, unknown>[]).map((row) => {
     const evidence = asRecord(row.evidence)
     const representatives = asStringArray(evidence?.representatives)
     const phrases = asStringArray(evidence?.common_matched_phrases)
-    const quality = computeFamilyQualityBucket(row)
+    const topicMetadata = asRecord(evidence?.cluster_topic_metadata)
+    const llmBlock = asRecord(evidence?.llm)
+
+    const observationCount = toFiniteNumber(topicMetadata?.observation_count) ?? 0
+    const coverageShare = toFiniteNumber(topicMetadata?.classification_coverage_share)
+    const mixedTopicScore = toFiniteNumber(topicMetadata?.mixed_topic_score)
+    const clusterPath =
+      typeof topicMetadata?.cluster_path === "string" ? topicMetadata.cluster_path : null
+    const computedAt = typeof row.computed_at === "string" ? row.computed_at : null
+    const llmClassifiedAt =
+      typeof llmBlock?.classified_at === "string" ? llmBlock.classified_at : null
+
+    // computeFamilyQualityBucket reads observation_count / coverage /
+    // mixedness / cluster_path off the row top-level, so hand it an
+    // enriched view that lifts those evidence-snapshot fields up.
+    const enrichedRow = {
+      ...row,
+      observation_count: observationCount,
+      classification_coverage_share: coverageShare,
+      mixed_topic_score: mixedTopicScore,
+      cluster_path: clusterPath,
+    }
+    const quality = computeFamilyQualityBucket(enrichedRow)
     // Surface the LLM's suggested family_kind separately from the
     // heuristic's stored family_kind so the review form can show
     // heuristic-vs-LLM disagreement and the snapshot's
     // tie_break_context.llm_disagrees flag actually means something.
-    const llmBlock = asRecord(evidence?.llm)
     const llmSuggestedFamilyKind =
       typeof llmBlock?.suggested_family_kind === "string"
         ? llmBlock.suggested_family_kind
         : null
     return {
-      classification_id: typeof row.id === "string" ? row.id : null, cluster_id: String(row.cluster_id ?? ""), family_kind: typeof row.family_kind === "string" ? row.family_kind : null, family_title: typeof row.family_title === "string" ? row.family_title : null, family_summary: typeof row.family_summary === "string" ? row.family_summary : null, confidence: toFiniteNumber(row.confidence), llm_status: normalizeLlmStatus(row, evidence), llm_suggested_family_kind: llmSuggestedFamilyKind, observation_count: toFiniteNumber(row.observation_count) ?? 0,
-      classification_coverage_share: toFiniteNumber(row.classification_coverage_share), mixed_topic_score: toFiniteNumber(row.mixed_topic_score), quality_bucket: quality.bucket, quality_reasons: quality.reasons, recommended_action: quality.recommendedAction,
-      review_reasons: asStringArray(row.review_reasons), needs_human_review: row.needs_human_review === true, representative_count: representatives.length, representative_preview: representatives.slice(0, 3), common_matched_phrase_count: phrases.length, common_matched_phrase_preview: phrases.slice(0, 5), algorithm_version: typeof row.algorithm_version === "string" ? row.algorithm_version : null, llm_model: typeof row.llm_model === "string" ? row.llm_model : null, llm_classified_at: typeof row.llm_classified_at === "string" ? row.llm_classified_at : null, classified_at: typeof row.classified_at === "string" ? row.classified_at : null, updated_at: typeof row.updated_at === "string" ? row.updated_at : null,
+      classification_id: typeof row.id === "string" ? row.id : null, cluster_id: String(row.cluster_id ?? ""), family_kind: typeof row.family_kind === "string" ? row.family_kind : null, family_title: typeof row.family_title === "string" ? row.family_title : null, family_summary: typeof row.family_summary === "string" ? row.family_summary : null, confidence: toFiniteNumber(row.confidence), llm_status: normalizeLlmStatus(row, evidence), llm_suggested_family_kind: llmSuggestedFamilyKind, observation_count: observationCount,
+      classification_coverage_share: coverageShare, mixed_topic_score: mixedTopicScore, quality_bucket: quality.bucket, quality_reasons: quality.reasons, recommended_action: quality.recommendedAction,
+      review_reasons: asStringArray(row.review_reasons), needs_human_review: row.needs_human_review === true, representative_count: representatives.length, representative_preview: representatives.slice(0, 3), common_matched_phrase_count: phrases.length, common_matched_phrase_preview: phrases.slice(0, 5), algorithm_version: typeof row.algorithm_version === "string" ? row.algorithm_version : null, llm_model: typeof llmBlock?.model === "string" ? llmBlock.model : null, llm_classified_at: llmClassifiedAt, classified_at: computedAt, updated_at: computedAt,
     }
   })
 
