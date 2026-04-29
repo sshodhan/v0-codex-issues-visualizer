@@ -615,11 +615,11 @@ Each row reports one prerequisite step with a ✓ / ⚠ / ✗ icon:
 The panel's primary CTA is picked by `pickPrimaryCta(prereq)` in `lib/classification/prerequisites.ts` with deliberate precedence:
 1. `observationsInWindow === 0` → no CTA (upstream fix needed: wait for scrape / check cron).
 2. `!openaiConfigured` → inline warning; no click-through (backfill would 503).
-3. `pendingClassification > 0` → **"Run classify-backfill →"** linking to `/admin?tab=classify-backfill`.
-4. `pendingClustering > 0` (and classification caught up) → **"Rebuild clustering →"** linking to `/admin?tab=clustering`.
+3. `pendingClassification > 0` → **"Run Layer C Backfill →"** linking to `/admin?tab=classify-backfill`.
+4. `pendingClustering > 0` (and classification caught up) → **"Rebuild Layer A clustering →"** linking to `/admin?tab=clustering`.
 5. All caught up → no CTA (panel shouldn't render anyway; defensive).
 
-When primary is classify-backfill and clustering is also behind, a secondary "Rebuild clustering" button renders alongside to save the reviewer a round-trip. Prereq fetch failures (server-side log via `logServerError` component `api-classifications-stats`) degrade to a minimal fallback panel — no 500, no blank card.
+When primary is the Layer C Backfill CTA and clustering is also behind, a secondary "Rebuild Layer A clustering" button renders alongside to save the reviewer a round-trip. Prereq fetch failures (server-side log via `logServerError` component `api-classifications-stats`) degrade to a minimal fallback panel — no 500, no blank card.
 
 - The semantic-cluster chip strip reads from `/api/clusters` (sourced from `mv_observation_current`), not from the classification queue. This decouples the cluster surface from the classification pipeline — clusters are visible the moment an observation is ingested with a `cluster_id`, without waiting for classify-backfill to populate matching classification records. When a chip is selected but the triage table is empty (either pre-classification or compound-filter pruned it), a **cluster-member preview panel** renders below the chip strip showing the cluster's top-impact observations with source links, so reviewers can see what's actually in the cluster instead of staring at an empty table.
 - Cluster labels render as **"Unlabelled cluster"** when `cluster_label` is null. Raw `cluster_key` values (`semantic:<digest>` or `title:<md5>`) are implementation detail and surface only through a `title=` attribute tooltip — never as user-facing copy.
@@ -800,7 +800,7 @@ Optional LLM enrichment (heuristic stays authoritative):
 
 ### Admin panel
 
-New tab "Family classification" in `/admin`:
+New tab "Family Classification" in `/admin`:
 - Stats: total clusters, clusters without classification
 - Single-cluster lookup: paste cluster UUID, see draft result
 - Dry-run: count candidates without running classifier

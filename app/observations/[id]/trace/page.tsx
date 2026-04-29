@@ -141,7 +141,7 @@ export default function ObservationTracePage() {
             Dashboard
           </Link>
           <div className="h-6 w-px bg-border" />
-          <h1 className="text-lg font-semibold">Observation trace</h1>
+          <h1 className="text-lg font-semibold">Cross-layer Observation Trace</h1>
           {id ? <span className="font-mono text-xs text-muted-foreground">{id}</span> : null}
         </div>
       </header>

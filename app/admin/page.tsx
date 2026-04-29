@@ -3370,7 +3370,7 @@ function SchemaVerificationPanel({ secret }: { secret: string }) {
       <CardHeader>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <CardTitle>Schema verification</CardTitle>
+            <CardTitle>Schema / Contracts</CardTitle>
             <CardDescription>
               Compares the live <code>public</code> schema against the
               expected post-014 manifest. Reports per-object pass/fail
