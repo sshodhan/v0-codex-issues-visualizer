@@ -352,10 +352,16 @@ export function ClassificationTriage({
     if (!selected) return
     if (!trimmedReviewer) return // API requires reviewed_by (audit trail)
 
+    // Pressing "Mark reviewed" with status still at "new" produces a
+    // misleading audit trail — the row was reviewed but reads as
+    // unreviewed. Auto-promote new → triaged. Other statuses are
+    // explicit reviewer choices and pass through untouched.
+    const effectiveStatus = statusOverride === "new" ? "triaged" : statusOverride
+
     setIsSubmitting(true)
     try {
       await reviewClassification(selected.id, {
-        status: statusOverride as (typeof STATUS_OPTIONS)[number],
+        status: effectiveStatus as (typeof STATUS_OPTIONS)[number],
         severity: severityOverride as (typeof SEVERITY_OPTIONS)[number],
         category: categoryOverride || selected.category,
         subcategory: subcategoryOverride.trim() || undefined,
@@ -363,6 +369,7 @@ export function ClassificationTriage({
         reviewed_by: trimmedReviewer,
         reviewer_notes: notes || undefined,
       })
+      setStatusOverride(effectiveStatus)
       await onRefresh()
       setNotes("")
       setSelectedId(null)
