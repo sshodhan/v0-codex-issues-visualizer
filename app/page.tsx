@@ -46,6 +46,7 @@ import {
   useClusterRollup,
 } from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
+import { logClientEvent } from "@/lib/error-tracking/client-logger"
 import { formatDistanceToNow } from "date-fns"
 
 const UUID_RE =
@@ -163,10 +164,29 @@ function DashboardContentInner() {
 
   const setGlobalCategoryWithReset = useCallback(
     (slug: string) => {
+      const previousLlmCategory = searchParams.get("llm_category")
       setGlobalCategory(slug)
-      resetIssuesPageInUrl()
+      // Selecting "All" topic also clears the LLM subcategory drill-down,
+      // since `llm_category` is shown to the user as a sub-filter scoped to
+      // a topic. Both Dashboard and Triage tab issue tables read this from
+      // the URL, so dropping it here clears the filter consistently in both.
+      const clearedLlmCategory = slug === "all" && searchParams.has("llm_category")
+      if (clearedLlmCategory) {
+        const next = new URLSearchParams(searchParams.toString())
+        next.delete("llm_category")
+        next.delete("issues_page")
+        const qs = next.toString()
+        router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+      } else {
+        resetIssuesPageInUrl()
+      }
+      logClientEvent("dashboard-topic-changed", {
+        slug,
+        clearedLlmCategory,
+        previousLlmCategory,
+      })
     },
-    [resetIssuesPageInUrl],
+    [pathname, resetIssuesPageInUrl, router, searchParams],
   )
 
   const setGlobalDaysWithReset = useCallback(
@@ -522,14 +542,43 @@ const handleHeroLlmCategoryDrill = (
   categorySlug: string,
   llmCategorySlug: string,
   ) => {
-  // Stay on Dashboard tab and scroll to issues table with LLM category filter
+  // Switch to Triage tab and scroll to its issues table with the LLM
+  // category filter applied. The Triage tab's IssuesTable renders only
+  // when `activeTab === "v3"`, so we need the same retry-until-mounted
+  // pattern as `handleHeroExploreIssues` — a single rAF fires before the
+  // tab content has committed, which is what caused the "first click does
+  // nothing, second click works" behavior.
+  logClientEvent("dashboard-hero-llm-category-drill-started", {
+    categorySlug,
+    llmCategorySlug,
+    fromTab: activeTab,
+    previousGlobalCategory: globalCategory,
+  })
+  setActiveTab("v3")
   setGlobalCategoryWithReset(categorySlug)
   applyIssueSearchParams({ llmCategory: llmCategorySlug })
   if (typeof window !== "undefined") {
-  requestAnimationFrame(() => {
-  const el = document.getElementById("dashboard-issues-table-anchor")
-  el?.scrollIntoView({ behavior: "smooth", block: "start" })
-  })
+    const MAX_RETRIES = 10
+    const scrollToElement = (retries = MAX_RETRIES) => {
+      const element = document.getElementById("issues-table-anchor")
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "start" })
+        logClientEvent("dashboard-hero-llm-category-drill-scrolled", {
+          categorySlug,
+          llmCategorySlug,
+          retriesUsed: MAX_RETRIES - retries,
+        })
+      } else if (retries > 0) {
+        setTimeout(() => scrollToElement(retries - 1), 50)
+      } else {
+        logClientEvent("dashboard-hero-llm-category-drill-scroll-failed", {
+          categorySlug,
+          llmCategorySlug,
+          reason: "issues-table-anchor not mounted within retry window",
+        })
+      }
+    }
+    setTimeout(() => scrollToElement(), 50)
   }
   }
 
@@ -1047,6 +1096,7 @@ const handleHeroLlmCategoryDrill = (
                   activeCompoundKey={compoundKeyFromUrl}
                   activeClusterId={clusterIdFromUrl ?? undefined}
                   activeClusterLabel={activeClusterLabel ?? undefined}
+                  activeLlmCategory={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : undefined}
                   onClearGlobalCategory={() => setGlobalCategoryWithReset("all")}
                   selectedSourceSlugs={sourcesFromUrl}
                   onSourceSelectionChange={handleIssueSourceSelectionChange}
