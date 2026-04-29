@@ -1033,7 +1033,7 @@ function PipelineStatusPanel({
               href="/admin?tab=clustering"
               className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
             >
-              Rebuild clustering
+              Rebuild Layer A clustering
               <ArrowRight className="h-4 w-4" />
             </a>
           )}
@@ -1202,14 +1202,14 @@ function LayerExplainerPanel() {
           icon={<Layers3 className="h-4 w-4 text-primary" />}
           title="Semantic cluster"
           body="Embedding-based grouping of observations that share a root cause across categories. Sourced from /api/clusters and visible the moment ingest assigns a cluster_id — independent of whether classification has run yet."
-          adminLink={{ href: "/admin?tab=clustering", label: "Clustering admin" }}
+          adminLink={{ href: "/admin?tab=clustering", label: "Layer A Clustering" }}
         />
         <LayerExplainerRow
           letter="B"
           icon={<Tag className="h-4 w-4 text-primary" />}
           title="Triage group"
           body={`Client-side group-by on (effective_category × subcategory). Comes from the LLM classification enum (${SAMPLE_LLM_SLUGS}, …) — distinct from the dashboard's heuristic taxonomy used by the global slider.`}
-          adminLink={{ href: "/admin?tab=classify-backfill", label: "Classify backfill" }}
+          adminLink={{ href: "/admin?tab=classify-backfill", label: "Layer C Backfill" }}
         />
         <LayerExplainerRow
           letter="C"
@@ -1392,7 +1392,7 @@ function PerRecordPrereqHints({ record }: { record: ClassificationRecord }) {
           No semantic cluster attached — embedding may be missing or below the similarity
           threshold.{" "}
           <a href="/admin?tab=clustering" className="font-medium text-primary hover:underline">
-            Open clustering admin →
+            Open Layer A Clustering →
           </a>
         </>
       ),

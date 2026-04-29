@@ -358,11 +358,22 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   via gpt-5-mini.
                 </li>
                 <li>
-                  <strong>Layer D — Human Review</strong>: reviewer overrides
-                  and automation feedback captured in{" "}
+                  <strong>Reviewer review</strong>: human overrides and
+                  automation feedback captured in{" "}
                   <code className="rounded bg-muted px-1 py-0.5 text-xs">classification_reviews</code>.
+                  No layer letter — reviewer decisions sit on top of Layer C.
                 </li>
               </ul>
+              <p className="text-xs text-muted-foreground">
+                <strong>Reviewer dashboard surfaces</strong> use the same
+                letters: <strong>Layer A</strong> (semantic cluster filter),{" "}
+                <strong>Layer B</strong> (Triage group — a client-side group-by
+                on <code className="rounded bg-muted px-1 py-0.5">(category, subcategory)</code>{" "}
+                over Layer C output; <em>not</em> a pipeline transformation),
+                and <strong>Layer C</strong> (the classification row).
+                Documented in{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">docs/CLUSTERING_DESIGN.md</code> §7.
+              </p>
             </div>
           }
           pipelineFit={
@@ -389,7 +400,8 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               </li>
               <li>
                 <strong>Cross-layer Trace</strong> → read-only debugger
-                across Layer 0 / A / C / D for one observation.
+                across Layer 0 → A → C and reviewer review for one
+                observation.
               </li>
               <li>
                 <strong>Schema / Contracts</strong> → out-of-band guardrail
@@ -788,7 +800,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
           <TabsContent value="trace" className="space-y-4">
             <WhatToKnowCard
               title="Cross-layer Observation Trace"
-              summary="Read-only inspector for one observation across every layer — raw capture, Layer 0 evidence, Layer A cluster, Layer C classification, Layer D review."
+              summary="Read-only inspector for one observation across every layer — raw capture, Layer 0 evidence, Layer A cluster, Layer C classification, reviewer review."
               purpose={
                 <p>
                   Use this when a row looks wrong and you need to find the
@@ -797,8 +809,8 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                   (raw), the regex bug fingerprint and Layer 0 derivations,
                   the embedding and Layer A cluster membership chain, every
                   Layer C classification attempt (including retries), and any
-                  Layer D reviewer overrides. The append-only processing event
-                  stream shows what happened to the row over time.
+                  reviewer overrides. The append-only processing event stream
+                  shows what happened to the row over time.
                 </p>
               }
               pipelineFit={
@@ -1160,6 +1172,29 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                       Periodically to flag clusters that may have changed
                       composition and need review.
                     </li>
+                    <li>
+                      <strong>Triage existing classifications first.</strong>{" "}
+                      The panel surfaces a <em>Quality dashboard</em> that
+                      buckets every current family classification into{" "}
+                      <code className="rounded bg-muted px-1 py-0.5">safe_to_trust</code>{" "}
+                      /{" "}
+                      <code className="rounded bg-muted px-1 py-0.5">needs_review</code>{" "}
+                      /{" "}
+                      <code className="rounded bg-muted px-1 py-0.5">input_problem</code>{" "}
+                      via{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        /api/admin/family-classification/quality
+                      </code>{" "}
+                      (logic in{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        lib/admin/family-classification-quality.ts
+                      </code>
+                      ). Clear the <code className="rounded bg-muted px-1 py-0.5">input_problem</code>{" "}
+                      bucket by fixing the upstream evidence (Layer 0 / Layer
+                      A) before re-classifying — re-running the classifier
+                      over malformed evidence just produces another
+                      malformed classification.
+                    </li>
                   </ul>
                   <p className="text-xs text-muted-foreground">
                     <strong>Trust contract:</strong> the heuristic is
@@ -1211,8 +1246,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
                     clusters, does not change Layer 0 topics, does not update{" "}
                     <code className="rounded bg-muted px-1 py-0.5 text-xs">clusters.label</code>,
                     and does not make family classifications ground truth by
-                    default — Layer D human review remains the
-                    authority.
+                    default — reviewer review remains the authority.
                   </li>
                 </ul>
               }

@@ -658,7 +658,35 @@ Decisions and rationale for the names:
 - **"Family"** for the semantic cluster as a user-facing concept: the dashboard already had a "Top Families" section before this glossary; the term spreads to active-drill-down chips for consistency. Layer-A methodology language stays "Semantic cluster" so reviewer documentation remains literal.
 - **"Family name"** for the cluster label: ties the labeller-produced string to the user-facing noun and removes the verb-form awkwardness of "label/unlabelled". The labeller pipeline (`semantic_cluster_label` v2) tries the small LLM first, escalates to the large LLM on low confidence, and falls through to a deterministic Topic+error fallback (`lib/storage/cluster-label-fallback.ts`) so every cluster has a displayable label at confidence `>= MIN_DISPLAYABLE_LABEL_CONFIDENCE` (currently `0.4`). The UI show-threshold imports the same constant from `cluster-label-fallback.ts`, so the producer/consumer floor cannot drift; `tests/label-confidence-contract.test.ts` fails the build if any UI file regresses to a hardcoded `0.4` literal. The legacy "Unnamed family" placeholder is replaced by `Cluster #<short-id>` for the rare `label IS NULL` defence-in-depth case. See `docs/CLUSTERING_DESIGN.md` §4.4 for the full source-priority chain.
 
-History: §6.1 ("Heuristic category model") and §6.3 ("LLM triage quality controls") have always treated these as separate concepts in the doc; the drift was at the UI label level. This glossary closes that gap.
+#### Layer letter glossary
+
+Several places (admin tabs, `LayerExplainerPanel` in classification-triage,
+`LayerBreadcrumb`, this doc, `docs/CLUSTERING_DESIGN.md`) use single-letter
+shorthands like "Layer A" / "Layer C". The set of letters is closed and
+canonical. New code MUST use only the letters defined here and MUST NOT
+introduce new ones (e.g. "Layer D", "Layer 1") — extensions need a doc
+update first.
+
+| Letter        | Concept                                                  | Type                                  | Authoring layer                                                                  | Source of truth                                                                                                  |
+|---------------|----------------------------------------------------------|---------------------------------------|----------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| **Layer 0**   | Deterministic enrichment per observation                 | Pipeline transformation               | `lib/scrapers/shared.ts` (`analyzeSentiment`, `categorizeIssue`, `calculateImpactScore`, `detectCompetitorMentions`) → `lib/storage/derivations.ts` | `docs/CLUSTERING_DESIGN.md` §3.1 / §4.6; admin tab "Layer 0 Backfill"                                            |
+| **Layer A**   | Semantic cluster (embedding-driven cluster membership)   | Pipeline transformation               | `lib/storage/semantic-clusters.ts:runSemanticClusteringForBatch`                  | This doc §6.0 above; `docs/CLUSTERING_DESIGN.md` §4; admin tab "Layer A Clustering" + "Layer A Labels"           |
+| Layer A interpretation | Family Classification (cluster-level interpretation) | Read-only interpretation       | `lib/storage/family-classification.ts:classifyClusterFamily`                     | `docs/CLUSTERING_DESIGN.md` §5.1; admin tab "Family Classification". Sub-aspect of Layer A; no separate letter.   |
+| **Layer B**   | Triage group (client-side group-by on `(category, subcategory)`) | **UI affordance, not a transformation** | `components/dashboard/classification-triage.tsx` (`groupFilter`)        | `docs/CLUSTERING_DESIGN.md` §7. Layer B exists only on the reviewer dashboard; no admin tab and no DB writes.    |
+| **Layer C**   | LLM classification per observation (gpt-5-mini)          | Pipeline transformation               | `lib/classification/pipeline.ts:classifyReport` → `classifications` table        | `docs/CLUSTERING_DESIGN.md` §7; admin tab "Layer C Backfill"; cron `/api/cron/classify-backfill`                 |
+| (no letter)   | Reviewer review                                          | Read-only override on top of Layer C  | `recordClassificationReview` → `classification_reviews` (append-only)            | This doc §3.3. Reviewer decisions never change Layer C rows; `effective_*` fields resolve at read time.          |
+| (no letter)   | Raw observation capture                                  | Evidence ingest, before any layer     | `lib/storage/evidence.ts:recordObservation`                                      | This doc §3.1a; precedes Layer 0.                                                                                  |
+
+Rules:
+
+1. **Pipeline letters (0, A, C) belong to transformations** that write to a derivation or aggregation table. They are append-only and re-runnable.
+2. **Layer B is a UI grouping**, not a pipeline letter. It composes over Layer C output at render time. The admin console has no Layer B tab because there is nothing to backfill or rebuild.
+3. **Family Classification is a sub-aspect of Layer A** (per `CLUSTERING_DESIGN.md` §5.1: "Layer A interpretation"). It does not get its own letter.
+4. **Reviewer review is not a layer letter.** Reviewer overrides sit on top of Layer C and never produce new rows in any layered transformation table.
+5. **Admin tabs use the letter where the canonical scheme has one** ("Layer 0 Backfill", "Layer A Clustering", "Layer A Labels", "Layer C Backfill") and use full names where it does not ("Family Classification", "Cross-layer Trace", "Schema / Contracts"). Cross-surface CTAs that deep-link to an admin tab MUST use that tab's exact label.
+6. **Dashboard surfaces** (`LayerExplainerPanel`, `LayerBreadcrumb`, layer badges) keep their canonical Layer A / Layer B / Layer C presentation as documented in `CLUSTERING_DESIGN.md` §7 — operator-facing pipeline copy and reviewer-facing filter-axis copy converge on the same letters where they overlap (A and C).
+
+History: §6.1 ("Heuristic category model") and §6.3 ("LLM triage quality controls") have always treated these as separate concepts in the doc; the drift was at the UI label level. The original §6.0 glossary closed the noun-level gap (Topic vs LLM category vs Family); the layer-letter glossary above closes the layered-pipeline-vocabulary gap between admin and dashboard surfaces.
 
 ### 6.1 Heuristic category model
 

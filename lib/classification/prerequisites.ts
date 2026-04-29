@@ -55,8 +55,8 @@ export type PrereqCta =
 export function pickPrimaryCta(prereq: PrerequisiteStatus): PrereqCta {
   if (prereq.observationsInWindow === 0) return { kind: "none" }
   if (!prereq.openaiConfigured) return { kind: "openai-missing" }
-  // Only offer "Run classify-backfill" when clicking it would actually do
-  // work. If every pending row is below MIN_IMPACT_SCORE, the panel's
+  // Only offer the Layer C Backfill CTA when clicking it would actually
+  // do work. If every pending row is below MIN_IMPACT_SCORE, the panel's
   // query returns zero candidates and the button is a no-op — which is
   // exactly the "110 awaiting classification" + "All caught up" confusion
   // that prompted this gate.
@@ -64,14 +64,14 @@ export function pickPrimaryCta(prereq: PrerequisiteStatus): PrereqCta {
     return {
       kind: "classify-backfill",
       href: "/admin?tab=classify-backfill",
-      label: "Run classify-backfill",
+      label: "Run Layer C Backfill",
     }
   }
   if (prereq.pendingClustering > 0) {
     return {
       kind: "clustering",
       href: "/admin?tab=clustering",
-      label: "Rebuild clustering",
+      label: "Rebuild Layer A clustering",
     }
   }
   return { kind: "none" }
