@@ -860,14 +860,19 @@ const handleHeroLlmCategoryDrill = (
             <Button
               onClick={handleRefresh}
               disabled={isRefreshing}
-              className="gap-2"
+              className="gap-2 sm:gap-2 text-xs sm:text-sm px-2 sm:px-4 h-8 sm:h-9 shrink-0"
             >
               {isRefreshing ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              {isRefreshing ? "Scraping..." : "Refresh Data"}
+              <span className="hidden sm:inline">
+                {isRefreshing ? "Scraping..." : "Refresh Data"}
+              </span>
+              <span className="sm:hidden">
+                {isRefreshing ? "Scraping" : "Refresh"}
+              </span>
             </Button>
           </div>
         </div>
