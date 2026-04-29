@@ -3,9 +3,10 @@
 -- Async job queue for Stage 4 classification work (per-observation LLM
 -- classification AND cluster family naming/interpretation). Lets the
 -- admin panel enqueue a "run N items in the background" request that
--- returns immediately with a job_id; subsequent batches are processed by
--- the /api/cron/classification-jobs tick (and opportunistically by the
--- /advance endpoint while the operator's browser is open).
+-- returns immediately with a job_id; subsequent batches are processed
+-- by the /api/cron/classification-jobs tick (every 2 min on the Pro
+-- plan; see vercel.json) and opportunistically by the /:id/advance
+-- endpoint while the operator's browser is open.
 --
 -- The synchronous /api/admin/classify-backfill and
 -- /api/admin/family-classification endpoints continue to work unchanged

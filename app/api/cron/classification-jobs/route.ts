@@ -4,13 +4,11 @@ import { claimNextJob } from "@/lib/admin/classification-jobs"
 import { processOneBatch } from "@/lib/admin/classification-jobs-worker"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
-// Vercel cron tick that drains the classification_jobs queue.
-//
-// On Pro plans this is wired to */2 minutes in vercel.json so a
-// background job left behind by an operator (browser closed mid-loop)
-// keeps making progress. On Hobby plans the cron schedule still works
-// but only daily; the panel's polling /:id/advance call is the real
-// driver while the operator is in the tab.
+// Vercel cron tick that drains the classification_jobs queue. Wired to
+// */2 minutes in vercel.json so a background job left behind by an
+// operator (browser closed mid-loop) keeps making progress on its own.
+// The panel's /:id/advance poll is a parallel driver while the tab is
+// open; the heartbeat fence in claimNextJob keeps them from racing.
 //
 // Each tick claims the oldest queued job (or a stale-running one whose
 // heartbeat hasn't refreshed in ~5min) and processes batches in a loop

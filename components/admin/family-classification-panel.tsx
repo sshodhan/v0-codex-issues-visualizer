@@ -2467,9 +2467,9 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
                 <p className="text-xs text-muted-foreground">
                   Enqueues a job that processes up to 50 unclassified
                   clusters via the cron worker. Returns immediately;
-                  progress streams here while the page is open. Safe to
-                  close the tab — the cron tick (every 2 min) keeps it
-                  draining.
+                  the */2-min cron tick keeps it draining whether or
+                  not the tab is open, and progress streams here while
+                  it is.
                 </p>
               </div>
             </div>

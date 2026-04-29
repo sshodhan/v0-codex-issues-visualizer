@@ -3559,9 +3559,9 @@ function ClassifyBackfillPanel({ secret }: { secret: string }) {
               Enqueues a job that processes up to <span className="font-mono">{limit}</span>{" "}
               candidates at threshold{" "}
               <span className="font-mono">{parsedThreshold}</span> via the cron
-              worker. Returns immediately; progress streams here while the page
-              is open. Safe to close the tab — the cron tick (every 2 min) keeps
-              it draining.
+              worker. Returns immediately; the */2-min cron tick keeps it
+              draining whether or not the tab is open, and progress streams here
+              while it is.
             </p>
           </div>
           <BackgroundJobControl

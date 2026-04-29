@@ -18,10 +18,10 @@ import { logClientError } from "@/lib/error-tracking/client-logger"
 //     localStorage keyed by `kind` so the strip survives a tab reload
 //     mid-job.
 //   - Once a job is active, the component polls GET /:id every 4s and
-//     opportunistically POSTs /:id/advance every 8s. The advance call is
-//     what actually moves the job forward on Hobby plans where the
-//     vercel cron can't tick minutely; on Pro the cron does the same
-//     thing in parallel and the heartbeat fence keeps them from racing.
+//     opportunistically POSTs /:id/advance every 8s so the operator
+//     sees forward motion at sub-cron-tick latency while the tab is
+//     open. The */2 cron tick drains in parallel; the heartbeat fence
+//     in claimNextJob keeps them from racing.
 //   - Cancel button POSTs /:id/cancel; the worker honors it within ≤1
 //     batch (cluster mode) or the next batch boundary (observation
 //     mode). Render the cancelled state so the operator sees feedback
