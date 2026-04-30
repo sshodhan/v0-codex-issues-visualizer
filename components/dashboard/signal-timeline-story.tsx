@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react"
 import {
+  captionForMode,
   groupCategoriesByCount,
   groupFamiliesByCount,
   type StoryTimelinePoint,
@@ -419,7 +420,7 @@ export function SignalTimelineStory({
               Each dot is a public report in your filter ({points.length} shown). Size ≈ impact
               (1–10); high-impact dots (≥7) carry a halo
               {highImpactCount > 0 ? ` — ${highImpactCount} in this window` : ""}. Color ={" "}
-              {mode === "topic" ? "heuristic category" : mode === "cluster_family" ? "family title only (no fallback)" : mode === "cluster_label" ? "cluster label only (no fallback)" : "family title → label fallback"}. Weekend days are
+              {captionForMode(mode)}. Weekend days are
               shaded faintly.
               {legendFilter !== null && (
                 <>
@@ -446,7 +447,7 @@ export function SignalTimelineStory({
                     type="button"
                     aria-pressed={isActive}
                     onClick={() => handleViewModeChange(item.key)}
-                    className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       isActive
                         ? "bg-background text-foreground shadow-sm"
                         : "text-muted-foreground hover:text-foreground"
