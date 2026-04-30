@@ -7,7 +7,7 @@
 // `--experimental-strip-types`, and pulling Tailwind classnames into
 // that path would couple the prompt build to the design system.
 
-import type { IssueCategory } from "./taxonomy.ts"
+import type { IssueCategory, IssueStatus, Severity } from "./taxonomy.ts"
 
 export const LLM_CATEGORY_LABELS: Record<IssueCategory, string> = {
   incomplete_context_overflow: "Incomplete context / overflow",
@@ -24,6 +24,32 @@ export const LLM_CATEGORY_LABELS: Record<IssueCategory, string> = {
   session_auth_error: "Session / auth error",
   cli_user_experience_bug: "CLI / UX bug",
   integration_plugin_failure: "Integration / plugin failure",
+}
+
+export const LLM_SEVERITY_LABELS: Record<Severity, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+}
+
+export const LLM_STATUS_LABELS: Record<IssueStatus, string> = {
+  new: "New",
+  triaged: "Triaged",
+  "in-progress": "In progress",
+  resolved: "Resolved",
+  "wont-fix": "Won't fix",
+  duplicate: "Duplicate",
+}
+
+export function llmSeverityLabel(slug: string | null | undefined): string {
+  if (!slug) return "—"
+  return LLM_SEVERITY_LABELS[slug as Severity] ?? slug
+}
+
+export function llmStatusLabel(slug: string | null | undefined): string {
+  if (!slug) return "—"
+  return LLM_STATUS_LABELS[slug as IssueStatus] ?? slug
 }
 
 export interface LlmCategoryPalette {

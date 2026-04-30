@@ -8,6 +8,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  llmCategoryLabel,
+  llmSeverityLabel,
+  llmStatusLabel,
+} from "@/lib/classification/llm-category-display"
 
 interface ObservationTraceResponse {
   observation: {
@@ -32,7 +37,16 @@ interface ObservationTraceResponse {
     }
     fingerprint: { latest_computed_at: string | null; algorithm_version: string | null; total_versions: number; rows: Array<Record<string, unknown>> }
     embedding: { latest_computed_at: string | null; algorithm_version: string | null; model: string | null; dimensions: number | null; total_versions: number; rows: Array<Record<string, unknown>> }
-    category: { latest_computed_at: string | null; algorithm_version: string | null; winner_slug: string | null; confidence: number | null; evidence: unknown; total_versions: number; rows: Array<Record<string, unknown>> }
+    category: {
+      latest_computed_at: string | null
+      algorithm_version: string | null
+      winner_slug: string | null
+      winner_name: string | null
+      confidence: number | null
+      evidence: unknown
+      total_versions: number
+      rows: Array<Record<string, unknown>>
+    }
     clustering: {
       active_cluster_id: string | null
       active_cluster_key: string | null
@@ -89,14 +103,29 @@ function ShortId({ value }: { value: string | null | undefined }) {
 
 type MetaValue = ReactNode | string | null
 
+// Maps a card to its place in docs/ARCHITECTURE.md §6.0 "Classification
+// improvement pipeline" + the underlying tables. `stageLabel` is the
+// human-readable stage prefix shown in the card header (e.g.
+// "Stage 4 — Per-observation LLM classification"); `internalRef`
+// captures the persistent table names + admin-tab name so the same
+// card can be referenced precisely when directing follow-up work to
+// engineering ("the bug_fingerprints stage", "the Layer C Backfill
+// admin tab"). Both are surfaced as muted subtitles in the header.
+interface StageMeta {
+  stageLabel: string
+  internalRef: string
+}
+
 function TraceStage({
   title,
+  stage,
   available,
   meta,
   action,
   children,
 }: {
   title: string
+  stage?: StageMeta
   available: boolean
   meta: Array<[string, MetaValue]>
   action?: ReactNode
@@ -104,9 +133,17 @@ function TraceStage({
 }) {
   return (
     <div className="rounded-md border p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-sm font-medium">{title}</p>
-        <div className="flex items-center gap-2">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{title}</p>
+          {stage ? (
+            <div className="mt-0.5 space-y-0.5 text-[10px] text-muted-foreground">
+              <p className="font-medium uppercase tracking-wide">{stage.stageLabel}</p>
+              <p className="font-mono">{stage.internalRef}</p>
+            </div>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
           {action}
           <Badge variant={available ? "secondary" : "outline"}>{available ? "available" : "missing"}</Badge>
         </div>
@@ -365,6 +402,10 @@ export default function ObservationTracePage() {
 
             <TraceStage
               title="Capture"
+              stage={{
+                stageLabel: "Raw observation · precedes Stage 1",
+                internalRef: "observations / observation_revisions",
+              }}
               available={trace.availability.capture}
               meta={[
                 ["captured_at", <FormattedDate key="captured" iso={trace.stages.capture.captured_at} />],
@@ -390,7 +431,11 @@ export default function ObservationTracePage() {
               ]}
             />
             <TraceStage
-              title="Fingerprint"
+              title="Bug fingerprint (regex)"
+              stage={{
+                stageLabel: "Stage 1 · regex + deterministic signals",
+                internalRef: "bug_fingerprints · admin: Layer 0 Backfill",
+              }}
               available={trace.availability.fingerprint}
               meta={[
                 ["algorithm_version", trace.stages.fingerprint.algorithm_version],
@@ -400,6 +445,10 @@ export default function ObservationTracePage() {
             />
             <TraceStage
               title="Embedding"
+              stage={{
+                stageLabel: "Stage 2 · embeddings",
+                internalRef: "observation_embeddings · admin: Layer A Clustering",
+              }}
               available={trace.availability.embedding}
               action={
                 <RerunButton
@@ -421,10 +470,28 @@ export default function ObservationTracePage() {
             />
             <TraceStage
               title="Topic (regex_topic)"
+              stage={{
+                stageLabel: "Stage 1 · regex topic classifier",
+                internalRef: "category_assignments · admin: Layer 0 Backfill",
+              }}
               available={trace.availability.category}
               meta={[
                 ["algorithm_version", trace.stages.category.algorithm_version],
-                ["winner_slug", trace.stages.category.winner_slug],
+                [
+                  "winner",
+                  trace.stages.category.winner_name || trace.stages.category.winner_slug ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-foreground">
+                        {trace.stages.category.winner_name ?? trace.stages.category.winner_slug}
+                      </span>
+                      {trace.stages.category.winner_slug ? (
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          ({trace.stages.category.winner_slug})
+                        </span>
+                      ) : null}
+                    </span>
+                  ) : null,
+                ],
                 [
                   "confidence",
                   trace.stages.category.confidence === null ? null : trace.stages.category.confidence.toFixed(2),
@@ -441,6 +508,10 @@ export default function ObservationTracePage() {
             </TraceStage>
             <TraceStage
               title="Cluster membership"
+              stage={{
+                stageLabel: "Stage 3 · clustering",
+                internalRef: "cluster_members / clusters · admin: Layer A Clustering",
+              }}
               available={trace.availability.clustering}
               meta={[
                 [
@@ -474,7 +545,11 @@ export default function ObservationTracePage() {
               ]}
             />
             <TraceStage
-              title="Classification chain"
+              title="Per-observation LLM classification"
+              stage={{
+                stageLabel: "Stage 4 · per-observation LLM classification (not family)",
+                internalRef: "classifications · admin: Layer C Backfill",
+              }}
               available={trace.availability.classification}
               action={
                 <RerunButton
@@ -496,23 +571,48 @@ export default function ObservationTracePage() {
             >
               {trace.stages.classification.lineage.length > 0 ? (
                 <div className="space-y-2">
-                  {trace.stages.classification.lineage.map((node, idx) => (
-                    <div key={String(node.id)} className="rounded border bg-muted/40 p-2 text-xs">
-                      <p className="font-mono text-[10px] text-muted-foreground" title={String(node.id)}>
-                        {String(node.id)}
-                      </p>
-                      <p>{String(node.category ?? "unknown")} · {String(node.severity ?? "unknown")} · {String(node.status ?? "unknown")}</p>
-                      <p className="text-muted-foreground">
-                        prior: {node.prior_classification_id ? <ShortId value={String(node.prior_classification_id)} /> : "none"}
-                        {idx === 0 ? " (head)" : ""}
-                      </p>
-                    </div>
-                  ))}
+                  {trace.stages.classification.lineage.map((node, idx) => {
+                    const rawCategory = node.category == null ? null : String(node.category)
+                    const rawSeverity = node.severity == null ? null : String(node.severity)
+                    const rawStatus = node.status == null ? null : String(node.status)
+                    const subcategory = node.subcategory == null ? null : String(node.subcategory)
+                    return (
+                      <div key={String(node.id)} className="rounded border bg-muted/40 p-2 text-xs">
+                        <p className="font-mono text-[10px] text-muted-foreground" title={String(node.id)}>
+                          {String(node.id)}
+                        </p>
+                        <p className="font-medium text-foreground">
+                          {rawCategory ? llmCategoryLabel(rawCategory) : "Unknown category"}
+                          {" · "}
+                          {llmSeverityLabel(rawSeverity)}
+                          {" · "}
+                          {llmStatusLabel(rawStatus)}
+                          {idx === 0 ? <span className="ml-1 text-muted-foreground">(head)</span> : null}
+                        </p>
+                        <p className="font-mono text-[10px] text-muted-foreground">
+                          {[rawCategory, rawSeverity, rawStatus].filter(Boolean).join(" · ") || "—"}
+                          {subcategory ? ` · sub:${subcategory}` : ""}
+                        </p>
+                        <p className="text-muted-foreground">
+                          prior:{" "}
+                          {node.prior_classification_id ? (
+                            <ShortId value={String(node.prior_classification_id)} />
+                          ) : (
+                            "none"
+                          )}
+                        </p>
+                      </div>
+                    )
+                  })}
                 </div>
               ) : null}
             </TraceStage>
             <TraceStage
-              title="Review lineage"
+              title="Reviewer feedback"
+              stage={{
+                stageLabel: "Stage 5 · human-in-the-loop",
+                internalRef: "classification_reviews / topic_review_events · admin: Stage 5: Topic Review",
+              }}
               available={trace.availability.review}
               meta={[
                 ["total_reviews", String(trace.stages.review.total_reviews)],
