@@ -52,11 +52,20 @@ Single canonical ingestion contract used across all phases:
 - **Phase 3:** implement admin evidence panel behavior for imported evidence inspection.
 
 ## Testing
-Run only tests relevant to the active phase:
-- **Phase 1:** schema parsing edge cases, redaction/normalization, ingestion route success/failure.
-- **Phase 2:** CLI argument/default/error tests + collector-to-ingestion integration tests.
-- **Phase 3:** GitHub fetch/map/ingest integration + admin panel UI/API behavior tests.
+Split tests into execution tiers:
+- **Tier A (must pass):** schema parsing, redaction/normalization, API unconfirmed rejection + valid acceptance, classifier request body.
+- **Tier B (should pass):** log parser matrix, GitHub body builder.
+- **Tier C (nice-to-have for phase):** CLI interaction tests.
+
+Run only tests relevant to the active phase and applicable tiers:
+- **Phase 1:** prioritize Tier A coverage for schema/redaction/API behavior.
+- **Phase 2:** include Tier A plus Tier C CLI argument/default/error and collector-to-ingestion integration tests.
+- **Phase 3:** include Tier A plus Tier B GitHub fetch/map/ingest integration + admin panel UI/API behavior tests.
 - For every phase, verify future-phase production behavior is not prematurely implemented.
+
+Execution rules:
+- **If any Tier A test fails, do not proceed to final summary.**
+- **If Tier B or Tier C tests are omitted, list the exact missing tests and why they were omitted.**
 
 ## Acceptance criteria
 A run is complete only when all are true for the active phase:
@@ -69,3 +78,58 @@ A run is complete only when all are true for the active phase:
    - changed files and exported interfaces,
    - known gaps/risks/TODO stubs,
    - exact tests run with pass/fail.
+
+
+## Unified release gates (single source of truth)
+This file is the canonical source for phased release criteria, including required files, status reporting, exit criteria, and verification requirements.
+
+### Status format (required)
+Use `PASS | FAIL | PARTIAL` for each phase and each required file.
+
+- **PASS**: all required files and exit criteria are satisfied, and required verification/tests pass.
+- **PARTIAL**: some required files or criteria are complete, but one or more required items are missing/inconclusive.
+- **FAIL**: critical required files/criteria are missing, or required verification/tests fail.
+
+When reporting status, include: (1) phase status, (2) short rationale, (3) failing/missing criteria bullets, (4) exact verification/tests executed.
+
+### Phase 1 — Feedback Contract + Server Ingestion
+**Required files:** `lib/codex-feedback/schema.ts`, `app/api/feedback/codex/route.ts`, `tests/**` for schema+ingestion.
+
+**Exit criteria:**
+- schema runtime + TS exports exist;
+- `source === "codex-self-report"`;
+- `schema_version: "codex_issue_context.v1"`;
+- strict object validation;
+- server rejects unconfirmed submissions;
+- structured errors + deterministic success envelope;
+- redaction before persistence/logging.
+
+**Required verification/tests:** schema edge cases; API rejection/acceptance; method/body-size guardrails; structured errors.
+
+### Phase 2 — Local Collector CLI
+**Required files:** `packages/codex-issue-collector/src/cli.ts`, supporting CLI modules, `tests/**` for command behavior/submission flow.
+
+**Exit criteria:** supports `capture|report|submit|github|doctor|preview`; invalid usage non-zero + help; failures propagate; preview avoids network; machine-readable mode separates stdout/stderr.
+
+**Required verification/tests:** command matrix; exit-code propagation; dry-run no-network; collector-to-ingestion integration.
+
+### Phase 3 — GitHub Issue Integration
+**Required files:** GitHub provider ingestion/fetch/map files, issue body builder modules, `tests/**` for fetch/map/ingest + body building.
+
+**Exit criteria:** canonical mapping without drift; deterministic body sections/order; preserves Phase 1 redaction/privacy; actionable non-secret diagnostics.
+
+**Required verification/tests:** mapping matrix, body builder structure/snapshot tests, end-to-end ingest simulation.
+
+### Phase 4 — Admin Evidence Panel
+**Required files:** admin evidence UI components, admin evidence APIs/routes, shared evidence display types/selectors, `tests/**` for UI/API behavior.
+
+**Exit criteria:** evidence loads/renders for selected report; no sensitive leakage; deterministic loading/empty/error/success states; UI evidence matches canonical payload.
+
+**Required verification/tests:** API auth/shape/errors; UI state tests; sensitive-value non-render regression.
+
+### Phase 5 — Classification Quality Loop
+**Required files:** classifier payload handling modules, review/feedback loop files, quality metrics/audit modules, `tests/**` for classifier quality + review workflows.
+
+**Exit criteria:** stable validated classifier request body; adjudication/feedback loop supported; metrics detect regressions; prior phase contracts remain compatible.
+
+**Required verification/tests:** classifier body validation; review workflow paths; known-edge regression tests; cross-phase schema compatibility test.
