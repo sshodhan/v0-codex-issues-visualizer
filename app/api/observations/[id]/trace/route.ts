@@ -60,15 +60,15 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       )
       .eq("observation_id", observationId)
       .order("created_at", { ascending: false }),
-    // Topic / regex_topic classifier (Layer 0). Joins categories.slug so the
-    // trace page can show "model-quality" instead of the bare category UUID;
-    // the PostgREST embed inflates as a single object at runtime even though
-    // Supabase typings model it as an array (same cast pattern as
-    // app/api/admin/cluster/route.ts).
+    // Topic / regex_topic classifier (Layer 0). Joins categories.slug AND
+    // categories.name so the trace page can show "Bug reports (bug)"
+    // instead of the bare category UUID; the PostgREST embed inflates as
+    // a single object at runtime even though Supabase typings model it
+    // as an array (same cast pattern as app/api/admin/cluster/route.ts).
     supabase
       .from("category_assignments")
       .select(
-        "id, observation_id, algorithm_version, category_id, confidence, evidence, computed_at, categories:category_id(slug)",
+        "id, observation_id, algorithm_version, category_id, confidence, evidence, computed_at, categories:category_id(slug, name)",
       )
       .eq("observation_id", observationId)
       .order("computed_at", { ascending: false }),
@@ -86,7 +86,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
     confidence: number | null
     evidence: unknown
     computed_at: string | null
-    categories: { slug: string } | null
+    categories: { slug: string; name: string } | null
   }>
 
   if (
@@ -117,7 +117,13 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
   // Source row is fetched alongside cluster + review details so the trace
   // page can render a human-readable source name/slug instead of just the
   // raw `sources.id` UUID surfaced on `mv_observation_current.source_id`.
-  const [clustersRes, reviewsRes, sourceRes] = await Promise.all([
+  // Family classification (Stage 4 sub-product, cluster-level) is fetched
+  // here too — one row per cluster, append-only history. We pull every
+  // historical row for the active cluster so the trace can show the
+  // current interpretation plus the count of revisions, mirroring how
+  // the per-observation `classifications` chain renders.
+  const activeClusterId = observation.cluster_id ?? null
+  const [clustersRes, reviewsRes, sourceRes, familyRes] = await Promise.all([
     clusterIds.length
       ? supabase
           .from("clusters")
@@ -142,9 +148,18 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
           .eq("id", observation.source_id)
           .maybeSingle()
       : Promise.resolve({ data: null, error: null }),
+    activeClusterId
+      ? supabase
+          .from("family_classifications")
+          .select(
+            "id, cluster_id, family_kind, family_title, family_summary, needs_human_review, review_reasons, algorithm_version, evidence, computed_at",
+          )
+          .eq("cluster_id", activeClusterId)
+          .order("computed_at", { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
   ])
 
-  if (clustersRes.error || reviewsRes.error || sourceRes.error) {
+  if (clustersRes.error || reviewsRes.error || sourceRes.error || familyRes.error) {
     return NextResponse.json(
       {
         error: "Failed to enrich trace",
@@ -152,6 +167,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
           clustersRes.error?.message ||
           reviewsRes.error?.message ||
           sourceRes.error?.message ||
+          familyRes.error?.message ||
           "unknown",
       },
       { status: 500 },
@@ -161,6 +177,27 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
   const sourceRow = (sourceRes.data ?? null) as { id: string; slug: string; name: string } | null
   const clustersById = new Map((clustersRes.data ?? []).map((c) => [c.id, c]))
   const activeCluster = observation.cluster_id ? clustersById.get(observation.cluster_id) ?? null : null
+  const familyRows = (familyRes.data ?? []) as Array<{
+    id: string
+    cluster_id: string
+    family_kind: string | null
+    family_title: string | null
+    family_summary: string | null
+    needs_human_review: boolean | null
+    review_reasons: unknown
+    algorithm_version: string | null
+    // `family_classifications` does NOT have its own `model_used` /
+    // `llm_status` / `created_at` columns — those live on the
+    // `family_classification_current` view (scripts/032), which derives
+    // them from `evidence.llm.{status,model}` and `computed_at`. We
+    // mirror that derivation server-side rather than join the view
+    // because the trace already needs the version count from the base
+    // table.
+    evidence: { llm?: { status?: string | null; model?: string | null } } | null
+    computed_at: string | null
+  }>
+  const latestFamily = familyRows[0] ?? null
+  const latestFamilyLlm = latestFamily?.evidence?.llm ?? null
   const reviewsByClassification = new Map<string, unknown[]>()
   for (const review of reviewsRes.data ?? []) {
     const key = review.classification_id as string
@@ -197,6 +234,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       category: categoryAssignments.length > 0,
       clustering: clusterMemberships.length > 0,
       classification: classifications.length > 0,
+      family: familyRows.length > 0,
       review: (reviewsRes.data ?? []).length > 0,
     },
     stages: {
@@ -231,6 +269,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
         latest_computed_at: categoryAssignments[0]?.computed_at ?? null,
         algorithm_version: categoryAssignments[0]?.algorithm_version ?? null,
         winner_slug: categoryAssignments[0]?.categories?.slug ?? null,
+        winner_name: categoryAssignments[0]?.categories?.name ?? null,
         confidence: categoryAssignments[0]?.confidence ?? null,
         evidence: categoryAssignments[0]?.evidence ?? null,
         total_versions: categoryAssignments.length,
@@ -254,6 +293,25 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
         total_versions: classifications.length,
         chain_head_id: latestClassification?.id ?? null,
         lineage,
+      },
+      // Family classification (Stage 4 sub-product, cluster-level —
+      // distinct from per-observation classification above). Heuristic-
+      // authoritative on family_kind; LLM enriches title/summary but
+      // cannot override (lib/storage/family-classification.ts:165). One
+      // append-only row per cluster per algorithm bump; we surface the
+      // most recent and the count of revisions.
+      family: {
+        cluster_id: activeClusterId,
+        latest_computed_at: latestFamily?.computed_at ?? null,
+        latest_algorithm_version: latestFamily?.algorithm_version ?? null,
+        latest_model_used: latestFamilyLlm?.model ?? null,
+        latest_llm_status: latestFamilyLlm?.status ?? null,
+        family_kind: latestFamily?.family_kind ?? null,
+        family_title: latestFamily?.family_title ?? null,
+        family_summary: latestFamily?.family_summary ?? null,
+        needs_human_review: latestFamily?.needs_human_review ?? null,
+        review_reasons: latestFamily?.review_reasons ?? null,
+        total_versions: familyRows.length,
       },
       review: {
         total_reviews: (reviewsRes.data ?? []).length,
