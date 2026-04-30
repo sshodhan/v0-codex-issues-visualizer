@@ -347,7 +347,11 @@ const CATEGORY_PATTERNS: Record<string, CategoryPattern[]> = {
     { phrase: "billing details", weight: 4 },
     { phrase: "billing", weight: 3, wholeWord: true },
     { phrase: "pricing", weight: 4, wholeWord: true },
-    { phrase: "subscription", weight: 3, wholeWord: true },
+    // v7: `subscription` removed. Audit (Q5) showed 92% of body matches
+    // were GitHub issue-template boilerplate ("### What subscription do
+    // you have?  Pro") rather than real pricing reports. The other
+    // phrases (`billing`, `quota`, `credits`, `pro plan`, `team plan`,
+    // `enterprise plan`, `free tier`) carry the legitimate signal.
     { phrase: "free tier", weight: 3 },
     { phrase: "free plan", weight: 3 },
     { phrase: "pro plan", weight: 3 },
@@ -471,6 +475,47 @@ function countMatches(text: string, phrase: string, wholeWord = false): number {
 // context" (model-quality), not on the bracket tag.
 const TITLE_TEMPLATE_PREFIX_RE = /^\s*\[(?:bug|feature|feat|request|question|docs?|rfc)\]\s*/i
 
+// v7: GitHub issue-template metadata fields. Strips `### Header` followed
+// by one short answer line, but only when the heading text contains a
+// metadata keyword. Catches the dominant pricing-false-positive shape:
+//
+//   ### What subscription do you have?
+//   Pro
+//
+//   ### What plan are you on?
+//   Pro plan
+//
+//   ### Codex CLI version
+//   0.20.5
+//
+// without touching prose-style `### Reproduction steps` or
+// `### Expected behavior` sections that genuinely belong to scoring.
+// The keyword whitelist preserves legitimate prose headings like
+// `### Why is plan caching slow?` (because the answer paragraph beneath
+// is body content, not metadata); the [^\n]{1,120} answer-line cap
+// further protects multi-paragraph prose. Audit (Q3 + visible-list
+// screenshots, 2026-04-29): ~80% of pricing-tagged production rows
+// were template-metadata leaks of this shape, not real pricing reports.
+// See docs/SCORING.md and scripts/033_topic_classifier_v7_bump.sql.
+const BODY_TEMPLATE_METADATA_KEYWORDS = [
+  "subscription",
+  "plan",
+  "tier",
+  "model",
+  "version",
+  "operating system",
+  "os",
+  "environment",
+  "platform",
+  "browser",
+].join("|")
+const BODY_TEMPLATE_HEADER_RE = new RegExp(
+  String.raw`^###\s+[^\n]*\b(?:` +
+    BODY_TEMPLATE_METADATA_KEYWORDS +
+    String.raw`)\b[^\n]*\n[^\n]{1,120}\n?`,
+  "gim",
+)
+
 // v5: Title is weighted 4× over body. Headlines are short and high-signal;
 // bodies are long and dilute the score with incidental terminology. Without
 // this multiplier, a 2,000-word body's incidental "error" mentions (each
@@ -478,12 +523,21 @@ const TITLE_TEMPLATE_PREFIX_RE = /^\s*\[(?:bug|feature|feat|request|question|doc
 // One title hit at weight 2 ≥ eight body hits at weight 1.
 const TITLE_WEIGHT_MULTIPLIER = 4
 
-// v5: Per-slug threshold overrides. The mechanism ships in v5 but overrides
-// are intentionally left empty — title/body weighting and template stripping
-// already fix the model-quality=0 recall issue. Threshold tuning should wait
-// until golden-set / backfill evidence shows a concrete false-positive need
-// for a specific slug.
-const SLUG_THRESHOLD: Partial<Record<string, number>> = {}
+// v5: Per-slug threshold overrides. The mechanism ships in v5; v7 adds the
+// first override after audit evidence (Q3 + visible-list screenshots,
+// 2026-04-29) showed a concrete false-positive need for `pricing`.
+//
+// v7 — pricing: 4. With the v6 weight-3 `subscription` phrase removed and
+// body-template stripping in place, the remaining single-word pricing
+// phrases (`billing`, `credits`, `quota`, `pricing`, `cost`, `expensive`)
+// at weight ≤ 3 could still be sole winners on incidental body mentions.
+// Threshold = 4 means a solo pricing phrase needs at least one weight-4
+// phrase (e.g., `quota exceeded`, `5-hour limit`, `out of credits`) or
+// two distinct weight ≥ 2 phrases. Real pricing reports clear this;
+// stray mentions don't.
+const SLUG_THRESHOLD: Partial<Record<string, number>> = {
+  pricing: 4,
+}
 
 function thresholdFor(slug: string): number {
   return SLUG_THRESHOLD[slug] ?? 2
@@ -501,7 +555,7 @@ export interface TopicEvidenceMatch {
 }
 
 export interface TopicEvidence {
-  algorithm_version: "v6"
+  algorithm_version: "v7"
   classifier_type: "regex_topic"
   input: {
     title_present: boolean
@@ -520,6 +574,16 @@ export interface TopicEvidence {
     margin: number
     threshold: number
     confidence_proxy: number
+    // v7: only set on the margin-0 abstain branch. `winner` is "other"
+    // in that case, but operators auditing why a row became "other"
+    // need to see the two slugs that tied — otherwise the data
+    // necessary to refine phrases / weights is lost. abstain_reason
+    // discriminates this case from the other "winner=other" branches
+    // (no slug clears its threshold; winner slug not in the live
+    // categories table).
+    abstained_winner?: string
+    abstained_runner_up?: string
+    abstain_reason?: "margin_0_tie"
   }
   matched_phrases: TopicEvidenceMatch[]
 }
@@ -604,6 +668,31 @@ function scoreSegment(
 //     — only the algorithm_version discriminator string shifts to "v6".
 //     See docs/SCORING.md for the full changelog and the additionalContext
 //     classification rule.
+//
+// v7 changes (scripts/033_topic_classifier_v7_bump.sql):
+//   Pricing-only false-positive fix. Audit (Q3 disagreement query +
+//   visible-list screenshots, 2026-04-29) found ~80% of pricing-tagged
+//   production rows were misclassified — clear bugs (shell escaping,
+//   compaction failure, MCP failures, model capacity, notarization,
+//   /clear config, etc.) leaking into pricing through GitHub
+//   issue-template metadata. Four targeted changes:
+//     - Removed `subscription` from CATEGORY_PATTERNS.pricing (weight 3,
+//       wholeWord). Q5 showed 92% of body-`subscription` matches were
+//       template boilerplate.
+//     - BODY_TEMPLATE_HEADER_RE strips `### <metadata-header>\n<short
+//       answer>` from body before phrase scoring. Keyword-whitelisted to
+//       protect prose headings.
+//     - Margin-0 abstain rule: when the top winner ties the runner-up,
+//       return "other" with confidence 0 instead of falling back to
+//       Object.entries insertion order (which deterministically favored
+//       `pricing` over `model-quality`).
+//     - SLUG_THRESHOLD.pricing = 4 (defense in depth) so no lone weight-3
+//       pricing phrase can be the sole signal. Real pricing reports
+//       clear this comfortably.
+//   No taxonomy / slug-list changes; the 11-slug Topic taxonomy is
+//   unchanged. Evidence shape is unchanged — only the algorithm_version
+//   discriminator string shifts to "v7" and the scoring object now
+//   carries pricing's threshold override. See docs/SCORING.md §11.9.
 export function categorizeIssue(
   title: string,
   body: string,
@@ -613,7 +702,10 @@ export function categorizeIssue(
   const templateMatch = rawTitle.match(TITLE_TEMPLATE_PREFIX_RE)
   const templatePrefix = templateMatch ? templateMatch[0].trim() : null
   const normalizedTitle = rawTitle.toLowerCase().replace(TITLE_TEMPLATE_PREFIX_RE, "")
-  const normalizedBody = (body ?? "").toLowerCase()
+  const rawBody = body ?? ""
+  const strippedBody = rawBody.replace(BODY_TEMPLATE_HEADER_RE, "")
+  const bodyTemplateStripped = strippedBody !== rawBody
+  const normalizedBody = strippedBody.toLowerCase()
 
   const titleSeg = scoreSegment(normalizedTitle, "title", TITLE_WEIGHT_MULTIPLIER)
   const bodySeg = scoreSegment(normalizedBody, "body", 1)
@@ -638,7 +730,7 @@ export function categorizeIssue(
     title_present: normalizedTitle.length > 0,
     body_present: normalizedBody.length > 0,
     template_prefix: templatePrefix,
-    template_stripped: templatePrefix !== null,
+    template_stripped: templatePrefix !== null || bodyTemplateStripped,
   }
   const baseScoring = {
     title_multiplier: TITLE_WEIGHT_MULTIPLIER,
@@ -654,7 +746,7 @@ export function categorizeIssue(
       slug: "other",
       confidenceProxy: 0,
       evidence: {
-        algorithm_version: "v6",
+        algorithm_version: "v7",
         classifier_type: "regex_topic",
         input: baseInput,
         scoring: {
@@ -665,6 +757,42 @@ export function categorizeIssue(
           margin: 0,
           threshold: thresholdFor("other"),
           confidence_proxy: 0,
+        },
+        matched_phrases,
+      },
+    }
+  }
+
+  // v7: margin-0 abstain. When the top winner ties the runner-up the
+  // pre-v7 tiebreak fell back to Object.entries() insertion order in
+  // CATEGORY_PATTERNS, which deterministically favored `pricing`
+  // (declared before `model-quality`) — the dominant non-template
+  // pricing-false-positive shape. Returning "other" with confidence 0
+  // hands the row to Stage 4 (LLM) instead of producing an arbitrary
+  // verdict. abstained_winner / abstained_runner_up preserve the two
+  // tied slugs in evidence so phrase/weight refinement still has the
+  // data it needs. See docs/SCORING.md §11.9.
+  if (ranked.length > 1 && ranked[0][1] === ranked[1][1]) {
+    if (!otherCategoryId) return null
+    return {
+      categoryId: otherCategoryId,
+      slug: "other",
+      confidenceProxy: 0,
+      evidence: {
+        algorithm_version: "v7",
+        classifier_type: "regex_topic",
+        input: baseInput,
+        scoring: {
+          ...baseScoring,
+          scores,
+          winner: "other",
+          runner_up: ranked[1][0],
+          margin: 0,
+          threshold: thresholdFor("other"),
+          confidence_proxy: 0,
+          abstained_winner: ranked[0][0],
+          abstained_runner_up: ranked[1][0],
+          abstain_reason: "margin_0_tie",
         },
         matched_phrases,
       },
@@ -685,7 +813,7 @@ export function categorizeIssue(
       slug: "other",
       confidenceProxy: 0,
       evidence: {
-        algorithm_version: "v6",
+        algorithm_version: "v7",
         classifier_type: "regex_topic",
         input: baseInput,
         scoring: {
@@ -707,7 +835,7 @@ export function categorizeIssue(
     slug: winnerSlug,
     confidenceProxy,
     evidence: {
-      algorithm_version: "v6",
+      algorithm_version: "v7",
       classifier_type: "regex_topic",
       input: baseInput,
       scoring: {
