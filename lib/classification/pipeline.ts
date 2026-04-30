@@ -7,6 +7,7 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 import { extractResponsesOutputText, requestClassifierResponse } from "@/lib/classification/openai-responses"
 import { recordClassification } from "@/lib/storage/derivations"
 import { recordProcessingEvent } from "@/lib/storage/processing-events"
+import { computeCompoundKey, extractBugFingerprint, type BugFingerprint } from "@/lib/scrapers/bug-fingerprint"
 import {
   synthesizeObservationReportText,
   type ClassificationCandidate,
@@ -320,4 +321,124 @@ export async function processObservationClassificationQueue(
     skipped,
     failures,
   }
+}
+
+// Shared orchestration for the on-demand single-observation classify path.
+// app/api/observations/[id]/classify (POST) and the unified
+// /rerun?stage=classification entry both produce identical work — fetch
+// the observation row, resolve the source slug, derive regex env hints,
+// synthesize report text, call classifyReport, and recompute the compound
+// cluster-key label. This helper centralises that flow so the routes are
+// just HTTP shapers; the tagged outcome lets each route map a failure
+// to the appropriate status code without re-implementing the branching.
+export interface ObservationLookupReader {
+  from: (table: string) => any
+}
+
+export interface RunClassificationDeps {
+  supabase: ObservationLookupReader
+  admin: AdminClient | null
+}
+
+export type RunClassificationOutcome =
+  | {
+      ok: true
+      regex: BugFingerprint
+      result: Awaited<ReturnType<typeof classifyReport>>
+      compoundKey: string | null
+    }
+  | { ok: false; status: 404; code: "not_found" }
+  | { ok: false; status: 500; code: "lookup_failed"; detail: string }
+  | { ok: false; status: 503; code: "missing_api_key" }
+  | { ok: false; status: 400; code: "no_text"; regex: BugFingerprint }
+  | { ok: false; status: 422; code: "validation_error"; detail: string; regex: BugFingerprint }
+  | { ok: false; status: 502; code: "classifier_error"; detail: string; regex: BugFingerprint }
+
+export async function runClassificationForObservation(
+  observationId: string,
+  deps: RunClassificationDeps,
+): Promise<RunClassificationOutcome> {
+  const { supabase, admin } = deps
+
+  const { data: row, error: fetchError } = await supabase
+    .from("mv_observation_current")
+    .select("observation_id, title, content, url, source_id")
+    .eq("observation_id", observationId)
+    .maybeSingle()
+
+  if (fetchError) {
+    return { ok: false, status: 500, code: "lookup_failed", detail: fetchError.message }
+  }
+  if (!row) {
+    return { ok: false, status: 404, code: "not_found" }
+  }
+
+  const regex = extractBugFingerprint({ title: row.title, content: row.content ?? null })
+
+  if (!process.env.OPENAI_API_KEY) {
+    return { ok: false, status: 503, code: "missing_api_key" }
+  }
+
+  const { data: sourceRow } = await supabase
+    .from("sources")
+    .select("slug")
+    .eq("id", row.source_id)
+    .maybeSingle()
+
+  const reportText = synthesizeObservationReportText({
+    title: row.title,
+    content: row.content ?? null,
+    url: row.url ?? null,
+    sourceSlug: sourceRow?.slug ?? null,
+  })
+  if (!reportText.trim()) {
+    return { ok: false, status: 400, code: "no_text", regex }
+  }
+
+  // Thread regex-derived env/repro into the classifier so the user-turn
+  // payload carries structured context beyond title+body. classifyReport
+  // owns validation, escalation, hard-review rules, and the write to
+  // `classifications`; we are only enriching the prompt here.
+  const env: Record<string, string> = {}
+  if (regex.cli_version) env.cli_version = regex.cli_version
+  if (regex.os) env.os = regex.os
+  if (regex.shell) env.shell = regex.shell
+  if (regex.editor) env.editor = regex.editor
+  if (regex.model_id) env.model_id = regex.model_id
+
+  let result: Awaited<ReturnType<typeof classifyReport>>
+  try {
+    result = await classifyReport(
+      {
+        report_text: reportText,
+        observation_id: observationId,
+        env: Object.keys(env).length > 0 ? env : undefined,
+        repro: regex.repro_markers > 0 ? { count: regex.repro_markers } : undefined,
+      },
+      { supabase: admin },
+    )
+  } catch (error) {
+    if (error instanceof ClassificationValidationError) {
+      return {
+        ok: false,
+        status: error.status as 422,
+        code: "validation_error",
+        detail: error.message,
+        regex,
+      }
+    }
+    return {
+      ok: false,
+      status: 502,
+      code: "classifier_error",
+      detail: error instanceof Error ? error.message : "unknown_error",
+      regex,
+    }
+  }
+
+  // Read-time compound-key derivation (same source of truth as the
+  // SignalLayers panel; outcome E in docs/ARCHITECTURE.md).
+  const compoundKey = (await computeCompoundKey(supabase as any, observationId)) ?? null
+
+  return { ok: true, regex, result, compoundKey }
 }

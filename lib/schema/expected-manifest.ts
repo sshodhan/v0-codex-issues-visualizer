@@ -396,10 +396,12 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     sentiment: "v2",
     // 025 bumped category to v5 (structural classifier fixes); 027
     // bumped to v6 (phrase-table maintenance pass — added/removed
-    // phrases per low-margin review, no architecture change). If the
-    // live registry still shows v4 or v5, apply scripts/025–027 in
-    // order.
-    category: "v6",
+    // phrases per low-margin review, no architecture change); 033
+    // bumped to v7 (pricing-only false-positive fix: removed
+    // `subscription`, added body-template metadata stripping, margin-0
+    // abstain rule, and SLUG_THRESHOLD.pricing=4). If the live
+    // registry still shows v4/v5/v6, apply scripts/025–033 in order.
+    category: "v7",
     impact: "v2",
     competitor_mention: "v2",
     // Classification stays at v1 (011 doesn't bump it).

@@ -2,6 +2,19 @@
 
 If the codebase feels overwhelming, start here.
 
+## Codex execution policy (single phase per run)
+
+This README is a quick repo orientation guide, not the full Codex run prompt.
+
+The full phased prompt now lives in:
+- `docs/CODEX_PHASED_EXECUTION_PROMPT.md`
+
+Use that docs file as the source of truth for:
+- single-phase constraints,
+- phase-by-phase scope boundaries,
+- required tests and acceptance criteria,
+- stop rule + handoff checklist output.
+
 ## 1) 90-second mental model
 
 The app has **four big layers**:

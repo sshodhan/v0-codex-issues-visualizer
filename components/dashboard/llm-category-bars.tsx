@@ -62,8 +62,8 @@ export function LlmCategoryBars({
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-border/60 bg-gradient-to-b from-muted/10 to-card p-4">
-      <ul className="space-y-1.5">
+    <div className="space-y-2 rounded-lg border border-border/60 bg-gradient-to-b from-muted/10 to-card p-2 sm:p-4">
+      <ul className="space-y-1">
         {visible.map((r) => {
           const friendly = r.name.replace(/[-_]/g, " ")
           const color = llmColorForName(r.name)
@@ -88,35 +88,35 @@ export function LlmCategoryBars({
                     click()
                   }
                 }}
-                className={`group grid w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring grid-cols-[14rem_1fr_3rem] sm:grid-cols-[16rem_1fr_3.5rem] ${
+                className={`group grid w-full items-center gap-1.5 sm:gap-3 rounded-md px-1.5 sm:px-2 py-1.5 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring grid-cols-[7rem_1fr_2.5rem] sm:grid-cols-[16rem_1fr_3.5rem] ${
                   isActive ? "bg-muted/60 ring-1 ring-border" : ""
                 }`}
                 aria-label={`${friendly}: ${r.count} reports (${sharePct}% of classified)${
                   isActive ? ", currently selected" : ""
                 }`}
               >
-                <span className="flex min-w-0 items-center gap-2">
+                <span className="flex min-w-0 items-center gap-1.5 sm:gap-2">
                   <span
                     aria-hidden
-                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                    className="inline-block h-2 w-2 sm:h-2.5 sm:w-2.5 shrink-0 rounded-full"
                     style={{ backgroundColor: color }}
                   />
                   <span
-                    className="truncate text-sm text-foreground/90"
+                    className="truncate text-xs sm:text-sm text-foreground/90"
                     title={friendly}
                   >
                     {friendly}
                   </span>
                 </span>
-                <span className="block h-2 rounded-sm bg-muted/40" aria-hidden>
+                <span className="block h-1.5 sm:h-2 rounded-sm bg-muted/40" aria-hidden>
                   <span
                     className="block h-full rounded-sm transition-[width] duration-200"
                     style={{ width: `${pct}%`, backgroundColor: color }}
                   />
                 </span>
-                <span className="text-right text-sm tabular-nums text-foreground">
+                <span className="text-right text-[10px] sm:text-sm tabular-nums text-foreground">
                   {r.count}
-                  <span className="ml-1 text-[10px] text-muted-foreground">
+                  <span className="ml-0.5 sm:ml-1 text-[8px] sm:text-[10px] text-muted-foreground">
                     {sharePct}%
                   </span>
                 </span>

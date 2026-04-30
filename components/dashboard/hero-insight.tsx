@@ -233,71 +233,71 @@ export function HeroInsight({
       >
         <div className="absolute top-0 left-0 right-0 h-1 bg-border" />
 
-        <CardContent className="p-6 md:p-8">
-          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6">
+        <CardContent className="p-3 sm:p-6 md:p-8">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 sm:gap-6">
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+              <p className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2 sm:mb-3">
                 Top story · last 72 hours
               </p>
 
-              <div className="flex flex-wrap items-center gap-2 mb-4">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-2 sm:mb-4">
                 <Badge
                   variant="outline"
-                  className="bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20 font-semibold"
+                  className="bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20 font-semibold text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-0.5"
                 >
-                  <AlertTriangle className="h-3 w-3 mr-1" />
+                  <AlertTriangle className="h-2.5 w-2.5 sm:h-3 sm:w-3 mr-0.5 sm:mr-1" />
                   Breaking now
                 </Badge>
                 <Badge
                   variant="outline"
                   className={cn(
-                    "font-medium",
+                    "font-medium text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-0.5",
                     isRising
                       ? "bg-[var(--negative)]/10 text-[var(--negative)] border-[var(--negative)]/20"
                       : "bg-[var(--positive)]/10 text-[var(--positive)] border-[var(--positive)]/20"
                   )}
                 >
                   {isRising ? (
-                    <TrendingUp className="h-3 w-3 mr-1" />
+                    <TrendingUp className="h-2.5 w-2.5 sm:h-3 sm:w-3 mr-0.5 sm:mr-1" />
                   ) : (
-                    <TrendingDown className="h-3 w-3 mr-1" />
+                    <TrendingDown className="h-2.5 w-2.5 sm:h-3 sm:w-3 mr-0.5 sm:mr-1" />
                   )}
                   {isRising ? "+" : ""}
                   {metrics.momentum}% vs prior 72h
                 </Badge>
               </div>
 
-              <h2 className="text-3xl md:text-4xl font-bold text-foreground mb-2 text-balance leading-tight">
+              <h2 className="text-xl sm:text-3xl md:text-4xl font-bold text-foreground mb-1 sm:mb-2 text-balance leading-tight">
                 {headline}
               </h2>
-              <p className="text-muted-foreground text-lg md:text-xl mb-6 leading-relaxed">
+              <p className="text-muted-foreground text-sm sm:text-lg md:text-xl mb-3 sm:mb-6 leading-relaxed">
                 {subheadline}
               </p>
 
-              <div className="flex flex-wrap gap-6 md:gap-8 mb-6">
+              <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:gap-6 md:gap-8 mb-3 sm:mb-6">
                 <div className="flex flex-col">
-                  <span className="text-2xl md:text-3xl font-bold text-foreground tabular-nums">
+                  <span className="text-lg sm:text-2xl md:text-3xl font-bold text-foreground tabular-nums">
                     {metrics.total}
                   </span>
-                  <span className="text-sm text-muted-foreground">signals in window</span>
+                  <span className="text-[10px] sm:text-sm text-muted-foreground">signals</span>
                 </div>
                 <div className="flex flex-col">
-                  <span className="text-2xl md:text-3xl font-bold text-[var(--negative)] tabular-nums">
+                  <span className="text-lg sm:text-2xl md:text-3xl font-bold text-[var(--negative)] tabular-nums">
                     {Math.round(metrics.negativeShare * 100)}%
                   </span>
-                  <span className="text-sm text-muted-foreground">negative share</span>
+                  <span className="text-[10px] sm:text-sm text-muted-foreground">negative</span>
                 </div>
                 <div className="flex flex-col">
-                  <span className="text-2xl md:text-3xl font-bold text-foreground tabular-nums">
+                  <span className="text-lg sm:text-2xl md:text-3xl font-bold text-foreground tabular-nums">
                     {metrics.sourcesReporting}
                   </span>
-                  <span className="text-sm text-muted-foreground">sources reporting</span>
+                  <span className="text-[10px] sm:text-sm text-muted-foreground">sources</span>
                 </div>
               </div>
 
               {cloud}
 
-              <p className="mt-4 text-xs text-muted-foreground leading-relaxed max-w-2xl">
+              <p className="hidden sm:block mt-4 text-xs text-muted-foreground leading-relaxed max-w-2xl">
                 Urgency ranks categories using recent volume, momentum, impact, and
                 source diversity in a 72h window — not raw post count alone.{" "}
                 <MethodologyTriggerButton
@@ -315,20 +315,20 @@ export function HeroInsight({
             </div>
 
             <div className="lg:w-96 lg:pl-6 lg:border-l lg:border-border">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+              <h3 className="text-[10px] sm:text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2 sm:mb-3">
                 Representative issues
               </h3>
-              <div className="space-y-3">
+              <div className="space-y-2 sm:space-y-3">
                 {topIssues.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No sample issues available.</p>
                 ) : (
                   topIssues.slice(0, 3).map((issue, index) => (
                     <div
                       key={issue.id}
-                      className="bg-secondary/50 rounded-lg p-3 hover:bg-secondary transition-colors"
+                      className="bg-secondary/50 rounded-md sm:rounded-lg p-2 sm:p-3 hover:bg-secondary transition-colors"
                     >
-                      <div className="flex items-start gap-2">
-                        <span className="text-xs font-bold text-muted-foreground shrink-0">
+                      <div className="flex items-start gap-1.5 sm:gap-2">
+                        <span className="text-[10px] sm:text-xs font-bold text-muted-foreground shrink-0">
                           #{index + 1}
                         </span>
                         <div className="min-w-0 flex-1">
@@ -337,19 +337,19 @@ export function HeroInsight({
                               href={issue.url}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-sm font-medium text-foreground hover:text-primary line-clamp-2 flex items-start gap-1"
+                              className="text-xs sm:text-sm font-medium text-foreground hover:text-primary line-clamp-2 flex items-start gap-1"
                             >
                               <span className="flex-1">{issue.title}</span>
-                              <ExternalLink className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" />
+                              <ExternalLink className="h-2.5 w-2.5 sm:h-3 sm:w-3 shrink-0 mt-0.5 text-muted-foreground" />
                             </a>
                           ) : (
-                            <p className="text-sm font-medium text-foreground line-clamp-2">
+                            <p className="text-xs sm:text-sm font-medium text-foreground line-clamp-2">
                               {issue.title}
                             </p>
                           )}
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="text-xs text-muted-foreground">{issue.source}</span>
-                            <span className="text-xs text-muted-foreground">
+                          <div className="flex items-center gap-1.5 sm:gap-2 mt-0.5 sm:mt-1">
+                            <span className="text-[10px] sm:text-xs text-muted-foreground">{issue.source}</span>
+                            <span className="text-[10px] sm:text-xs text-muted-foreground">
                               Impact: {issue.impact_score.toFixed(1)}
                             </span>
                           </div>
@@ -360,25 +360,23 @@ export function HeroInsight({
                 )}
               </div>
 
-              <div className="flex flex-col gap-3 mt-6">
+              <div className="flex flex-col gap-2 sm:gap-3 mt-3 sm:mt-6">
                 <div className="w-full">
                   <Button
                     onClick={() => onExploreIssues(categorySlug)}
-                    className="gap-2 w-full"
-                    size="lg"
+                    className="gap-1.5 sm:gap-2 w-full text-xs sm:text-sm h-8 sm:h-10"
                   >
                     View {category} in issues
-                    <ArrowRight className="h-4 w-4" />
+                    <ArrowRight className="h-3 w-3 sm:h-4 sm:w-4" />
                   </Button>
-                  <p className="mt-1.5 text-xs text-muted-foreground max-w-sm">
+                  <p className="hidden sm:block mt-1.5 text-xs text-muted-foreground max-w-sm">
                     Issues list uses the global time filter: {issueTableTimeLabel} (lead metrics above: last 72h).
                   </p>
                 </div>
                 <Button
                   onClick={() => onNavigateToCategory?.(categorySlug)}
                   variant="outline"
-                  size="lg"
-                  className="gap-2 w-full"
+                  className="gap-1.5 sm:gap-2 w-full text-xs sm:text-sm h-8 sm:h-10"
                 >
                   Review in AI classifications
                 </Button>
@@ -500,24 +498,24 @@ function LlmClassificationCloud({
   const isInteractive = typeof onDrill === "function"
 
   return (
-    <div className="mb-6">
-      <div className="flex items-baseline justify-between gap-3 mb-2">
+    <div className="mb-3 sm:mb-6">
+      <div className="flex items-baseline justify-between gap-2 sm:gap-3 mb-1.5 sm:mb-2">
         {/*
           Heading reads "LLM category" so the noun matches the
           CATEGORY_ENUM field name in lib/classification/taxonomy.ts.
           {categoryName} interpolates the heuristic Topic name (e.g.
           "Bug") — disjoint namespace. See docs/ARCHITECTURE.md §6.0.
         */}
-        <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        <h3 className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           Inside {categoryName} · LLM category
         </h3>
         {breakdown.length > 0 && (
-          <span className="text-xs text-muted-foreground tabular-nums">
+          <span className="text-[10px] sm:text-xs text-muted-foreground tabular-nums">
             {classifiedSharePct}% classified
           </span>
         )}
       </div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-1 sm:gap-1.5">
         {breakdown.map(({ slug, count }) => {
           const palette = llmCategoryPalette(slug)
           const label = llmCategoryLabel(slug)

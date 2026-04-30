@@ -48,6 +48,7 @@ import {
 } from "@/lib/admin/family-classification-review"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import { runWorkerPool } from "@/lib/admin/run-worker-pool"
+import { FAMILY_KIND_LABELS } from "@/lib/classification/family-kind-display"
 
 const ROUTE = "/api/admin/family-classification"
 const REVIEW_ROUTE = "/api/admin/family-classification/review"
@@ -235,14 +236,6 @@ interface BackfillResult {
 // Display-string maps for machine codes that otherwise render as
 // snake_case in the admin UI. Keeping these here (not in the server
 // module) so display-string churn doesn't ripple into evidence rows.
-const FAMILY_KIND_LABELS: Record<string, string> = {
-  coherent_single_issue: "Coherent",
-  mixed_multi_causal: "Mixed (multi-causal)",
-  needs_split_review: "Needs split review",
-  low_evidence: "Low evidence",
-  unclear: "Unclear",
-}
-
 const REVIEW_REASON_LABELS: Record<string, string> = {
   low_classification_coverage: "Low classification coverage",
   high_topic_mixedness: "High topic mixedness",
