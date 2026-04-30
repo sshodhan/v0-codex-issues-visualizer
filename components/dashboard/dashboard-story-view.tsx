@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 import { Button } from "@/components/ui/button"
@@ -212,9 +212,18 @@ export function DashboardStoryView({
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  // Derive directly from the URL each render so back/forward navigation
-  // (and any external `?cloud=` mutation) stays in sync with the toggle.
-  const timelineMode = parseCloudParam(searchParams.get("cloud"))
+  // Local state is the source of truth so clicks render synchronously.
+  // The URL is updated as a side-effect for shareable links + reload
+  // recovery. A separate effect re-syncs state when the URL changes
+  // externally (back/forward navigation, deep-link).
+  const cloudParam = searchParams.get("cloud")
+  const [timelineMode, setTimelineMode] = useState<StoryTimelineMode>(() =>
+    parseCloudParam(cloudParam),
+  )
+  useEffect(() => {
+    const fromUrl = parseCloudParam(cloudParam)
+    setTimelineMode((prev) => (prev === fromUrl ? prev : fromUrl))
+  }, [cloudParam])
   const clusterLookup = useMemo(() => {
     const map = new Map<string, ClusterInfo>()
     // Seed with the long-tail labels first so the per-row enrichment from
@@ -246,6 +255,7 @@ export function DashboardStoryView({
     [issues, clusterLookup, clusterFamilyLookup, timelineMode],
   )
   const handleTimelineModeChange = (mode: StoryTimelineMode) => {
+    setTimelineMode(mode)
     const next = new URLSearchParams(searchParams.toString())
     const cloud = modeToCloudParam(mode)
     if (cloud === null) next.delete("cloud")
