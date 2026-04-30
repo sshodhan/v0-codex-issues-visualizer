@@ -152,10 +152,10 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       ? supabase
           .from("family_classifications")
           .select(
-            "id, cluster_id, family_kind, family_title, family_summary, needs_human_review, review_reasons, llm_status, model_used, algorithm_version, created_at",
+            "id, cluster_id, family_kind, family_title, family_summary, needs_human_review, review_reasons, algorithm_version, evidence, computed_at",
           )
           .eq("cluster_id", activeClusterId)
-          .order("created_at", { ascending: false })
+          .order("computed_at", { ascending: false })
       : Promise.resolve({ data: [], error: null }),
   ])
 
@@ -185,12 +185,19 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
     family_summary: string | null
     needs_human_review: boolean | null
     review_reasons: unknown
-    llm_status: string | null
-    model_used: string | null
     algorithm_version: string | null
-    created_at: string | null
+    // `family_classifications` does NOT have its own `model_used` /
+    // `llm_status` / `created_at` columns — those live on the
+    // `family_classification_current` view (scripts/032), which derives
+    // them from `evidence.llm.{status,model}` and `computed_at`. We
+    // mirror that derivation server-side rather than join the view
+    // because the trace already needs the version count from the base
+    // table.
+    evidence: { llm?: { status?: string | null; model?: string | null } } | null
+    computed_at: string | null
   }>
   const latestFamily = familyRows[0] ?? null
+  const latestFamilyLlm = latestFamily?.evidence?.llm ?? null
   const reviewsByClassification = new Map<string, unknown[]>()
   for (const review of reviewsRes.data ?? []) {
     const key = review.classification_id as string
@@ -295,10 +302,10 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       // most recent and the count of revisions.
       family: {
         cluster_id: activeClusterId,
-        latest_created_at: latestFamily?.created_at ?? null,
+        latest_computed_at: latestFamily?.computed_at ?? null,
         latest_algorithm_version: latestFamily?.algorithm_version ?? null,
-        latest_model_used: latestFamily?.model_used ?? null,
-        latest_llm_status: latestFamily?.llm_status ?? null,
+        latest_model_used: latestFamilyLlm?.model ?? null,
+        latest_llm_status: latestFamilyLlm?.status ?? null,
         family_kind: latestFamily?.family_kind ?? null,
         family_title: latestFamily?.family_title ?? null,
         family_summary: latestFamily?.family_summary ?? null,

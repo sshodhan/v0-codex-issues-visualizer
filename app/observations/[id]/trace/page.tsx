@@ -61,7 +61,7 @@ interface ObservationTraceResponse {
     classification: { latest_created_at: string | null; latest_algorithm_version: string | null; latest_model_used: string | null; total_versions: number; chain_head_id: string | null; lineage: Array<Record<string, unknown>> }
     family: {
       cluster_id: string | null
-      latest_created_at: string | null
+      latest_computed_at: string | null
       latest_algorithm_version: string | null
       latest_model_used: string | null
       latest_llm_status: string | null
@@ -861,8 +861,8 @@ export default function ObservationTracePage() {
                 ["latest_algorithm", trace.stages.family.latest_algorithm_version],
                 ["llm_status", trace.stages.family.latest_llm_status],
                 [
-                  "latest_created_at",
-                  <FormattedDate key="fam" iso={trace.stages.family.latest_created_at} />,
+                  "latest_computed_at",
+                  <FormattedDate key="fam" iso={trace.stages.family.latest_computed_at} />,
                 ],
                 ["versions", String(trace.stages.family.total_versions)],
               ]}

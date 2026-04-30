@@ -67,6 +67,26 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   }
   const admin = createAdminClient()
 
+  // Existence check up-front so we can distinguish "cluster doesn't
+  // exist" (404) from "cluster exists but already has a strong label"
+  // (200 with reason: cluster_already_labelled). Without this check,
+  // both cases collapse into a 0-row orchestrator response and the UI
+  // can't tell them apart.
+  const { data: clusterRow, error: clusterFetchErr } = await admin
+    .from("clusters")
+    .select("id")
+    .eq("id", parsedParams.data.id)
+    .maybeSingle()
+  if (clusterFetchErr) {
+    return NextResponse.json(
+      { error: "lookup_failed", detail: clusterFetchErr.message },
+      { status: 500 },
+    )
+  }
+  if (!clusterRow) {
+    return NextResponse.json({ error: "cluster_not_found" }, { status: 404 })
+  }
+
   try {
     const { summary, entries } = await runClusterLabelBackfill(admin, {
       apply: true,
@@ -75,9 +95,10 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     })
     const entry = entries[0] ?? null
 
-    // candidate_clusters === 0 means the cluster did not match the
-    // candidate filter (label exists with strong confidence). Surface
-    // this distinctly so the UI can suggest passing { force: true }.
+    // candidate_clusters === 0 here means the cluster exists (we just
+    // checked) but did not match the candidate filter — i.e. it
+    // already has a strong label. Surface this distinctly so the UI
+    // can suggest passing { force: true }.
     if (summary.candidate_clusters === 0) {
       return NextResponse.json({
         ok: true,
