@@ -272,6 +272,12 @@ export function useClusterRollup(options: { days?: number; category: string }) {
   const url = qs ? `/api/clusters/rollup?${qs}` : "/api/clusters/rollup"
   const { data, error, isLoading, mutate } = useSWR<{
     clusters: ClusterRollupRow[]
+    // Lightweight {id, label} for every cluster in the window. The full
+    // `clusters` array is capped at the top 50 by volume for the heavy
+    // V3 enrichment; `cluster_labels` covers the long tail so the Story
+    // view's family legend can resolve labels for any cluster_id from
+    // /api/issues, not just the top 50.
+    cluster_labels?: Array<{ id: string; label: string | null }>
     pipeline_state: PipelineStateSummary
   }>(url, fetcher, { refreshInterval: 300_000 })
   return { data, isLoading, isError: error, refresh: mutate }
