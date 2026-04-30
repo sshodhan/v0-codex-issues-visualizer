@@ -28,6 +28,55 @@ export interface ClusterInfo {
   label: string | null
 }
 
+export interface ClusterFamilyInfo {
+  id: string
+  family_title: string | null
+}
+
+export type StoryTimelineMode = "topic" | "cluster_family" | "cluster_label" | "cluster"
+
+/** Parse the `?cloud=` URL parameter into a StoryTimelineMode (topic if absent/unknown). */
+export function parseCloudParam(value: string | null | undefined): StoryTimelineMode {
+  switch (value) {
+    case "family":
+      return "cluster_family"
+    case "label":
+      return "cluster_label"
+    case "cluster":
+      return "cluster"
+    default:
+      return "topic"
+  }
+}
+
+/** Serialize a mode for the `?cloud=` URL parameter. Returns null for the default (topic) so it can be omitted. */
+export function modeToCloudParam(mode: StoryTimelineMode): string | null {
+  switch (mode) {
+    case "cluster_family":
+      return "family"
+    case "cluster_label":
+      return "label"
+    case "cluster":
+      return "cluster"
+    case "topic":
+      return null
+  }
+}
+
+/** Caption phrase describing what `Color = ` means for the active mode. */
+export function captionForMode(mode: StoryTimelineMode): string {
+  switch (mode) {
+    case "topic":
+      return "heuristic category"
+    case "cluster_family":
+      return "family title only (no fallback)"
+    case "cluster_label":
+      return "cluster label only (no fallback)"
+    case "cluster":
+      return "family title → label fallback"
+  }
+}
+
 const FAMILY_PALETTE = [
   "#3b82f6", // blue
   "#10b981", // emerald
@@ -68,6 +117,8 @@ const MAX_POINTS = 240
 export function buildStoryTimeline(
   issues: Issue[],
   clusterLookup?: Map<string, ClusterInfo>,
+  clusterFamilyLookup?: Map<string, ClusterFamilyInfo>,
+  mode: StoryTimelineMode = "topic",
 ): StoryTimelinePoint[] {
   if (issues.length === 0) return []
 
@@ -91,9 +142,15 @@ export function buildStoryTimeline(
     const rScale = Math.min(1, Math.max(0.2, impact / 10))
     const clusterId = i.cluster_id ?? null
     const cluster = clusterId ? clusterLookup?.get(clusterId) : undefined
-    const familyName = clusterId
-      ? cluster?.label?.trim() || "Unlabelled Family"
-      : "Unclustered"
+    const familyTitle = clusterId ? clusterFamilyLookup?.get(clusterId)?.family_title?.trim() : undefined
+    const clusterLabel = cluster?.label?.trim()
+    const familyName = (() => {
+      if (!clusterId) return "Unclustered"
+      if (mode === "cluster_family") return familyTitle || "Pending family classification"
+      if (mode === "cluster_label") return clusterLabel || "Unlabelled cluster"
+      if (mode === "cluster") return familyTitle || clusterLabel || "Pending family classification"
+      return clusterLabel || "Unlabelled Family"
+    })()
     const familyColor = clusterId ? clusterIdToColor(clusterId) : "#6b7280"
     return {
       id: i.id,

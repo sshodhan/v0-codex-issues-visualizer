@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -10,9 +11,21 @@ import {
   type TimelineAnnotation,
   type TimelineHighlight,
 } from "@/components/dashboard/signal-timeline-story"
-import { buildStoryTimeline, type ClusterInfo } from "@/lib/dashboard/story-timeline"
+import {
+  buildStoryTimeline,
+  modeToCloudParam,
+  parseCloudParam,
+  type ClusterFamilyInfo,
+  type ClusterInfo,
+  type StoryTimelineMode,
+} from "@/lib/dashboard/story-timeline"
 import { computeStoryLede } from "@/lib/dashboard/story-lede"
-import type { ClusterRollupRow, FingerprintSurgeResponse, Issue } from "@/hooks/use-dashboard-data"
+import type {
+  ClusterFamilyRow,
+  ClusterRollupRow,
+  FingerprintSurgeResponse,
+  Issue,
+} from "@/hooks/use-dashboard-data"
 import { MIN_DISPLAYABLE_LABEL_CONFIDENCE } from "@/lib/storage/cluster-label-fallback"
 import {
   ArrowDown,
@@ -140,6 +153,7 @@ interface DashboardStoryViewProps {
   onOpenIssuesTable: () => void
   clusterRows?: ClusterRollupRow[] | undefined
   clusterLabels?: Array<{ id: string; label: string | null }> | undefined
+  clusterFamilies?: ClusterFamilyRow[] | undefined
   onOpenClusterInTable: (clusterId: string) => void
   onOpenClusterInTriage: (clusterId: string) => void
   activeClusterId: string | null
@@ -174,6 +188,7 @@ export function DashboardStoryView({
   onOpenIssuesTable,
   clusterRows,
   clusterLabels,
+  clusterFamilies,
   onOpenClusterInTable,
   onOpenClusterInTriage,
   activeClusterId,
@@ -194,6 +209,12 @@ export function DashboardStoryView({
   onOpenDashboardFromAtlas,
   selectedLlmCategorySlug,
 }: DashboardStoryViewProps) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  // Derive directly from the URL each render so back/forward navigation
+  // (and any external `?cloud=` mutation) stays in sync with the toggle.
+  const timelineMode = parseCloudParam(searchParams.get("cloud"))
   const clusterLookup = useMemo(() => {
     const map = new Map<string, ClusterInfo>()
     // Seed with the long-tail labels first so the per-row enrichment from
@@ -211,10 +232,27 @@ export function DashboardStoryView({
     }
     return map
   }, [clusterRows, clusterLabels])
+  const clusterFamilyLookup = useMemo(() => {
+    const map = new Map<string, ClusterFamilyInfo>()
+    if (clusterFamilies) {
+      for (const row of clusterFamilies) {
+        map.set(row.id, { id: row.id, family_title: row.family_title })
+      }
+    }
+    return map
+  }, [clusterFamilies])
   const points = useMemo(
-    () => buildStoryTimeline(issues, clusterLookup),
-    [issues, clusterLookup],
+    () => buildStoryTimeline(issues, clusterLookup, clusterFamilyLookup, timelineMode),
+    [issues, clusterLookup, clusterFamilyLookup, timelineMode],
   )
+  const handleTimelineModeChange = (mode: StoryTimelineMode) => {
+    const next = new URLSearchParams(searchParams.toString())
+    const cloud = modeToCloudParam(mode)
+    if (cloud === null) next.delete("cloud")
+    else next.set("cloud", cloud)
+    const qs = next.toString()
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+  }
   const surges = fingerprintSurges?.surges ?? []
   const newCodes = fingerprintSurges?.new_in_window ?? []
   const showClusterSection = (clusterRows?.length ?? 0) > 0
@@ -381,6 +419,8 @@ export function DashboardStoryView({
             <SignalTimelineStory
               points={points}
               timeLabel={globalTimeLabel}
+              mode={timelineMode}
+              onModeChange={handleTimelineModeChange}
               highlight={timelineHighlight}
               annotation={timelineAnnotation}
               onSelectIssue={(id) => setDrawerTarget({ kind: "issue", issueId: id })}

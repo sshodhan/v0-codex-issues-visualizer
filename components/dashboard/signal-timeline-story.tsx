@@ -2,10 +2,12 @@
 
 import { useMemo, useState } from "react"
 import {
+  captionForMode,
   groupCategoriesByCount,
   groupFamiliesByCount,
   type StoryTimelinePoint,
 } from "@/lib/dashboard/story-timeline"
+import type { StoryTimelineMode } from "@/lib/dashboard/story-timeline"
 import { differenceInCalendarDays, format, parseISO } from "date-fns"
 
 const W = 720
@@ -138,6 +140,8 @@ export function SignalTimelineStory({
   highlight = null,
   annotation = null,
   onSelectIssue,
+  mode,
+  onModeChange,
 }: {
   points: StoryTimelinePoint[]
   timeLabel: string
@@ -147,15 +151,16 @@ export function SignalTimelineStory({
   annotation?: TimelineAnnotation | null
   /** When provided, dots become buttons instead of external links. */
   onSelectIssue?: (issueId: string) => void
+  mode: StoryTimelineMode
+  onModeChange: (mode: StoryTimelineMode) => void
 }) {
   // Local legend filter — clicking a chip in the figcaption dims non-matching dots.
   // Composes with the external `highlight` prop: a dot is dimmed when EITHER the
   // external highlight is active and this dot doesn't match, OR the local legend
   // filter is set and this dot's category/family doesn't match.
   const [legendFilter, setLegendFilter] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<"topic" | "family">("topic")
-  const handleViewModeChange = (newMode: "topic" | "family") => {
-    setViewMode(newMode)
+  const handleViewModeChange = (newMode: StoryTimelineMode) => {
+    onModeChange(newMode)
     setLegendFilter(null)
   }
   const placed = useMemo(() => placePoints(points), [points])
@@ -185,7 +190,7 @@ export function SignalTimelineStory({
   )
   const topicLegend = useMemo(() => groupCategoriesByCount(points).slice(0, 6), [points])
   const familyLegend = useMemo(() => groupFamiliesByCount(points).slice(0, 6), [points])
-  const legend = viewMode === "topic" ? topicLegend : familyLegend
+  const legend = mode === "topic" ? topicLegend : familyLegend
   const highImpactCount = useMemo(
     () => placed.filter((p) => p.impact >= 7).length,
     [placed],
@@ -328,8 +333,8 @@ export function SignalTimelineStory({
           {placed
             .filter((p) => p.impact >= 7)
             .map((p) => {
-              const currentName = viewMode === "topic" ? p.categoryName : p.familyName
-              const color = viewMode === "topic" ? p.categoryColor : p.familyColor
+              const currentName = mode === "topic" ? p.categoryName : p.familyName
+              const color = mode === "topic" ? p.categoryColor : p.familyColor
               const dimByHighlight = !!highlight && !isMatch(p, highlight)
               const dimByLegend = legendFilter !== null && currentName !== legendFilter
               const dim = dimByHighlight || dimByLegend
@@ -350,8 +355,8 @@ export function SignalTimelineStory({
 
           {/* Dots */}
           {placed.map((p) => {
-            const currentName = viewMode === "topic" ? p.categoryName : p.familyName
-            const color = viewMode === "topic" ? p.categoryColor : p.familyColor
+            const currentName = mode === "topic" ? p.categoryName : p.familyName
+            const color = mode === "topic" ? p.categoryColor : p.familyColor
             const dimByHighlight = !!highlight && !isMatch(p, highlight)
             const dimByLegend = legendFilter !== null && currentName !== legendFilter
             const dim = dimByHighlight || dimByLegend
@@ -360,7 +365,7 @@ export function SignalTimelineStory({
               <title>
                 {p.title}
                 {`\n`}
-                {viewMode === "topic" ? p.categoryName : p.familyName}
+                {mode === "topic" ? p.categoryName : p.familyName}
                 {`\n`}
                 {format(parseISO(p.publishedAt), "MMM d, yyyy")} · Impact {p.impact.toFixed(1)} ·{" "}
                 {p.sourceSlug}
@@ -415,7 +420,7 @@ export function SignalTimelineStory({
               Each dot is a public report in your filter ({points.length} shown). Size ≈ impact
               (1–10); high-impact dots (≥7) carry a halo
               {highImpactCount > 0 ? ` — ${highImpactCount} in this window` : ""}. Color ={" "}
-              {viewMode === "topic" ? "heuristic category" : "report family"}. Weekend days are
+              {captionForMode(mode)}. Weekend days are
               shaded faintly.
               {legendFilter !== null && (
                 <>
@@ -429,21 +434,26 @@ export function SignalTimelineStory({
               aria-label="Legend grouping"
               className="inline-flex items-center rounded-full bg-muted/30 p-1"
             >
-              {(["topic", "family"] as const).map((mode) => {
-                const isActive = viewMode === mode
+              {([
+                { key: "topic", label: "Topic" },
+                { key: "cluster_family", label: "Family" },
+                { key: "cluster_label", label: "Label" },
+                { key: "cluster", label: "Cluster" },
+              ] as const).map((item) => {
+                const isActive = mode === item.key
                 return (
                   <button
-                    key={mode}
+                    key={item.key}
                     type="button"
                     aria-pressed={isActive}
-                    onClick={() => handleViewModeChange(mode)}
-                    className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    onClick={() => handleViewModeChange(item.key)}
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       isActive
                         ? "bg-background text-foreground shadow-sm"
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
-                    {mode}
+                    {item.label}
                   </button>
                 )
               })}

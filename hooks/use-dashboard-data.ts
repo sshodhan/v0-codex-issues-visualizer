@@ -260,6 +260,13 @@ export interface ClusterRollupRow {
   prior_window_count?: number
 }
 
+export interface ClusterFamilyRow {
+  id: string
+  family_title: string | null
+  family_kind: string | null
+  needs_human_review: boolean | null
+}
+
 /**
  * Top semantic clusters in the current dashboard window (Layer A on mv_observation_current),
  * for Story tab and drill-down affordances. Read-only.
@@ -278,6 +285,11 @@ export function useClusterRollup(options: { days?: number; category: string }) {
     // view's family legend can resolve labels for any cluster_id from
     // /api/issues, not just the top 50.
     cluster_labels?: Array<{ id: string; label: string | null }>
+    // Stage-4 family titles, also covering EVERY cluster in the window
+    // (same long-tail rationale as cluster_labels). Used by the Signal
+    // cloud's Family / Cluster ladder modes; missing rows fall back to
+    // "Pending family classification" on the client.
+    cluster_families?: ClusterFamilyRow[]
     pipeline_state: PipelineStateSummary
   }>(url, fetcher, { refreshInterval: 300_000 })
   return { data, isLoading, isError: error, refresh: mutate }
