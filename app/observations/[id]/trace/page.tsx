@@ -77,6 +77,14 @@ type RerunStage = "classification" | "embedding"
 // Render a timestamp as `Apr 28, 2026, 8:24 AM UTC` (locale-default month/day,
 // always UTC) plus the raw ISO string in a tooltip. Keeps trace rows scannable
 // while preserving the full-precision value for debugging.
+//
+// Deliberately deviates from the date-fns `format` / `formatDistanceToNow`
+// pattern used elsewhere (e.g. components/dashboard/classification-triage):
+// trace data is operational/diagnostic, so timestamps must be unambiguous
+// across reviewer locations — UTC is the right default. date-fns v4 doesn't
+// support timezone-aware formatting without the extra `date-fns-tz` package
+// (not in deps), so Intl.DateTimeFormat is used here. Dashboard cards still
+// use date-fns for local time, which is correct for that audience.
 function FormattedDate({ iso }: { iso: string | null | undefined }) {
   if (!iso) return <span>—</span>
   const date = new Date(iso)
