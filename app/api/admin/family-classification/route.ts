@@ -27,7 +27,13 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 export const maxDuration = 300
 
-const DEFAULT_LIMIT = 50
+// Bulk POST runs classifyClusterFamily in a serial for-loop. Each call
+// is dominated by a ~10s OpenAI request, so 50 × 10s exceeds Vercel's
+// 300s function cap and 504s. The admin panel's Drain backlog action
+// is the right tool for large backlogs (parallel single-cluster POSTs);
+// keep DEFAULT_LIMIT small so an accidental "Classify batch" click
+// can't kill the function.
+const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 500
 const PENDING_DEFAULT_LIMIT = 20
 const PENDING_MAX_LIMIT = 100

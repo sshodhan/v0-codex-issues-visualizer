@@ -1,7 +1,7 @@
 "use client"
 
-import { Fragment, useCallback, useEffect, useState } from "react"
-import { CircleCheck, Loader2, Play, RefreshCw, TestTube2, TriangleAlert, XCircle } from "lucide-react"
+import { Fragment, useCallback, useEffect, useRef, useState } from "react"
+import { CircleCheck, Loader2, Play, RefreshCw, Square, TestTube2, TriangleAlert, XCircle } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -151,6 +151,19 @@ interface Stats {
 }
 
 const PENDING_LIST_PAGE_SIZE = 25
+
+// Drain backlog: fire single-cluster POSTs with a small worker pool.
+// Concurrency 3 keeps OpenAI rate-limit risk low while staying ~3x
+// faster than serial. Page size matches PENDING_MAX_LIMIT on the
+// server (`/api/admin/family-classification` route). The route's
+// bulk path is fundamentally fragile (50 × 10s OpenAI calls in a for
+// loop exceeds Vercel's 300s function cap); this drains by reusing
+// the single-cluster path, which finishes in ~10-15s per cluster.
+const DRAIN_CONCURRENCY = 3
+const DRAIN_PAGE_SIZE = 100
+// Stop the drain after this many consecutive failures so a broken
+// upstream (e.g. OpenAI outage) doesn't burn the whole backlog.
+const DRAIN_MAX_CONSECUTIVE_FAILURES = 3
 
 // Mirrors lib/storage/family-classification.ts → FamilyClassificationDraft.
 // Kept as a JSON-shape interface here (loose) so the panel doesn't have
@@ -1827,7 +1840,18 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
   } | null>(null)
 
   const [singleClusterId, setSingleClusterId] = useState("")
-  const [running, setRunning] = useState<null | "dryRun" | "singleCluster" | "batch">(null)
+  const [running, setRunning] = useState<null | "dryRun" | "singleCluster" | "batch" | "drain">(null)
+  const [drainProgress, setDrainProgress] = useState<{
+    pageTotal: number
+    pageSucceeded: number
+    pageFailed: number
+    inFlight: number
+    cumulativeSucceeded: number
+    cumulativeFailed: number
+  } | null>(null)
+  // Mutable abort flag; useRef so flipping it doesn't trigger re-render
+  // and the in-flight worker pool can read the latest value mid-loop.
+  const drainAbortRef = useRef(false)
   const [runError, setRunError] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<BackfillResult | null>(null)
   const [qualityRows, setQualityRows] = useState<QualityRow[]>([])
@@ -2186,6 +2210,159 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     }
   }
 
+  // Drain the backlog by firing single-cluster POSTs at concurrency
+  // DRAIN_CONCURRENCY. Each request is bounded by the same timing as a
+  // manual single-cluster classify (~10-15s), so no individual call
+  // can hit the function timeout — the original bulk POST's serial
+  // for-loop did. Progress is reported live; cancelDrain() flips the
+  // abort flag and the next worker slot stops scheduling.
+  const runDrain = async () => {
+    if (running) return
+    setRunning("drain")
+    setRunError(null)
+    setLastResult(null)
+    drainAbortRef.current = false
+    setDrainProgress({
+      pageTotal: 0,
+      pageSucceeded: 0,
+      pageFailed: 0,
+      inFlight: 0,
+      cumulativeSucceeded: 0,
+      cumulativeFailed: 0,
+    })
+    const startedAt = Date.now()
+    let cumulativeSucceeded = 0
+    let cumulativeFailed = 0
+
+    try {
+      while (!drainAbortRef.current) {
+        const pageRes = await fetch(`${ROUTE}?pending=${DRAIN_PAGE_SIZE}`, {
+          headers: authHeaders(secret),
+        })
+        if (!pageRes.ok) throw new Error(await explainAdminFailure(pageRes))
+        const pageData = (await pageRes.json()) as Stats
+        const page = pageData.pending ?? []
+        if (page.length === 0) break
+
+        const queue = page.map((p) => p.cluster_id)
+        let pageSucceeded = 0
+        let pageFailed = 0
+        let inFlight = 0
+        let consecutiveFailures = 0
+
+        await new Promise<void>((resolve, reject) => {
+          let stopped = false
+
+          const updateProgress = () => {
+            setDrainProgress({
+              pageTotal: page.length,
+              pageSucceeded,
+              pageFailed,
+              inFlight,
+              cumulativeSucceeded: cumulativeSucceeded + pageSucceeded,
+              cumulativeFailed: cumulativeFailed + pageFailed,
+            })
+          }
+
+          const tryStart = () => {
+            if (stopped) return
+            if (queue.length === 0 && inFlight === 0) {
+              resolve()
+              return
+            }
+            while (
+              inFlight < DRAIN_CONCURRENCY &&
+              queue.length > 0 &&
+              !drainAbortRef.current &&
+              !stopped
+            ) {
+              const clusterId = queue.shift() as string
+              inFlight++
+              updateProgress()
+
+              fetch(ROUTE, {
+                method: "POST",
+                headers: authHeaders(secret),
+                body: JSON.stringify({ clusterId, dryRun: false }),
+              })
+                .then(async (r) => {
+                  if (r.ok) {
+                    pageSucceeded++
+                    consecutiveFailures = 0
+                  } else {
+                    pageFailed++
+                    consecutiveFailures++
+                  }
+                })
+                .catch(() => {
+                  pageFailed++
+                  consecutiveFailures++
+                })
+                .finally(() => {
+                  inFlight--
+                  updateProgress()
+                  if (
+                    consecutiveFailures >= DRAIN_MAX_CONSECUTIVE_FAILURES &&
+                    !stopped
+                  ) {
+                    stopped = true
+                    drainAbortRef.current = true
+                    reject(
+                      new Error(
+                        `Stopped after ${DRAIN_MAX_CONSECUTIVE_FAILURES} consecutive failures — ` +
+                          "check Vercel logs and OpenAI status, then retry.",
+                      ),
+                    )
+                    return
+                  }
+                  tryStart()
+                })
+            }
+
+            // If aborted while queue still has items but nothing in flight,
+            // resolve so the outer loop sees the abort flag and exits.
+            if (drainAbortRef.current && inFlight === 0 && !stopped) {
+              stopped = true
+              resolve()
+            }
+          }
+
+          tryStart()
+        })
+
+        cumulativeSucceeded += pageSucceeded
+        cumulativeFailed += pageFailed
+
+        if (drainAbortRef.current) break
+      }
+
+      logClientEvent("admin-family-classification-drain-succeeded", {
+        succeeded: cumulativeSucceeded,
+        failed: cumulativeFailed,
+        aborted: drainAbortRef.current,
+        durationMs: Date.now() - startedAt,
+      })
+      await loadStats()
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setRunError(message)
+      logClientError(e, "admin-family-classification-drain-failed", {
+        succeeded: cumulativeSucceeded,
+        failed: cumulativeFailed,
+      })
+      // Reconcile what did land before the failure.
+      await loadStats().catch(() => undefined)
+    } finally {
+      setRunning(null)
+      setDrainProgress(null)
+      drainAbortRef.current = false
+    }
+  }
+
+  const cancelDrain = () => {
+    drainAbortRef.current = true
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -2450,13 +2627,57 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
               )}
               Classify batch
             </Button>
+            {running === "drain" ? (
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={cancelDrain}
+                disabled={drainAbortRef.current}
+              >
+                <Square className="mr-1 h-4 w-4" />
+                Stop drain
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={runDrain}
+                disabled={
+                  running !== null ||
+                  pendingRunningId !== null ||
+                  (stats?.without_classification ?? 0) === 0
+                }
+              >
+                <Play className="mr-1 h-4 w-4" />
+                Drain backlog ({DRAIN_CONCURRENCY}× parallel)
+              </Button>
+            )}
             <p className="text-xs text-muted-foreground">
               Dry run previews how many clusters would be processed.
-              Classify batch applies classifications to unclassified
-              clusters in one request — for slow OpenAI calls or large
-              backlogs, prefer the row-by-row list above.
+              Classify batch is a single bulk request (small backlogs only).
+              Drain backlog fires single-cluster classifies in parallel —
+              the right tool for large backlogs because each request
+              stays well under the function timeout.
             </p>
           </div>
+
+          {drainProgress ? (
+            <Alert>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <AlertTitle>Draining backlog</AlertTitle>
+              <AlertDescription className="text-xs">
+                Page: {drainProgress.pageSucceeded + drainProgress.pageFailed} /
+                {" "}{drainProgress.pageTotal}
+                {" • "}
+                Succeeded: {drainProgress.cumulativeSucceeded}
+                {" • "}
+                Failed: {drainProgress.cumulativeFailed}
+                {" • "}
+                In flight: {drainProgress.inFlight}
+                {drainAbortRef.current ? " • cancelling…" : null}
+              </AlertDescription>
+            </Alert>
+          ) : null}
 
           {runError ? (
             <Alert variant="destructive">
