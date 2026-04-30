@@ -3121,15 +3121,19 @@ function ClusteringPanel({ secret }: { secret: string }) {
               Post-rebuild verification
             </div>
             <ul className="space-y-1 text-xs leading-relaxed">
-              <li>
+<li>
                 <span className="text-muted-foreground">1.</span>{" "}
-                <span className="font-medium">Embeddings written:</span>{" "}
-                Sum of <code className="rounded bg-muted px-1 py-0.5 text-[10px]">embeddings.fetched</code>{" "}
-                across batches above should equal{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">processed</code>{" "}
-                ({processed.toLocaleString()}) when re-detach was used. Lower means
-                some observations failed to embed — see{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">embeddings.failed</code>.
+                <span className="font-medium">Embeddings accounted for:</span>{" "}
+                In each batch above, <code className="rounded bg-muted px-1 py-0.5 text-[10px]">cached + fetched + failed</code>{" "}
+                should equal that batch's <code className="rounded bg-muted px-1 py-0.5 text-[10px]">processed</code>.{" "}
+                Persistent non-zero <code className="rounded bg-muted px-1 py-0.5 text-[10px]">failed</code>{" "}
+                means OpenAI calls errored — check{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">openai_response_non_ok</code>{" "}
+                in server logs. After a v1→v2 algo bump the FIRST rebuild
+                expects high <code className="rounded bg-muted px-1 py-0.5 text-[10px]">fetched</code>{" "}
+                (~{processed.toLocaleString()} new v2 vectors) and near-zero{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">cached</code>;
+                subsequent rebuilds invert that ratio.
               </li>
               <li>
                 <span className="text-muted-foreground">2.</span>{" "}

@@ -314,7 +314,17 @@ export async function POST(request: NextRequest) {
       const platformById = new Map<string, string>()
       const familyKindById = new Map<string, string>()
       if (ids.length > 0) {
-        const [catRes, fpRes, famRes] = await Promise.all([
+        // Step 1: pull all per-observation signals that live on
+        // observation-keyed tables (categories + fingerprints) plus the
+        // observation→cluster mapping. We CANNOT rely on PostgREST's
+        // nested-embed `family_classification_current!inner(...)`
+        // because the view has no FK relationship to cluster_members
+        // — PostgREST's relationship auto-detection only works on real
+        // FKs on tables, not on views like this one. So we do two
+        // explicit lookups: cluster_members → cluster_id, then
+        // family_classification_current → family_kind keyed on
+        // cluster_id.
+        const [catRes, fpRes, memberRes] = await Promise.all([
           supabase
             .from("category_assignments")
             .select("observation_id, computed_at, categories:category_id(slug)")
@@ -325,19 +335,9 @@ export async function POST(request: NextRequest) {
             .select("observation_id, error_code, top_stack_frame, os, computed_at")
             .in("observation_id", ids)
             .order("computed_at", { ascending: false }),
-          // family_kind comes from the per-cluster family_classification
-          // view, joined to observations via cluster_members. We pull
-          // family_kind for every observation in the batch (best-effort)
-          // so the v2 embedding can encode "type: bug / feature_request"
-          // as a top-level signal. Limitation: observations whose cluster
-          // hasn't been family-classified yet (or who currently sit in a
-          // singleton cluster) get no family_kind — that's the cold-start
-          // case the prose tail handles.
           supabase
             .from("cluster_members")
-            .select(
-              "observation_id, cluster_id, family_classification_current!inner(family_kind)",
-            )
+            .select("observation_id, cluster_id")
             .in("observation_id", ids)
             .is("detached_at", null),
         ])
@@ -372,16 +372,57 @@ export async function POST(request: NextRequest) {
             platformById.set(row.observation_id, row.os)
           }
         }
-        for (const row of (famRes.data ?? []) as unknown as Array<{
+
+        // Step 2: collect distinct cluster_ids the batch's observations
+        // currently sit in, then look up family_kind for those clusters
+        // in one query. Mapping is observation → cluster → family_kind.
+        // CAVEAT (also documented in PR description): during a re-detach
+        // rebuild, the cluster_id we resolve here is the obs's PRIOR
+        // cluster — the new cluster_id created by this rebuild won't
+        // exist until later in the loop, and won't have a family
+        // classification at all until the family-classification drain
+        // re-runs on the new groupings. So v2 embeddings during the
+        // first re-detach use stale family_kind; that's better than
+        // none, and post-rebuild verification step #6 covers the
+        // re-classify follow-up.
+        const obsToCluster = new Map<string, string>()
+        const clusterIds = new Set<string>()
+        for (const row of (memberRes.data ?? []) as Array<{
           observation_id: string
-          family_classification_current: { family_kind: string | null } | { family_kind: string | null }[] | null
+          cluster_id: string
         }>) {
-          const famRel = Array.isArray(row.family_classification_current)
-            ? row.family_classification_current[0]
-            : row.family_classification_current
-          const kind = famRel?.family_kind
-          if (kind && !familyKindById.has(row.observation_id)) {
-            familyKindById.set(row.observation_id, kind)
+          if (row.cluster_id && !obsToCluster.has(row.observation_id)) {
+            obsToCluster.set(row.observation_id, row.cluster_id)
+            clusterIds.add(row.cluster_id)
+          }
+        }
+        if (clusterIds.size > 0) {
+          const { data: famRows, error: famErr } = await supabase
+            .from("family_classification_current")
+            .select("cluster_id, family_kind")
+            .in("cluster_id", Array.from(clusterIds))
+          if (famErr) {
+            // Best-effort: log and continue with empty family_kind map.
+            // Embeddings still produce usable v2 vectors without the
+            // type tag — the embedding loop logs signal coverage so
+            // a sudden drop is detectable downstream.
+            logServerError("admin-cluster", "family_kind_lookup_failed", famErr, {
+              clusterCount: clusterIds.size,
+            })
+          } else {
+            const kindByCluster = new Map<string, string>()
+            for (const row of (famRows ?? []) as Array<{
+              cluster_id: string
+              family_kind: string | null
+            }>) {
+              if (row.family_kind && !kindByCluster.has(row.cluster_id)) {
+                kindByCluster.set(row.cluster_id, row.family_kind)
+              }
+            }
+            for (const [obsId, clusterId] of obsToCluster) {
+              const kind = kindByCluster.get(clusterId)
+              if (kind) familyKindById.set(obsId, kind)
+            }
           }
         }
       }
