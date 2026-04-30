@@ -41,6 +41,16 @@ export interface RunOptions {
   apply: boolean
   limit?: number
   batchSize?: number
+  // Optional restriction to specific cluster IDs. The candidate filter
+  // (label.is.null OR label_confidence < 0.6 OR legacy fallback) still
+  // applies within the listed IDs unless `force` is set.
+  // Used by app/api/clusters/[id]/label so a reviewer can trigger a
+  // single-cluster relabel from the trace page.
+  clusterIds?: string[]
+  // Bypass the candidate filter — relabel even if the cluster already
+  // has a strong label. Combined with `clusterIds: [id]` this is the
+  // "force regenerate this one cluster's name" case.
+  force?: boolean
 }
 
 interface ClusterRow {
@@ -63,10 +73,15 @@ export async function runClusterLabelBackfill(
   let q = supabase
     .from("clusters")
     .select("id, cluster_key, label, label_confidence, label_model")
-    .or(
+    .order("id", { ascending: true })
+  if (!options.force) {
+    q = q.or(
       `label.is.null,label_confidence.lt.0.6,label_model.eq.${LABEL_MODEL.LEGACY_FALLBACK_TITLE}`,
     )
-    .order("id", { ascending: true })
+  }
+  if (options.clusterIds && options.clusterIds.length > 0) {
+    q = q.in("id", options.clusterIds)
+  }
   if (options.limit) q = q.limit(options.limit)
   const { data: clusterData, error: clusterErr } = await q
   if (clusterErr) {

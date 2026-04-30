@@ -8,20 +8,32 @@
 
 export const CURRENT_VERSIONS = {
   sentiment: "v2",
-  // v6 (2026-04): phrase-table maintenance pass after v5 low-margin
-  // evidence review. CATEGORY_PATTERNS gains coding-agent vocabulary
-  // for developerInstructions, merge/branch conflicts, progress-log
-  // visibility, higher-limits/priority-processing, model-not-appearing,
-  // workspace-write/bubblewrap sandbox + device passthrough, ANSI escape
-  // injection, and additionalContext/PreToolUse intent distinctions
-  // (entity-vs-mechanism: support/add → feature-request, ignored/not
-  // used → model-quality, missing/not passed in hook payload →
-  // integration, crashes → bug). The weak "how to" documentation
-  // phrase is removed (a question prefix is not docs-complaint
-  // language). No scoring algorithm changes, no
-  // threshold changes — SLUG_THRESHOLD stays {}. See
-  // scripts/027_topic_classifier_v6_bump.sql.
-  category: "v6",
+  // v7 (2026-04): pricing-only false-positive fix. Production audit
+  // (Q3 disagreement query + visible-list screenshots, 2026-04-29)
+  // found ~80% of pricing-tagged rows were misclassified — clear bugs
+  // (shell escaping, compaction failure, MCP failures, model capacity,
+  // notarization, /clear config) leaking into pricing through GitHub
+  // issue-template metadata fields like
+  //   ### What subscription do you have?
+  //   Pro
+  // and
+  //   ### What plan are you on?
+  //   Pro plan
+  // which fired weight-3 phrases (`subscription`, `pro plan`) on
+  // every Codex issue regardless of actual content. v7 ships four
+  // targeted changes:
+  //   - Removed `subscription` from CATEGORY_PATTERNS.pricing.
+  //   - BODY_TEMPLATE_HEADER_RE strips metadata-header + short-answer
+  //     blocks from body before phrase scoring (keyword-whitelisted,
+  //     answer-line capped at 120 chars to protect prose).
+  //   - Margin-0 abstain rule: when the top winner ties the runner-up,
+  //     return "other" with confidence 0 instead of falling back to
+  //     CATEGORY_PATTERNS insertion order (which deterministically
+  //     favored `pricing` over `model-quality`).
+  //   - SLUG_THRESHOLD.pricing = 4 (defense in depth).
+  // No taxonomy / slug-list changes. See
+  // scripts/033_topic_classifier_v7_bump.sql.
+  category: "v7",
   impact: "v2",
   // competitor_mention shares the canonical lexicon (sentiment-lexicon.ts).
   // The sentiment v2 bump added words that are ALSO in NEGATORS (e.g.
