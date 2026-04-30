@@ -1,37 +1,42 @@
-# Required File Validation Checks
+# Required File Validation Checks (derived quick checklist)
 
-Use this checklist when reviewing Codex feedback ingestion and collector behavior.
+This file is a reviewer-friendly quick checklist derived from the canonical phased spec.
 
-## `lib/codex-feedback/schema.ts`
+- **Canonical source of truth:** `docs/CODEX_PHASED_EXECUTION_PROMPT.md`.
+- If this file and the canonical doc conflict, follow `docs/CODEX_PHASED_EXECUTION_PROMPT.md`.
 
+## Quick per-file checklist (derived from canonical)
+
+### `lib/codex-feedback/schema.ts`
 - [ ] Exports both `CodexIssueContextV1Schema` (runtime validator) and `CodexIssueContextV1` (TypeScript type).
-- [ ] Enforces `source` literal as `"codex-self-report"`.
-- [ ] Validates `version` as the V1 contract (`"1"` or `1`, depending on implementation convention).
-- [ ] Requires `privacy.user_confirmed_submission === true` in the server-side validation path.
-- [ ] Rejects unknown top-level keys (strict object validation).
+- [ ] Enforces `source === "codex-self-report"`.
+- [ ] Validates `schema_version: "codex_issue_context.v1"`.
+- [ ] Uses strict object validation (reject unknown top-level keys).
 
-## `app/api/feedback/codex/route.ts`
+### `app/api/feedback/codex/route.ts`
+- [ ] Requires `privacy.user_confirmed_submission === true` on server-side validation path.
+- [ ] Rejects oversized payloads with HTTP `413`.
+- [ ] Returns structured 4xx validation errors (`code`, `message`, optional `details`).
+- [ ] Redacts sensitive fields before persistence/logging.
+- [ ] Returns deterministic success envelope (`requestId`, accepted timestamp).
+- [ ] Applies method guardrails (reject unsupported verbs with `405`).
 
-- [ ] Rejects payloads exceeding max body size with HTTP `413`.
-- [ ] Returns structured JSON errors (`code`, `message`, and optional `details`) for all 4xx validation failures.
-- [ ] Redacts sensitive fields server-side before persistence/logging.
-- [ ] Returns a deterministic success envelope with request ID and accepted timestamp.
-- [ ] Applies explicit method guardrails (e.g., rejects unsupported verbs with `405`).
+### `packages/codex-issue-collector/src/cli.ts`
+- [ ] Supports `capture`, `report`, `submit`, `github`, `doctor`, and `preview`.
+- [ ] Invalid usage exits non-zero and prints command-specific help.
+- [ ] Subcommand failures propagate non-zero exit code.
+- [ ] Includes dry-run/preview path with no network submission.
+- [ ] Machine-readable mode (if present) writes JSON to stdout and diagnostics to stderr.
 
-## `packages/codex-issue-collector/src/cli.ts`
-
-- [ ] Supports `capture`, `report`, `submit`, `github`, `doctor`, and `preview` commands.
-- [ ] Invalid command usage exits non-zero and prints command-specific help.
-- [ ] Subcommand failures propagate non-zero exit codes to the parent process.
-- [ ] Includes a dry-run/preview path that avoids network submission.
-- [ ] Ensures machine-readable mode (if present) writes JSON to stdout and diagnostics to stderr.
-
-## Checklist Status Template (required in report output)
-
-When reporting results, include one status block per required file:
-
-- `lib/codex-feedback/schema.ts`: `PASS | FAIL | PARTIAL`
-- `app/api/feedback/codex/route.ts`: `PASS | FAIL | PARTIAL`
-- `packages/codex-issue-collector/src/cli.ts`: `PASS | FAIL | PARTIAL`
-
-Each status should include a short reason and any failing check bullets.
+## Status report template (copy/paste)
+```md
+Phase: <Phase N Name>
+Status: PASS | FAIL | PARTIAL
+Summary: <one-line rationale>
+Missing/Failing criteria:
+- <criterion or "none">
+Verification run:
+- ✅ `<command>`
+- ❌ `<command>`
+- ⚠️ `<command>` (if omitted/blocked, explain why)
+```
