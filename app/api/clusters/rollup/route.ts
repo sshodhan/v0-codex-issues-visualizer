@@ -134,6 +134,7 @@ export async function GET(request: NextRequest) {
     agg.set(id, cur)
   }
 
+  const allClusterIds = Array.from(agg.keys())
   const sorted = Array.from(agg.entries())
     .map(([id, v]) => ({ id, count: v.count, classified: v.classified, source_count: v.sources.size }))
     .sort((a, b) => b.count - a.count)
@@ -141,25 +142,30 @@ export async function GET(request: NextRequest) {
 
   if (sorted.length === 0) {
     return NextResponse.json(
-      { clusters: [], pipeline_state },
+      { clusters: [], cluster_labels: [], pipeline_state },
       { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
     )
   }
 
+  // Fetch labels for every cluster in the window, not just the top-50 cards.
+  // The Story view's family legend joins on cluster_id from /api/issues, which
+  // can reference clusters outside the top-50; without these labels those dots
+  // collapse into the "Unlabelled Family" bucket on the Signal cloud.
   const { data: clusterRows, error: cErr } = await supabase
     .from("clusters")
     .select("id, label, label_confidence")
-    .in(
-      "id",
-      sorted.map((s) => s.id),
-    )
+    .in("id", allClusterIds)
 
   if (cErr) {
-    logServerError("clusters-rollup", "clusters_labels_query_failed", cErr, { topClusterCount: sorted.length })
+    logServerError("clusters-rollup", "clusters_labels_query_failed", cErr, {
+      totalClusterCount: allClusterIds.length,
+      topClusterCount: sorted.length,
+    })
     return NextResponse.json({ error: cErr.message, pipeline_state }, { status: 500 })
   }
 
   const labelMap = new Map((clusterRows || []).map((c: any) => [c.id, c]))
+  const clusterLabels = (clusterRows || []).map((c: any) => ({ id: c.id, label: c.label ?? null }))
 
   const topIds = sorted.map((s) => s.id)
   const { data: exemplarRows } = await supabase
@@ -463,7 +469,7 @@ export async function GET(request: NextRequest) {
   })
 
   return NextResponse.json(
-    { clusters, pipeline_state },
+    { clusters, cluster_labels: clusterLabels, pipeline_state },
     { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
   )
 }

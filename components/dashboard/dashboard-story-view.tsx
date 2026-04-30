@@ -139,6 +139,7 @@ interface DashboardStoryViewProps {
   onDrillErrorCode: (compoundKey: string) => void
   onOpenIssuesTable: () => void
   clusterRows?: ClusterRollupRow[] | undefined
+  clusterLabels?: Array<{ id: string; label: string | null }> | undefined
   onOpenClusterInTable: (clusterId: string) => void
   onOpenClusterInTriage: (clusterId: string) => void
   activeClusterId: string | null
@@ -172,6 +173,7 @@ export function DashboardStoryView({
   onDrillErrorCode,
   onOpenIssuesTable,
   clusterRows,
+  clusterLabels,
   onOpenClusterInTable,
   onOpenClusterInTriage,
   activeClusterId,
@@ -194,13 +196,21 @@ export function DashboardStoryView({
 }: DashboardStoryViewProps) {
   const clusterLookup = useMemo(() => {
     const map = new Map<string, ClusterInfo>()
+    // Seed with the long-tail labels first so the per-row enrichment from
+    // clusterRows (which only covers the top 50) can override with the
+    // same value — both writes carry the canonical clusters.label string.
+    if (clusterLabels) {
+      for (const row of clusterLabels) {
+        map.set(row.id, { id: row.id, label: row.label })
+      }
+    }
     if (clusterRows) {
       for (const row of clusterRows) {
         map.set(row.id, { id: row.id, label: row.label })
       }
     }
     return map
-  }, [clusterRows])
+  }, [clusterRows, clusterLabels])
   const points = useMemo(
     () => buildStoryTimeline(issues, clusterLookup),
     [issues, clusterLookup],
