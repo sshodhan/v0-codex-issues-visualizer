@@ -1,89 +1,71 @@
-# Codex phased execution prompt (single phase per run)
+# Codex phased execution prompt (canonical phased spec)
 
-Use this as the authoritative top-level prompt block for phased implementation runs.
+## Objective
+Execute work in **phases**, with exactly **one phase implemented per run**. Each run must complete the selected phase, satisfy that phase’s acceptance criteria, and then stop with a handoff checklist for the next phase.
 
-## Global rules
+## Constraints / non-goals
+- Never implement more than one phase in a single run.
+- If a dependency from a later phase is required, add compile-time stubs/interfaces only.
+- Do not ship production behavior for future phases early.
+- Keep one canonical definition for schema fields, normalization, and redaction.
+- **Conflict resolution:** If two sections conflict, follow: Constraints > Required files > Acceptance criteria > examples.
 
-- You must implement only **Phase 1** in this run.
-- Do not start **Phase 2+** files.
-- If a dependency from later phases is needed, stub interfaces only.
+## Required files
+Use only the files relevant to the active phase:
+- **Phase 1 (Shared contracts + ingestion API):**
+  - `lib/**` (schema/redaction/normalization/type-safe mappers)
+  - `app/api/**/route.ts` (ingestion endpoints)
+  - `tests/**` (schema/redaction/normalization/route tests)
+  - `docs/**` (optional contract documentation)
+- **Phase 2 (CLI collector):**
+  - `packages/**` or `cli/**` (argument parsing, flow, transport client)
+  - `tests/**` (CLI and collector-to-ingestion coverage)
+  - shared interfaces required by CLI
+- **Phase 3 (GitHub integration + admin evidence UI):**
+  - provider integration files for GitHub ingestion
+  - admin evidence panel UI/API files
+  - `tests/**` (integration + UI/API behavior)
 
-Codex must execute exactly one phase per run and stop after that phase's acceptance criteria are met. At stop time, output a handoff checklist for the next phase.
+## Data schema
+Single canonical ingestion contract used across all phases:
+- Validate required/optional fields at parse time via shared schema utilities.
+- Map raw inputs to normalized domain types via type-safe mappers.
+- Enforce deterministic normalization (same input -> same output).
+- Centralized redaction rules:
+  - mask PII,
+  - mask secrets/tokens/credentials,
+  - never persist/return unredacted sensitive values.
 
----
+## API behavior
+- **Phase 1:** ingestion routes validate, normalize, redact, and persist/return safe payloads with predictable validation errors on failure.
+- **Phase 2:** CLI submits payloads to Phase 1 ingestion APIs; API contracts remain stable.
+- **Phase 3:** provider and admin API integrations must continue honoring canonical schema and redaction guarantees.
 
-## Phase 1 — Shared schema/redaction/normalization + ingestion route + tests
+## CLI commands
+- **Phase 1:** no CLI runtime implementation (stubs only if required).
+- **Phase 2:** implement CLI collector behavior (arg parsing, defaults, errors, submit flow).
+- **Phase 3:** no net-new CLI scope unless strictly needed to support provider/admin integration.
 
-### In-scope files
-- `lib/**` files that define shared ingestion schema contracts, redaction helpers, normalization utilities, and type-safe mappers used by ingestion.
-- `app/api/**/route.ts` files for ingestion endpoints required to land Phase 1.
-- `tests/**` files that validate schema, redaction, normalization, and ingestion-route behavior.
-- `docs/**` files only if needed to document Phase 1 contracts.
+## UI behavior
+- **Phase 1:** no admin UI runtime implementation (stubs only if required).
+- **Phase 2:** no UI runtime scope.
+- **Phase 3:** implement admin evidence panel behavior for imported evidence inspection.
 
-### Out-of-scope files
-- CLI entrypoints/packages and command wiring.
-- GitHub issue provider integration and any admin evidence panel UI.
-- Any Phase 2/3 implementation files except minimal interface stubs required to compile.
+## Testing
+Run only tests relevant to the active phase:
+- **Phase 1:** schema parsing edge cases, redaction/normalization, ingestion route success/failure.
+- **Phase 2:** CLI argument/default/error tests + collector-to-ingestion integration tests.
+- **Phase 3:** GitHub fetch/map/ingest integration + admin panel UI/API behavior tests.
+- For every phase, verify future-phase production behavior is not prematurely implemented.
 
-### Required tests
-- Unit tests for schema validation and parsing edge cases.
-- Unit tests for redaction behavior (PII/secrets masking) and normalization behavior.
-- Route/integration tests for ingestion endpoint success/failure paths.
-
-### Acceptance criteria (Phase 1 only)
-- Shared schema + redaction + normalization code exists and is used by ingestion route.
-- Ingestion route persists/returns normalized payloads with redaction guarantees.
-- Required tests pass and cover happy-path + key failure-path scenarios.
-- No production Phase 2/3 behavior is implemented beyond optional compile-time stubs.
-
----
-
-## Phase 2 — CLI collector package + tests
-
-### In-scope files
-- `packages/**` or `cli/**` collector package files (argument parsing, execution flow, transport client).
-- `tests/**` covering CLI collector behavior.
-- Shared interfaces consumed by CLI when integrating with Phase 1 contracts.
-
-### Out-of-scope files
-- GitHub issue integration and admin evidence panel UI.
-- Any net-new Phase 3 runtime behavior except interface stubs.
-
-### Required tests
-- CLI unit tests for argument parsing, defaults, and error handling.
-- Integration-style tests for collector-to-ingestion interactions.
-
-### Acceptance criteria (Phase 2 only)
-- CLI collector can package and submit valid payloads to ingestion.
-- CLI behavior is deterministic and validated by tests.
-- No production Phase 3 behavior is implemented beyond optional stubs.
-
----
-
-## Phase 3 — GitHub issue integration + admin evidence panel + tests
-
-### In-scope files
-- Provider integration files for GitHub issues ingestion.
-- Admin evidence panel UI/API files needed to inspect imported evidence.
-- `tests/**` validating GitHub integration flow and admin-panel behavior.
-
-### Out-of-scope files
-- Reworking Phase 1/2 scope except bug fixes strictly required for Phase 3 completion.
-
-### Required tests
-- Integration tests for GitHub issue fetch/map/ingest flow.
-- UI/API tests for admin evidence panel rendering and interactions.
-
-### Acceptance criteria (Phase 3 only)
-- GitHub issues are ingested through defined contracts and visible in admin evidence panel.
-- Test coverage confirms end-to-end integration and failure handling.
-
----
-
-## Stop rule and handoff checklist
-
-After completing a phase, stop and output a handoff checklist for the next phase that includes:
-- Current phase completed and acceptance criteria status.
-- Files changed and interfaces exported for downstream phases.
-- Known gaps, risks, and TODO stubs intentionally left for the next phase.
-- Exact tests run and their pass/fail status.
+## Acceptance criteria
+A run is complete only when all are true for the active phase:
+1. In-scope files for that phase contain the required implementation.
+2. Canonical schema/normalization/redaction rules are applied consistently.
+3. Required tests for that phase pass (happy paths + key failures).
+4. No production behavior from later phases is implemented beyond minimal stubs.
+5. Output a handoff checklist for the next phase including:
+   - completed phase + acceptance status,
+   - changed files and exported interfaces,
+   - known gaps/risks/TODO stubs,
+   - exact tests run with pass/fail.
