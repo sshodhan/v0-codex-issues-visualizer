@@ -3,9 +3,10 @@
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { useCallback, useEffect, useState, type ReactNode } from "react"
-import { ArrowLeft, Loader2, RefreshCcw } from "lucide-react"
+import { ArrowLeft, CheckCircle2, Flag, Loader2, RefreshCcw } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
@@ -13,6 +14,7 @@ import {
   llmSeverityLabel,
   llmStatusLabel,
 } from "@/lib/classification/llm-category-display"
+import { reviewClassification } from "@/hooks/use-dashboard-data"
 
 interface ObservationTraceResponse {
   observation: {
@@ -201,6 +203,14 @@ export default function ObservationTracePage() {
   const [error, setError] = useState<string | null>(null)
   const [rerunBusy, setRerunBusy] = useState<RerunStage | null>(null)
   const [rerunStatus, setRerunStatus] = useState<{ stage: RerunStage; ok: boolean; message: string } | null>(null)
+  // The classification_reviews table requires reviewed_by (audit trail).
+  // We mirror the input pattern in components/dashboard/classification-triage
+  // — a free-form text input held in component state, no auth dependency
+  // — so reviewers don't need to set up identity to leave feedback from
+  // the trace page.
+  const [reviewer, setReviewer] = useState<string>("")
+  const [reviewBusy, setReviewBusy] = useState<"mark_reviewed" | "flag_review" | null>(null)
+  const [reviewStatus, setReviewStatus] = useState<{ ok: boolean; message: string } | null>(null)
 
   const loadTrace = useCallback(
     async (signal?: AbortSignal, reason: "initial" | "post_rerun" = "initial") => {
@@ -344,6 +354,64 @@ export default function ObservationTracePage() {
       }
     },
     [id, loadTrace],
+  )
+
+  const handleRecordReview = useCallback(
+    async (kind: "mark_reviewed" | "flag_review") => {
+      if (!trace) return
+      const classificationId = trace.stages.classification.chain_head_id
+      if (!classificationId) {
+        setReviewStatus({ ok: false, message: "No classification to review yet — run Stage 4 first." })
+        return
+      }
+      const trimmedReviewer = reviewer.trim()
+      if (!trimmedReviewer) {
+        setReviewStatus({ ok: false, message: "Reviewer name is required for the audit log." })
+        return
+      }
+
+      setReviewBusy(kind)
+      setReviewStatus(null)
+      logClientEvent("reviewer-trace-record-review-started", {
+        observationId: id,
+        kind,
+        classificationId,
+      })
+
+      try {
+        await reviewClassification(classificationId, {
+          reviewed_by: trimmedReviewer,
+          needs_human_review: kind === "flag_review",
+        })
+        logClientEvent("reviewer-trace-record-review-succeeded", {
+          observationId: id,
+          kind,
+          classificationId,
+        })
+        setReviewStatus({
+          ok: true,
+          message: kind === "flag_review" ? "Flagged for human review." : "Marked reviewed.",
+        })
+        await loadTrace(undefined, "post_rerun").catch((refreshErr) => {
+          logClientError(
+            refreshErr instanceof Error ? refreshErr : new Error(String(refreshErr)),
+            "reviewer-trace-record-review-refresh-failed",
+            { observationId: id, kind, classificationId },
+          )
+        })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Review failed"
+        setReviewStatus({ ok: false, message })
+        logClientError(e instanceof Error ? e : new Error(message), "reviewer-trace-record-review-failed", {
+          observationId: id,
+          kind,
+          classificationId,
+        })
+      } finally {
+        setReviewBusy(null)
+      }
+    },
+    [id, loadTrace, reviewer, trace],
   )
 
   return (
@@ -622,7 +690,73 @@ export default function ObservationTracePage() {
                 ],
                 ["generated_at", <FormattedDate key="gen" iso={trace.generated_at} />],
               ]}
-            />
+            >
+              <div className="space-y-2 rounded border bg-muted/40 p-2 text-xs">
+                <p className="text-muted-foreground">
+                  {trace.stages.classification.chain_head_id
+                    ? "Append a row to classification_reviews (audit-only; the LLM baseline stays immutable)."
+                    : "No Stage 4 classification yet — re-run the Classification chain above before recording a review."}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    value={reviewer}
+                    onChange={(event) => setReviewer(event.target.value)}
+                    placeholder="Your name (required for audit log)"
+                    className="h-8 max-w-xs text-xs"
+                    disabled={reviewBusy !== null}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => handleRecordReview("mark_reviewed")}
+                    disabled={
+                      reviewBusy !== null ||
+                      !trace.stages.classification.chain_head_id ||
+                      reviewer.trim().length === 0
+                    }
+                    title="Record a passing review (needs_human_review = false)."
+                  >
+                    {reviewBusy === "mark_reviewed" ? (
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="mr-1 h-3 w-3" />
+                    )}
+                    Mark reviewed
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => handleRecordReview("flag_review")}
+                    disabled={
+                      reviewBusy !== null ||
+                      !trace.stages.classification.chain_head_id ||
+                      reviewer.trim().length === 0
+                    }
+                    title="Flag this classification as needing human review."
+                  >
+                    {reviewBusy === "flag_review" ? (
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    ) : (
+                      <Flag className="mr-1 h-3 w-3" />
+                    )}
+                    Flag for review
+                  </Button>
+                </div>
+                {reviewStatus ? (
+                  <p
+                    className={
+                      reviewStatus.ok ? "text-foreground" : "text-destructive"
+                    }
+                  >
+                    {reviewStatus.message}
+                  </p>
+                ) : null}
+              </div>
+            </TraceStage>
 
             <div className="rounded-md border p-3">
               <div className="mb-2 flex items-center justify-between">
