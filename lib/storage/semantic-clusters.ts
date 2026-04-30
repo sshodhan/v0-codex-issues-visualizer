@@ -15,7 +15,9 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 import {
   buildEmbeddingInputText,
   clusterEmbeddings,
+  percentile,
   type EmbeddedObservation,
+  type EmbeddingStructuredSignals,
   type SemanticObservationInput,
 } from "@/lib/storage/semantic-cluster-core"
 
@@ -233,6 +235,7 @@ type EnsureEmbeddingOutcome =
 async function ensureEmbedding(
   supabase: AdminClient,
   observation: SemanticObservationInput,
+  signals?: EmbeddingStructuredSignals,
 ): Promise<EnsureEmbeddingOutcome> {
   const startedAt = Date.now()
   const { data: existing } = await supabase
@@ -257,7 +260,10 @@ async function ensureEmbedding(
     }
   }
 
-  const outcome = await recomputeObservationEmbedding(supabase, observation, { trigger: "ensure" })
+  const outcome = await recomputeObservationEmbedding(supabase, observation, {
+    trigger: "ensure",
+    signals,
+  })
   if (outcome.ok) {
     return { ok: true, vector: outcome.vector, source: "fetched", latencyMs: Date.now() - startedAt }
   }
@@ -279,7 +285,7 @@ async function ensureEmbedding(
 export async function recomputeObservationEmbedding(
   supabase: AdminClient,
   observation: { id: string; title: string; content?: string | null },
-  options: { trigger?: string } = {},
+  options: { trigger?: string; signals?: EmbeddingStructuredSignals } = {},
 ): Promise<
   | { ok: true; vector: number[]; model: string; algorithmVersion: string; dimensions: number }
   | { ok: false; reason: string }
@@ -287,7 +293,17 @@ export async function recomputeObservationEmbedding(
   const trigger = options.trigger ?? "unspecified"
   const algorithmVersionModel = `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`
 
-  const input = buildEmbeddingInputText(observation.title, observation.content ?? null)
+  // v2 input prepends structured signals (when caller passed them) so
+  // the embedding model encodes issue type, not just prose vocabulary.
+  // Callers without structured context (legacy single-observation
+  // recomputes from the trace-page Re-run button) get the v1-equivalent
+  // prose-only input and still produce valid v2 vectors — just less
+  // semantically anchored.
+  const input = buildEmbeddingInputText(
+    observation.title,
+    observation.content ?? null,
+    options.signals,
+  )
   const embedding = await createEmbedding(input)
   if (!embedding) {
     await recordProcessingEvent(supabase, {
@@ -601,7 +617,18 @@ export async function runSemanticClusteringForBatch(
   const fetchLatencies: number[] = []
 
   for (const observation of observations) {
-    const outcome = await ensureEmbedding(supabase, observation)
+    // Build the v2 structured-signal payload from the observation's
+    // optional context fields. Each absent field is silently omitted by
+    // buildEmbeddingInputText; an observation with no signals at all
+    // still embeds successfully with prose-only input.
+    const signals: EmbeddingStructuredSignals = {
+      type: observation.familyKind ?? null,
+      errorCode: observation.errorCode ?? null,
+      component: observation.topicSlug ?? null,
+      topStackFrame: observation.topStackFrame ?? null,
+      platform: observation.platform ?? null,
+    }
+    const outcome = await ensureEmbedding(supabase, observation, signals)
     if (!outcome.ok) {
       embeddingFailures++
       continue
@@ -810,11 +837,3 @@ export async function runSemanticClusteringForBatch(
   }
 }
 
-/** Inclusive nearest-rank percentile over a numeric array. Returns null
- *  for empty input so callers can render "—" instead of NaN. */
-function percentile(values: number[], p: number): number | null {
-  if (values.length === 0) return null
-  const sorted = [...values].sort((a, b) => a - b)
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))
-  return sorted[idx]
-}

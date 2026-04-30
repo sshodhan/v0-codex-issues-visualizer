@@ -406,8 +406,14 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     competitor_mention: "v2",
     // Classification stays at v1 (011 doesn't bump it).
     classification: "v1",
-    // 012 added these two registry kinds.
-    observation_embedding: "v1",
+    // 012 added these two registry kinds. Bumped v1 → v2 by 034 to
+    // change the embedding input from prose-only (`Title: …\nSummary: …`)
+    // to structured-prefix (`[Type: bug] [Error: TIMEOUT] [Component: …]
+    // \nTitle: …\nSummary: …`). v1 rows remain in observation_embeddings
+    // for replay; v2 rows compute on demand once the next admin rebuild
+    // runs. See scripts/034_observation_embedding_v2_bump.sql and the
+    // 2026-04 production diagnostic that motivated the bump.
+    observation_embedding: "v2",
     // Bumped v1 → v2 alongside the deterministic-fallback labeller in
     // lib/storage/cluster-label-fallback.ts (Topic+error fallback,
     // small→large LLM escalation). See lib/storage/algorithm-versions.ts

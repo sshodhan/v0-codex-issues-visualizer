@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
 
   const supabase = createAdminClient()
 
-  const [obsCountRes, clusterCountRes, activeMembershipsRes, topRes, prefixRes] =
+  const [obsCountRes, clusterCountRes, activeMembershipsRes, topRes, prefixRes, qualityRes] =
     await Promise.all([
       supabase.from("observations").select("*", { count: "exact", head: true }),
       supabase.from("clusters").select("*", { count: "exact", head: true }),
@@ -65,6 +65,18 @@ export async function GET(request: NextRequest) {
         .from("cluster_members")
         .select("cluster_id, clusters!inner(cluster_key)")
         .is("detached_at", null),
+      // Cluster-quality lens: the existing cluster-health MV already
+      // computes per-cluster homogeneity (what fraction of members share
+      // the dominant error_code / top_stack_frame). We pull only
+      // multi-member clusters because singleton "clusters" are
+      // tautologically homogeneous (share=1) and would skew any average
+      // we compute, masking real quality signal.
+      supabase
+        .from("mv_cluster_health_current")
+        .select(
+          "cluster_id, cluster_size, dominant_error_code_share, dominant_stack_frame_share",
+        )
+        .gte("cluster_size", 2),
     ])
 
   const firstError =
@@ -80,6 +92,9 @@ export async function GET(request: NextRequest) {
   if (prefixRes.error) {
     logServerError("admin-cluster", "prefix_distribution_query_failed", prefixRes.error)
   }
+  if (qualityRes.error) {
+    logServerError("admin-cluster", "cluster_quality_query_failed", qualityRes.error)
+  }
 
   const observations = obsCountRes.count ?? 0
   const clusters = clusterCountRes.count ?? 0
@@ -94,20 +109,85 @@ export async function GET(request: NextRequest) {
 
   // Build {semantic, title, other} histogram of cluster_key prefixes.
   // De-duplicate by cluster_id first since cluster_members may have
-  // multiple active rows per cluster (one per observation).
-  const seenClusterIds = new Set<string>()
-  const cluster_path_distribution = { semantic: 0, title: 0, other: 0 }
-  for (const row of (prefixRes.data ?? []) as unknown as Array<{
-    cluster_id: string
-    clusters: { cluster_key: string } | { cluster_key: string }[]
-  }>) {
-    if (seenClusterIds.has(row.cluster_id)) continue
-    seenClusterIds.add(row.cluster_id)
-    const clusterRel = Array.isArray(row.clusters) ? row.clusters[0] : row.clusters
-    const key = clusterRel?.cluster_key ?? ""
-    if (key.startsWith("semantic:")) cluster_path_distribution.semantic++
-    else if (key.startsWith("title:")) cluster_path_distribution.title++
-    else cluster_path_distribution.other++
+  // multiple active rows per cluster (one per observation). When the
+  // upstream query failed we explicitly return `null` so the UI can
+  // render "—" instead of a misleading "0 of everything" zero state.
+  let cluster_path_distribution: { semantic: number; title: number; other: number } | null
+  let active_clusters: number | null
+  if (prefixRes.error) {
+    cluster_path_distribution = null
+    active_clusters = null
+  } else {
+    const seenClusterIds = new Set<string>()
+    const dist = { semantic: 0, title: 0, other: 0 }
+    for (const row of (prefixRes.data ?? []) as unknown as Array<{
+      cluster_id: string
+      clusters: { cluster_key: string } | { cluster_key: string }[]
+    }>) {
+      if (seenClusterIds.has(row.cluster_id)) continue
+      seenClusterIds.add(row.cluster_id)
+      const clusterRel = Array.isArray(row.clusters) ? row.clusters[0] : row.clusters
+      const key = clusterRel?.cluster_key ?? ""
+      if (key.startsWith("semantic:")) dist.semantic++
+      else if (key.startsWith("title:")) dist.title++
+      else dist.other++
+    }
+    cluster_path_distribution = dist
+    active_clusters = seenClusterIds.size
+  }
+
+  // Aggregate cluster-quality across multi-member clusters. The MV
+  // computes per-cluster shares; we need a portfolio view: are MOST
+  // clusters coherent, or only a few? Unweighted average so a single
+  // huge incoherent cluster doesn't dwarf many small good ones.
+  // CAVEAT: dominant_error_code_share is computed as
+  // (top_count / cluster_size) — clusters where many members lack any
+  // bug_fingerprint look "incoherent" even when their fingerprinted
+  // members agree. The UI text below names this caveat.
+  let cluster_quality:
+    | {
+        multi_member_clusters: number
+        avg_dominant_error_share: number
+        avg_dominant_stack_frame_share: number
+        clusters_with_perfect_error_share: number
+        clusters_with_low_error_share: number
+      }
+    | null
+  if (qualityRes.error) {
+    cluster_quality = null
+  } else {
+    const rows = (qualityRes.data ?? []) as Array<{
+      cluster_id: string
+      cluster_size: number
+      dominant_error_code_share: number | string | null
+      dominant_stack_frame_share: number | string | null
+    }>
+    const multi = rows.filter((r) => Number(r.cluster_size) >= 2)
+    if (multi.length === 0) {
+      cluster_quality = {
+        multi_member_clusters: 0,
+        avg_dominant_error_share: 0,
+        avg_dominant_stack_frame_share: 0,
+        clusters_with_perfect_error_share: 0,
+        clusters_with_low_error_share: 0,
+      }
+    } else {
+      // PostgREST sometimes returns numeric columns as strings; coerce
+      // defensively so AVG isn't accidentally string-concatenating.
+      const errShares = multi.map((r) => Number(r.dominant_error_code_share ?? 0))
+      const frameShares = multi.map((r) => Number(r.dominant_stack_frame_share ?? 0))
+      const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+      cluster_quality = {
+        multi_member_clusters: multi.length,
+        avg_dominant_error_share: Number(avg(errShares).toFixed(4)),
+        avg_dominant_stack_frame_share: Number(avg(frameShares).toFixed(4)),
+        // "Perfect" = every member with an error_code has the same one.
+        // "Low" = the dominant error_code accounts for less than half the
+        // cluster — a fairly forgiving floor for "incoherent."
+        clusters_with_perfect_error_share: errShares.filter((s) => s >= 0.999).length,
+        clusters_with_low_error_share: errShares.filter((s) => s < 0.5).length,
+      }
+    }
   }
 
   return NextResponse.json({
@@ -115,8 +195,9 @@ export async function GET(request: NextRequest) {
     clusters,
     active_memberships,
     orphans,
-    active_clusters: seenClusterIds.size,
+    active_clusters,
     cluster_path_distribution,
+    cluster_quality,
     top_clusters,
   })
 }
@@ -215,16 +296,22 @@ export async function POST(request: NextRequest) {
     const sampleKeys: Array<{ id: string; title: string; cluster_key: string }> = []
 
     if (mode === "semantic") {
-      // Pull Topic slug + latest error code per observation in this batch
-      // so the labeller has the deterministic-fallback signals it needs
-      // (lib/storage/cluster-label-fallback.ts). Both lookups are best-
-      // effort: missing rows just leave the field null, which the
-      // fallback handles gracefully.
+      // Pull every per-observation signal we feed into the v2 embedding
+      // input (Type / Error / Component / Stack / Platform). All four
+      // lookups are best-effort: a missing fingerprint or family row
+      // just leaves the corresponding tag absent in the embedding text,
+      // and buildEmbeddingInputText degrades gracefully to prose-only
+      // input. Topic + ErrorCode are also still consumed by the
+      // deterministic-fallback labeller (cluster-label-fallback.ts) so
+      // those two are not embedding-only signals.
       const ids = rows.map((row) => row.id as string)
       const topicSlugById = new Map<string, string>()
       const errorCodeById = new Map<string, string>()
+      const topStackFrameById = new Map<string, string>()
+      const platformById = new Map<string, string>()
+      const familyKindById = new Map<string, string>()
       if (ids.length > 0) {
-        const [catRes, fpRes] = await Promise.all([
+        const [catRes, fpRes, famRes] = await Promise.all([
           supabase
             .from("category_assignments")
             .select("observation_id, computed_at, categories:category_id(slug)")
@@ -232,10 +319,24 @@ export async function POST(request: NextRequest) {
             .order("computed_at", { ascending: false }),
           supabase
             .from("bug_fingerprints")
-            .select("observation_id, error_code, computed_at")
+            .select("observation_id, error_code, top_stack_frame, os, computed_at")
             .in("observation_id", ids)
-            .not("error_code", "is", null)
             .order("computed_at", { ascending: false }),
+          // family_kind comes from the per-cluster family_classification
+          // view, joined to observations via cluster_members. We pull
+          // family_kind for every observation in the batch (best-effort)
+          // so the v2 embedding can encode "type: bug / feature_request"
+          // as a top-level signal. Limitation: observations whose cluster
+          // hasn't been family-classified yet (or who currently sit in a
+          // singleton cluster) get no family_kind — that's the cold-start
+          // case the prose tail handles.
+          supabase
+            .from("cluster_members")
+            .select(
+              "observation_id, cluster_id, family_classification_current!inner(family_kind)",
+            )
+            .in("observation_id", ids)
+            .is("detached_at", null),
         ])
         // PostgREST inflates the embedded `categories(slug)` join as a
         // single object at runtime, but Supabase's generated typings
@@ -249,25 +350,54 @@ export async function POST(request: NextRequest) {
             topicSlugById.set(row.observation_id, row.categories.slug)
           }
         }
+        // Single fingerprint pass populates all three fingerprint-derived
+        // signals — error_code, top_stack_frame, os — taking the first
+        // (most recent by computed_at) row per observation.
         for (const row of (fpRes.data ?? []) as Array<{
           observation_id: string
           error_code: string | null
+          top_stack_frame: string | null
+          os: string | null
         }>) {
-          if (!errorCodeById.has(row.observation_id) && row.error_code) {
+          if (row.error_code && !errorCodeById.has(row.observation_id)) {
             errorCodeById.set(row.observation_id, row.error_code)
+          }
+          if (row.top_stack_frame && !topStackFrameById.has(row.observation_id)) {
+            topStackFrameById.set(row.observation_id, row.top_stack_frame)
+          }
+          if (row.os && !platformById.has(row.observation_id)) {
+            platformById.set(row.observation_id, row.os)
+          }
+        }
+        for (const row of (famRes.data ?? []) as unknown as Array<{
+          observation_id: string
+          family_classification_current: { family_kind: string | null } | { family_kind: string | null }[] | null
+        }>) {
+          const famRel = Array.isArray(row.family_classification_current)
+            ? row.family_classification_current[0]
+            : row.family_classification_current
+          const kind = famRel?.family_kind
+          if (kind && !familyKindById.has(row.observation_id)) {
+            familyKindById.set(row.observation_id, kind)
           }
         }
       }
 
       const semanticResult = await runSemanticClusteringForBatch(
         supabase,
-        rows.map((row) => ({
-          id: row.id as string,
-          title: ((row.title as string) ?? "").trim(),
-          content: (row.content as string | null) ?? null,
-          topicSlug: topicSlugById.get(row.id as string) ?? null,
-          errorCode: errorCodeById.get(row.id as string) ?? null,
-        })),
+        rows.map((row) => {
+          const id = row.id as string
+          return {
+            id,
+            title: ((row.title as string) ?? "").trim(),
+            content: (row.content as string | null) ?? null,
+            topicSlug: topicSlugById.get(id) ?? null,
+            errorCode: errorCodeById.get(id) ?? null,
+            topStackFrame: topStackFrameById.get(id) ?? null,
+            platform: platformById.get(id) ?? null,
+            familyKind: familyKindById.get(id) ?? null,
+          }
+        }),
         {
           similarityThreshold: body.similarityThreshold,
           minClusterSize: body.minClusterSize,

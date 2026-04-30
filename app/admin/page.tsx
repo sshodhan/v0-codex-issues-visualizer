@@ -102,17 +102,32 @@ interface ClusterStats {
   orphans: number
   /** Distinct active cluster_ids (clusters with at least one member where
    *  detached_at is null). Always <= total `clusters` count, since the
-   *  `clusters` table retains rows after redetach. */
-  active_clusters?: number
+   *  `clusters` table retains rows after redetach. `null` when the
+   *  upstream join query failed (rendered as "—" rather than zero so an
+   *  operator can distinguish "no data" from "actually zero clusters"). */
+  active_clusters?: number | null
   /** Split of active clusters by cluster_key prefix. Surfaces the
    *  semantic-vs-fallback ratio at a glance — the single most useful
    *  number for diagnosing "is the embedding pipeline actually being
-   *  used?". Optional because older API versions didn't return it. */
+   *  used?". `null` when the upstream join query failed; `undefined`
+   *  on older API versions that didn't return it. */
   cluster_path_distribution?: {
     semantic: number
     title: number
     other: number
-  }
+  } | null
+  /** Cluster-quality lens: do members of multi-member clusters actually
+   *  share an error_code / top_stack_frame? Unweighted averages plus
+   *  "perfect" and "low coherence" cluster counts so an operator can
+   *  see "are clusters coherent overall, or are a few bad ones dragging
+   *  the average?". `null` when the upstream MV query failed. */
+  cluster_quality?: {
+    multi_member_clusters: number
+    avg_dominant_error_share: number
+    avg_dominant_stack_frame_share: number
+    clusters_with_perfect_error_share: number
+    clusters_with_low_error_share: number
+  } | null
   top_clusters: Array<{
     cluster_id: string
     cluster_key: string
@@ -2638,59 +2653,150 @@ function ClusteringPanel({ secret }: { secret: string }) {
           ))}
         </div>
 
-        {stats?.cluster_path_distribution && (
+        {/* Render the card whenever stats has loaded; the body handles the
+            three states (have data | null = upstream query failed |
+            undefined = older API version without the field) explicitly so
+            an operator sees a placeholder rather than wondering whether the
+            section silently disappeared. */}
+        {stats && "cluster_path_distribution" in stats && (
           <div className="rounded-md border bg-muted/10 p-3">
             <div className="mb-2 flex items-baseline justify-between">
               <div className="text-xs font-semibold uppercase text-muted-foreground">
                 Active cluster_key distribution
               </div>
-              {stats.active_clusters != null && (
+              {stats.active_clusters != null ? (
                 <div className="text-[11px] text-muted-foreground tabular-nums">
                   {stats.active_clusters.toLocaleString()} active{" "}
                   {stats.active_clusters === 1 ? "cluster" : "clusters"}
                 </div>
+              ) : (
+                <div className="text-[11px] text-muted-foreground">—</div>
               )}
             </div>
-            {(() => {
-              const dist = stats.cluster_path_distribution!
+            {stats.cluster_path_distribution === null && (
+              <div className="text-xs text-muted-foreground">
+                Distribution query failed — see{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">prefix_distribution_query_failed</code>{" "}
+                in server logs.
+              </div>
+            )}
+            {stats.cluster_path_distribution && (() => {
+              const dist = stats.cluster_path_distribution
               const total = dist.semantic + dist.title + dist.other
               const pct = (n: number) =>
                 total > 0 ? `${((n / total) * 100).toFixed(1)}%` : "—"
               return (
-                <div className="grid grid-cols-3 gap-3 text-sm">
+                <>
+                  <div className="grid grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <div className="text-xs text-muted-foreground">semantic:</div>
+                      <div className="font-mono tabular-nums">
+                        {dist.semantic.toLocaleString()}{" "}
+                        <span className="text-muted-foreground">({pct(dist.semantic)})</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">title:</div>
+                      <div className="font-mono tabular-nums">
+                        {dist.title.toLocaleString()}{" "}
+                        <span className="text-muted-foreground">({pct(dist.title)})</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">other</div>
+                      <div className="font-mono tabular-nums">
+                        {dist.other.toLocaleString()}{" "}
+                        <span className="text-muted-foreground">({pct(dist.other)})</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
+                    Embedding-based clusters use{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-[10px]">semantic:</code>{" "}
+                    keys; title-hash fallback uses{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-[10px]">title:</code>.
+                    A high <code className="rounded bg-muted px-1 py-0.5 text-[10px]">title:</code>{" "}
+                    share means the embedding pipeline didn't merge much — try lowering
+                    the similarity threshold and re-detaching.
+                  </p>
+                </>
+              )
+            })()}
+          </div>
+        )}
+
+        {/* Cluster quality lens — separate from prefix distribution
+            because they answer different questions. Prefix asks
+            "did embedding-based clustering happen at all?"; quality
+            asks "when it did happen, were the resulting clusters
+            actually about the same kind of bug?". A high semantic:%
+            with a low avg_dominant_error_share is a red flag —
+            clusters formed, but they're grouping unrelated issues. */}
+        {stats && "cluster_quality" in stats && (
+          <div className="rounded-md border bg-muted/10 p-3">
+            <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+              Cluster quality (multi-member clusters)
+            </div>
+            {stats.cluster_quality === null && (
+              <div className="text-xs text-muted-foreground">
+                Quality query failed — see{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">cluster_quality_query_failed</code>{" "}
+                in server logs.
+              </div>
+            )}
+            {stats.cluster_quality && stats.cluster_quality.multi_member_clusters === 0 && (
+              <div className="text-xs text-muted-foreground">
+                No multi-member clusters yet — every cluster has size 1, so
+                there's nothing to score for coherence. Lower the similarity
+                threshold or fix upstream embedding strategy and re-run.
+              </div>
+            )}
+            {stats.cluster_quality && stats.cluster_quality.multi_member_clusters > 0 && (
+              <>
+                <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
                   <div>
-                    <div className="text-xs text-muted-foreground">semantic:</div>
+                    <div className="text-xs text-muted-foreground">Multi-member clusters</div>
                     <div className="font-mono tabular-nums">
-                      {dist.semantic.toLocaleString()}{" "}
-                      <span className="text-muted-foreground">({pct(dist.semantic)})</span>
+                      {stats.cluster_quality.multi_member_clusters.toLocaleString()}
                     </div>
                   </div>
                   <div>
-                    <div className="text-xs text-muted-foreground">title:</div>
+                    <div className="text-xs text-muted-foreground">Avg dominant error share</div>
                     <div className="font-mono tabular-nums">
-                      {dist.title.toLocaleString()}{" "}
-                      <span className="text-muted-foreground">({pct(dist.title)})</span>
+                      {(stats.cluster_quality.avg_dominant_error_share * 100).toFixed(1)}%
                     </div>
                   </div>
                   <div>
-                    <div className="text-xs text-muted-foreground">other</div>
+                    <div className="text-xs text-muted-foreground">Perfect coherence (≥99%)</div>
                     <div className="font-mono tabular-nums">
-                      {dist.other.toLocaleString()}{" "}
-                      <span className="text-muted-foreground">({pct(dist.other)})</span>
+                      {stats.cluster_quality.clusters_with_perfect_error_share.toLocaleString()}{" "}
+                      <span className="text-muted-foreground">
+                        of {stats.cluster_quality.multi_member_clusters.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Low coherence (&lt;50%)</div>
+                    <div className="font-mono tabular-nums">
+                      {stats.cluster_quality.clusters_with_low_error_share.toLocaleString()}{" "}
+                      <span className="text-muted-foreground">
+                        of {stats.cluster_quality.multi_member_clusters.toLocaleString()}
+                      </span>
                     </div>
                   </div>
                 </div>
-              )
-            })()}
-            <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
-              Embedding-based clusters use{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[10px]">semantic:</code>{" "}
-              keys; title-hash fallback uses{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[10px]">title:</code>.
-              A high <code className="rounded bg-muted px-1 py-0.5 text-[10px]">title:</code>{" "}
-              share means the embedding pipeline didn't merge much — try lowering
-              the similarity threshold and re-detaching.
-            </p>
+                <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
+                  Dominant share = (most common error_code count) / (cluster size).
+                  Caveat: clusters where many members lack an{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 text-[10px]">error_code</code>{" "}
+                  fingerprint score low even when the fingerprinted members agree
+                  — share is over cluster_size, not over members-with-codes.
+                  A high <code className="rounded bg-muted px-1 py-0.5 text-[10px]">semantic:</code>{" "}
+                  share above with low error coherence here means the embedding
+                  is grouping by surface prose rather than by issue type.
+                </p>
+              </>
+            )}
           </div>
         )}
 
