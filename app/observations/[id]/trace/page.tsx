@@ -14,6 +14,7 @@ import {
   llmSeverityLabel,
   llmStatusLabel,
 } from "@/lib/classification/llm-category-display"
+import { familyKindLabel } from "@/lib/classification/family-kind-display"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
 
 interface ObservationTraceResponse {
@@ -58,6 +59,19 @@ interface ObservationTraceResponse {
       memberships: Array<Record<string, unknown>>
     }
     classification: { latest_created_at: string | null; latest_algorithm_version: string | null; latest_model_used: string | null; total_versions: number; chain_head_id: string | null; lineage: Array<Record<string, unknown>> }
+    family: {
+      cluster_id: string | null
+      latest_created_at: string | null
+      latest_algorithm_version: string | null
+      latest_model_used: string | null
+      latest_llm_status: string | null
+      family_kind: string | null
+      family_title: string | null
+      family_summary: string | null
+      needs_human_review: boolean | null
+      review_reasons: unknown
+      total_versions: number
+    }
     review: { total_reviews: number; latest_reviewed_at: string | null }
   }
   generated_at: string
@@ -219,6 +233,8 @@ export default function ObservationTracePage() {
   const [reviewer, setReviewer] = useState<string>("")
   const [reviewBusy, setReviewBusy] = useState<"mark_reviewed" | "flag_review" | null>(null)
   const [reviewStatus, setReviewStatus] = useState<{ ok: boolean; message: string } | null>(null)
+  const [labelBusy, setLabelBusy] = useState<boolean>(false)
+  const [labelStatus, setLabelStatus] = useState<{ ok: boolean; message: string } | null>(null)
 
   const loadTrace = useCallback(
     async (signal?: AbortSignal, reason: "initial" | "post_rerun" = "initial") => {
@@ -422,6 +438,93 @@ export default function ObservationTracePage() {
     [id, loadTrace, reviewer, trace],
   )
 
+  const handleGenerateClusterName = useCallback(
+    async (options: { force: boolean }) => {
+      if (!trace) return
+      const clusterId = trace.stages.clustering.active_cluster_id
+      if (!clusterId) {
+        setLabelStatus({ ok: false, message: "Observation is not attached to a cluster." })
+        return
+      }
+      setLabelBusy(true)
+      setLabelStatus(null)
+      logClientEvent("reviewer-trace-generate-cluster-label-started", {
+        observationId: id,
+        clusterId,
+        force: options.force,
+      })
+      try {
+        const res = await fetch(`/api/clusters/${clusterId}/label`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: options.force }),
+        })
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean
+          relabelled?: boolean
+          reason?: string
+          label?: string
+          model?: string
+          error?: string
+          detail?: string
+        }
+        if (!res.ok) {
+          const message = body.error || `HTTP ${res.status}`
+          const fullMessage = body.detail ? `${message}: ${body.detail}` : message
+          setLabelStatus({ ok: false, message: fullMessage })
+          logClientError(new Error(fullMessage), "reviewer-trace-generate-cluster-label-failed", {
+            observationId: id,
+            clusterId,
+            status: res.status,
+            errorCode: body.error ?? null,
+          })
+          return
+        }
+        if (body.relabelled === false && body.reason === "cluster_already_labelled") {
+          setLabelStatus({
+            ok: true,
+            message: "Cluster already has a strong label — pass force to regenerate.",
+          })
+          logClientEvent("reviewer-trace-generate-cluster-label-skipped", {
+            observationId: id,
+            clusterId,
+            reason: body.reason,
+          })
+          return
+        }
+        setLabelStatus({
+          ok: true,
+          message: body.label ? `New label: ${body.label}` : "Cluster relabelled.",
+        })
+        logClientEvent("reviewer-trace-generate-cluster-label-succeeded", {
+          observationId: id,
+          clusterId,
+          label: body.label ?? null,
+          model: body.model ?? null,
+          force: options.force,
+        })
+        await loadTrace(undefined, "post_rerun").catch((refreshErr) => {
+          logClientError(
+            refreshErr instanceof Error ? refreshErr : new Error(String(refreshErr)),
+            "reviewer-trace-generate-cluster-label-refresh-failed",
+            { observationId: id, clusterId },
+          )
+        })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Cluster label trigger failed"
+        setLabelStatus({ ok: false, message })
+        logClientError(
+          e instanceof Error ? e : new Error(message),
+          "reviewer-trace-generate-cluster-label-failed",
+          { observationId: id, clusterId, phase: "network_or_unhandled" },
+        )
+      } finally {
+        setLabelBusy(false)
+      }
+    },
+    [id, loadTrace, trace],
+  )
+
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur">
@@ -619,7 +722,56 @@ export default function ObservationTracePage() {
                 ],
                 ["memberships", String(trace.stages.clustering.memberships.length)],
               ]}
-            />
+            >
+              {trace.stages.clustering.active_cluster_id ? (
+                <div className="space-y-2 rounded border bg-muted/40 p-2 text-xs">
+                  <p className="text-muted-foreground">
+                    {trace.stages.clustering.active_cluster_label
+                      ? "Cluster has a name. Use Force regenerate to relabel from current cluster contents."
+                      : "Cluster has no name yet. Trigger the deterministic labeller to compose one from the cluster's Topic + canonical title + recurring error code."}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 px-2 text-xs"
+                      onClick={() => handleGenerateClusterName({ force: false })}
+                      disabled={labelBusy || Boolean(trace.stages.clustering.active_cluster_label)}
+                      title="Compose a deterministic label only when the cluster has none / weak. No OpenAI call."
+                    >
+                      {labelBusy ? (
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCcw className="mr-1 h-3 w-3" />
+                      )}
+                      Generate cluster name
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 px-2 text-xs"
+                      onClick={() => handleGenerateClusterName({ force: true })}
+                      disabled={labelBusy}
+                      title="Force regenerate the deterministic label even if a strong one already exists."
+                    >
+                      {labelBusy ? (
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCcw className="mr-1 h-3 w-3" />
+                      )}
+                      Force regenerate
+                    </Button>
+                  </div>
+                  {labelStatus ? (
+                    <p className={labelStatus.ok ? "text-foreground" : "text-destructive"}>
+                      {labelStatus.message}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </TraceStage>
             <TraceStage
               title="Per-observation LLM classification"
               stage={{
@@ -681,6 +833,56 @@ export default function ObservationTracePage() {
                     )
                   })}
                 </div>
+              ) : null}
+            </TraceStage>
+            <TraceStage
+              title="Cluster family"
+              stage={{
+                stageLabel: "Stage 4 · cluster-level family interpretation",
+                internalRef: "family_classifications · admin: Family Classification",
+              }}
+              available={trace.availability.family}
+              meta={[
+                [
+                  "family_kind",
+                  trace.stages.family.family_kind ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-foreground">
+                        {familyKindLabel(trace.stages.family.family_kind)}
+                      </span>
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        ({trace.stages.family.family_kind})
+                      </span>
+                    </span>
+                  ) : null,
+                ],
+                ["needs_human_review", trace.stages.family.needs_human_review === null ? null : String(trace.stages.family.needs_human_review)],
+                ["latest_model", trace.stages.family.latest_model_used],
+                ["latest_algorithm", trace.stages.family.latest_algorithm_version],
+                ["llm_status", trace.stages.family.latest_llm_status],
+                [
+                  "latest_created_at",
+                  <FormattedDate key="fam" iso={trace.stages.family.latest_created_at} />,
+                ],
+                ["versions", String(trace.stages.family.total_versions)],
+              ]}
+            >
+              {trace.stages.family.family_title || trace.stages.family.family_summary ? (
+                <div className="space-y-1 rounded border bg-muted/40 p-2 text-xs">
+                  {trace.stages.family.family_title ? (
+                    <p className="font-medium text-foreground">
+                      {trace.stages.family.family_title}
+                    </p>
+                  ) : null}
+                  {trace.stages.family.family_summary ? (
+                    <p className="text-muted-foreground">{trace.stages.family.family_summary}</p>
+                  ) : null}
+                </div>
+              ) : !trace.availability.family && trace.stages.clustering.active_cluster_id ? (
+                <p className="rounded border bg-muted/40 p-2 text-xs text-muted-foreground">
+                  No family_classifications row yet for this cluster. Family naming runs from the
+                  Family Classification admin tab once the cluster has enough signal.
+                </p>
               ) : null}
             </TraceStage>
             <TraceStage
