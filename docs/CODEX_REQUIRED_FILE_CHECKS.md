@@ -20,6 +20,9 @@ This file is a reviewer-friendly quick checklist derived from the canonical phas
 - [ ] Redacts sensitive fields before persistence/logging.
 - [ ] Returns deterministic success envelope (`requestId`, accepted timestamp).
 - [ ] Applies method guardrails (reject unsupported verbs with `405`).
+- [ ] Uses existing observation insertion helper when available; otherwise calls adapter at `lib/codex-feedback/normalize.ts` to write via DB client.
+- [ ] Invokes classification trigger hook when present; otherwise persists `classification_status = "pending"`.
+- [ ] Final implementation summary names the exact modules used for the chosen fallback path.
 
 ### `packages/codex-issue-collector/src/cli.ts`
 - [ ] Supports `capture`, `report`, `submit`, `github`, `doctor`, and `preview`.
