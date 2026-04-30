@@ -205,24 +205,21 @@ test("topic-classifier v7: prose `### Why is plan caching slow?` heading is NOT 
   assert.equal(r!.slug, "performance", `expected performance; got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
 })
 
-test("topic-classifier v7: margin-0 abstain — exact-tie scores return slug=other with confidence 0", () => {
-  // Construct a synthetic input that scores exactly equally for two
-  // slugs at body-only weight (no title multiplier). `error` (bug, w2)
-  // and `slow` (performance, w3) — make scores match by adding a
-  // single weight-2 phrase to performance and balancing.
-  // Easiest: use whole-word "lag" (performance, w3) + whole-word
-  // "error" (bug, w2) + whole-word "broken" (bug, w2). bug=4,
-  // performance=3 — not a tie. Use two bug w2 phrases vs one perf w3
-  // + one perf w1? Cleaner: synthesize a 3-vs-3 by relying on a
-  // single w3 phrase per side.
-  // bug "errored" (w3, wholeWord) + performance "slow" (w3, wholeWord)
-  // → bug=3, performance=3. Both clear default threshold 2.
+test("topic-classifier v7: margin-0 abstain — exact-tie scores return slug=other with confidence 0 and preserve tied candidates in evidence", () => {
+  // bug `errored` (w3, wholeWord) + performance `slow` (w3, wholeWord)
+  // → bug=3, performance=3 at body weight. Both clear default
+  // threshold 2; insertion order would have given this row to bug.
   const r = categorizeIssue("", "the build errored and the cli is slow", CATEGORIES)
   assert.ok(r, "must return a result, not null")
   assert.equal(r!.slug, "other", `expected other (margin-0 abstain); got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
   assert.equal(r!.confidenceProxy, 0)
   assert.equal(r!.evidence.scoring.margin, 0)
-  // The runner-up is recorded so the abstain decision is auditable.
+  // Audit fields preserve the original tied candidates so phrase
+  // refinement can target the actual disagreement.
+  assert.equal(r!.evidence.scoring.abstain_reason, "margin_0_tie")
+  assert.equal(typeof r!.evidence.scoring.abstained_winner, "string")
+  assert.equal(typeof r!.evidence.scoring.abstained_runner_up, "string")
+  assert.notEqual(r!.evidence.scoring.abstained_winner, r!.evidence.scoring.abstained_runner_up)
   assert.notEqual(r!.evidence.scoring.runner_up, null)
 })
 
@@ -239,6 +236,62 @@ test("topic-classifier v7: bare `subscription` in body no longer triggers pricin
   // Either "other" (no slug clears threshold) or any non-pricing slug
   // (if some other phrase happens to fire) — but never pricing.
   assert.notEqual(r?.slug, "pricing", `pricing should NOT win; got ${r?.slug}; evidence=${JSON.stringify(r?.evidence)}`)
+})
+
+// v7 recall guard — pricing threshold = 4 must not regress real pricing
+// reports. The PR raises pricing's threshold to keep lone weight-3
+// phrases from sole-winning, so a multi-phrase pricing report is the
+// case we must lock in.
+test("topic-classifier v7: real pricing report clears the new pricing threshold (recall guard)", () => {
+  const r = categorizeIssue(
+    "Out of credits despite billing details showing usage remaining",
+    "quota exceeded and billing details show plenty of remaining usage",
+    CATEGORIES,
+  )
+  assert.ok(r, "must classify")
+  assert.equal(r!.slug, "pricing", `expected pricing; got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
+  // Score must clear pricing's per-slug threshold (4), not just the
+  // default of 2 — guards against an accidental future override that
+  // would silently regress recall.
+  const pricingScore = r!.evidence.scoring.scores["pricing"] ?? 0
+  assert.ok(
+    pricingScore >= 4,
+    `pricing score ${pricingScore} must clear threshold=4; evidence=${JSON.stringify(r!.evidence)}`,
+  )
+  // Threshold field on evidence reflects the pricing-specific override.
+  assert.equal(r!.evidence.scoring.threshold, 4)
+})
+
+// v7 over-strip guard — `### Environment` is in the metadata-keyword
+// whitelist, but only the heading + first short answer line should be
+// stripped. Multi-line repro / log dumps under such a heading must
+// stay available for scoring so bug signal isn't silently erased.
+test("topic-classifier v7: BODY_TEMPLATE_HEADER_RE preserves multi-line repro under `### Environment`", () => {
+  const body = [
+    "### Environment",
+    "- macOS 15.2",
+    "- Codex CLI 0.20.5",
+    "- Shell: zsh",
+    "",
+    "### Reproduction steps",
+    "1. Run codex on a fresh repo",
+    "2. Observe the traceback in the console — typeerror in lib/foo.js",
+    "3. The cli panics and exits with status code 1",
+  ].join("\n")
+  const r = categorizeIssue("CLI panics on startup", body, CATEGORIES)
+  assert.ok(r, "must classify")
+  // `traceback` (bug w4) and `typeerror` (bug w4) survive in the body
+  // because they are not on the single-line answer beneath
+  // `### Environment`. Bug must win.
+  assert.equal(r!.slug, "bug", `expected bug; got ${r!.slug}; evidence=${JSON.stringify(r!.evidence)}`)
+  // Sanity: at least one bug match came from the body, not the title.
+  const bodyBugMatches = r!.evidence.matched_phrases.filter(
+    (m) => m.location === "body" && m.slug === "bug",
+  )
+  assert.ok(
+    bodyBugMatches.length >= 1,
+    `expected ≥1 body-segment bug match; got ${bodyBugMatches.length}; matches=${JSON.stringify(r!.evidence.matched_phrases)}`,
+  )
 })
 
 // Type-level reachability: ensures TopicResult is exported and confidenceProxy is present.

@@ -574,6 +574,16 @@ export interface TopicEvidence {
     margin: number
     threshold: number
     confidence_proxy: number
+    // v7: only set on the margin-0 abstain branch. `winner` is "other"
+    // in that case, but operators auditing why a row became "other"
+    // need to see the two slugs that tied — otherwise the data
+    // necessary to refine phrases / weights is lost. abstain_reason
+    // discriminates this case from the other "winner=other" branches
+    // (no slug clears its threshold; winner slug not in the live
+    // categories table).
+    abstained_winner?: string
+    abstained_runner_up?: string
+    abstain_reason?: "margin_0_tie"
   }
   matched_phrases: TopicEvidenceMatch[]
 }
@@ -759,7 +769,9 @@ export function categorizeIssue(
   // (declared before `model-quality`) — the dominant non-template
   // pricing-false-positive shape. Returning "other" with confidence 0
   // hands the row to Stage 4 (LLM) instead of producing an arbitrary
-  // verdict. See docs/SCORING.md §11.9.
+  // verdict. abstained_winner / abstained_runner_up preserve the two
+  // tied slugs in evidence so phrase/weight refinement still has the
+  // data it needs. See docs/SCORING.md §11.9.
   if (ranked.length > 1 && ranked[0][1] === ranked[1][1]) {
     if (!otherCategoryId) return null
     return {
@@ -778,6 +790,9 @@ export function categorizeIssue(
           margin: 0,
           threshold: thresholdFor("other"),
           confidence_proxy: 0,
+          abstained_winner: ranked[0][0],
+          abstained_runner_up: ranked[1][0],
+          abstain_reason: "margin_0_tie",
         },
         matched_phrases,
       },
