@@ -16,6 +16,7 @@ import {
 } from "@/lib/classification/llm-category-display"
 import { familyKindLabel } from "@/lib/classification/family-kind-display"
 import { reviewClassification } from "@/hooks/use-dashboard-data"
+import { isCodexSelfReport, readCodexIssueContext } from "@/lib/processing-events/codex-issue-context"
 
 interface ObservationTraceResponse {
   observation: {
@@ -987,11 +988,34 @@ export default function ObservationTracePage() {
                         ) : null}
                         <FormattedDate iso={event.created_at} />
                       </div>
-                      {event.detail_json && Object.keys(event.detail_json).length > 0 ? (
-                        <pre className="mt-1 overflow-x-auto rounded bg-muted p-1 text-[10px]">
-                          {JSON.stringify(event.detail_json, null, 2)}
-                        </pre>
-                      ) : null}
+                      {(() => {
+                        if (!event.detail_json || Object.keys(event.detail_json).length === 0) return null
+                        const codexContext = readCodexIssueContext(event.detail_json)
+                        const showStructuredPanel = isCodexSelfReport(event.detail_json) && codexContext
+
+                        return (
+                          <div className="mt-1 space-y-2">
+                            {showStructuredPanel ? (
+                              <div className="rounded border bg-muted/40 p-2 text-[11px] text-muted-foreground">
+                                <p className="mb-1 font-medium text-foreground">Codex issue context</p>
+                                <div className="grid gap-1 md:grid-cols-2">
+                                  <div><span className="font-mono text-foreground">summary</span>: {codexContext.summary ?? "—"}</div>
+                                  <div><span className="font-mono text-foreground">issue_title</span>: {codexContext.issueTitle ?? "—"}</div>
+                                  <div><span className="font-mono text-foreground">issue_number</span>: {codexContext.issueNumber ?? "—"}</div>
+                                  <div><span className="font-mono text-foreground">repo</span>: {codexContext.repo ?? "—"}</div>
+                                  <div><span className="font-mono text-foreground">run_id</span>: {codexContext.runId ?? "—"}</div>
+                                </div>
+                              </div>
+                            ) : null}
+                            <details>
+                              <summary className="cursor-pointer text-[11px] text-muted-foreground">Raw payload</summary>
+                              <pre className="mt-1 overflow-x-auto rounded bg-muted p-1 text-[10px]">
+                                {JSON.stringify(event.detail_json, null, 2)}
+                              </pre>
+                            </details>
+                          </div>
+                        )
+                      })()}
                     </div>
                   ))}
                 </div>
