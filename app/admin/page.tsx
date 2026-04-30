@@ -100,12 +100,40 @@ interface ClusterStats {
   clusters: number
   active_memberships: number
   orphans: number
+  /** Distinct active cluster_ids (clusters with at least one member where
+   *  detached_at is null). Always <= total `clusters` count, since the
+   *  `clusters` table retains rows after redetach. */
+  active_clusters?: number
+  /** Split of active clusters by cluster_key prefix. Surfaces the
+   *  semantic-vs-fallback ratio at a glance — the single most useful
+   *  number for diagnosing "is the embedding pipeline actually being
+   *  used?". Optional because older API versions didn't return it. */
+  cluster_path_distribution?: {
+    semantic: number
+    title: number
+    other: number
+  }
   top_clusters: Array<{
     cluster_id: string
     cluster_key: string
     canonical_title: string
     frequency_count: number
   }>
+}
+
+interface ClusterEmbeddingStats {
+  cached: number
+  fetched: number
+  failed: number
+  fetchLatencyP50Ms: number | null
+  fetchLatencyP95Ms: number | null
+  fetchLatencyMaxMs: number | null
+}
+
+interface ClusterSimilarityHistogram {
+  buckets: Record<string, number>
+  invalid: number
+  totalPairs: number
 }
 
 interface SampleKey {
@@ -122,6 +150,16 @@ interface ClusterBatchResult {
   done: boolean
   refreshedMvs?: boolean
   sampleKeys?: SampleKey[]
+  semanticAttached?: number
+  fallbackAttached?: number
+  fallbackEmbeddingFailures?: number
+  // Per-batch observability surfaced from the server (semantic mode only).
+  embeddingStats?: ClusterEmbeddingStats | null
+  semanticGroupsFormed?: number
+  largestGroupSize?: number
+  similarityHistogram?: ClusterSimilarityHistogram | null
+  similarityThreshold?: number
+  minClusterSize?: number
 }
 
 interface ClusterBatchRow {
@@ -133,6 +171,10 @@ interface ClusterBatchRow {
   detached: number
   error: string | null
   sampleKeys: SampleKey[]
+  embeddingStats?: ClusterEmbeddingStats | null
+  semanticGroupsFormed?: number
+  largestGroupSize?: number
+  similarityHistogram?: ClusterSimilarityHistogram | null
 }
 
 interface ClassifyBackfillStats {
@@ -2315,6 +2357,13 @@ function ClusteringPanel({ secret }: { secret: string }) {
 
   const [mode, setMode] = useState<ClusterRebuildMode>("semantic")
   const [redetach, setRedetach] = useState(false)
+  // Tunable knobs for semantic mode. Defaults match the server's
+  // current production values (lib/storage/semantic-clusters.ts).
+  // Exposed in the UI so operators can experiment with looser/tighter
+  // thresholds without redeploying — the underlying JS cosine pass is
+  // O(n²) but cheap at 487 obs (<1s).
+  const [similarityThreshold, setSimilarityThreshold] = useState(0.86)
+  const [minClusterSize, setMinClusterSize] = useState(2)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [running, setRunning] = useState(false)
   const [processed, setProcessed] = useState(0)
@@ -2378,6 +2427,16 @@ function ClusteringPanel({ secret }: { secret: string }) {
     let cursor: string | null = null
     let seenSamples = false
     let batchIdCounter = 1
+    const rebuildStartedAt = Date.now()
+    let totalProcessed = 0
+    let totalSemanticAttached = 0
+    let totalFallbackAttached = 0
+    logClientEvent("admin-cluster-rebuild-started", {
+      mode,
+      redetach,
+      similarityThreshold: mode === "semantic" ? similarityThreshold : undefined,
+      minClusterSize: mode === "semantic" ? minClusterSize : undefined,
+    })
 
     try {
       while (!abort.signal.aborted) {
@@ -2407,6 +2466,11 @@ function ClusteringPanel({ secret }: { secret: string }) {
             limit: CHUNK_SIZE,
             redetach,
             mode,
+            // Only meaningful in semantic mode; the server ignores them
+            // when mode === "title-hash". Always sent so the audit log
+            // shows the operator's intent regardless of mode.
+            similarityThreshold: mode === "semantic" ? similarityThreshold : undefined,
+            minClusterSize: mode === "semantic" ? minClusterSize : undefined,
           }),
         })
         if (!res.ok) {
@@ -2443,10 +2507,30 @@ function ClusteringPanel({ secret }: { secret: string }) {
                   attached: batchAttached,
                   detached: batchDetached,
                   sampleKeys: Array.isArray(data.sampleKeys) ? data.sampleKeys : [],
+                  embeddingStats: data.embeddingStats ?? null,
+                  semanticGroupsFormed: data.semanticGroupsFormed ?? 0,
+                  largestGroupSize: data.largestGroupSize ?? 0,
+                  similarityHistogram: data.similarityHistogram ?? null,
                 }
               : row,
           ),
         )
+        logClientEvent("admin-cluster-batch-completed", {
+          batchId,
+          cursor,
+          processed: batchProcessed,
+          attached: batchAttached,
+          detached: batchDetached,
+          embeddingsCached: data.embeddingStats?.cached ?? null,
+          embeddingsFetched: data.embeddingStats?.fetched ?? null,
+          embeddingsFailed: data.embeddingStats?.failed ?? null,
+          fetchLatencyP95Ms: data.embeddingStats?.fetchLatencyP95Ms ?? null,
+          semanticGroupsFormed: data.semanticGroupsFormed ?? null,
+          largestGroupSize: data.largestGroupSize ?? null,
+        })
+        totalProcessed += batchProcessed
+        totalSemanticAttached += Number(data.semanticAttached ?? 0)
+        totalFallbackAttached += Number(data.fallbackAttached ?? 0)
 
         setProcessed((p) => p + (data.processed as number))
         setAttached((a) => a + (data.attached ?? 0))
@@ -2478,6 +2562,18 @@ function ClusteringPanel({ secret }: { secret: string }) {
     } finally {
       abortRef.current = null
       setRunning(false)
+      // Final breadcrumb so an operator scanning Vercel logs can confirm
+      // the run completed cleanly and see the totals at a glance,
+      // independent of whether they were watching the UI in real time.
+      logClientEvent("admin-cluster-rebuild-completed", {
+        mode,
+        redetach,
+        durationMs: Date.now() - rebuildStartedAt,
+        totalProcessed,
+        totalSemanticAttached,
+        totalFallbackAttached,
+        aborted: abort.signal.aborted,
+      })
       await loadStats()
     }
   }
@@ -2541,6 +2637,62 @@ function ClusteringPanel({ secret }: { secret: string }) {
             </div>
           ))}
         </div>
+
+        {stats?.cluster_path_distribution && (
+          <div className="rounded-md border bg-muted/10 p-3">
+            <div className="mb-2 flex items-baseline justify-between">
+              <div className="text-xs font-semibold uppercase text-muted-foreground">
+                Active cluster_key distribution
+              </div>
+              {stats.active_clusters != null && (
+                <div className="text-[11px] text-muted-foreground tabular-nums">
+                  {stats.active_clusters.toLocaleString()} active{" "}
+                  {stats.active_clusters === 1 ? "cluster" : "clusters"}
+                </div>
+              )}
+            </div>
+            {(() => {
+              const dist = stats.cluster_path_distribution!
+              const total = dist.semantic + dist.title + dist.other
+              const pct = (n: number) =>
+                total > 0 ? `${((n / total) * 100).toFixed(1)}%` : "—"
+              return (
+                <div className="grid grid-cols-3 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs text-muted-foreground">semantic:</div>
+                    <div className="font-mono tabular-nums">
+                      {dist.semantic.toLocaleString()}{" "}
+                      <span className="text-muted-foreground">({pct(dist.semantic)})</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">title:</div>
+                    <div className="font-mono tabular-nums">
+                      {dist.title.toLocaleString()}{" "}
+                      <span className="text-muted-foreground">({pct(dist.title)})</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">other</div>
+                    <div className="font-mono tabular-nums">
+                      {dist.other.toLocaleString()}{" "}
+                      <span className="text-muted-foreground">({pct(dist.other)})</span>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+            <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
+              Embedding-based clusters use{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[10px]">semantic:</code>{" "}
+              keys; title-hash fallback uses{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[10px]">title:</code>.
+              A high <code className="rounded bg-muted px-1 py-0.5 text-[10px]">title:</code>{" "}
+              share means the embedding pipeline didn't merge much — try lowering
+              the similarity threshold and re-detaching.
+            </p>
+          </div>
+        )}
 
         {stats && stats.top_clusters.length > 0 && (
           <Collapsible>
@@ -2642,6 +2794,71 @@ function ClusteringPanel({ secret }: { secret: string }) {
               </div>
             </label>
           </RadioGroup>
+
+          {mode === "semantic" && (
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <label
+                  htmlFor="similarity-threshold"
+                  className="block text-xs font-medium text-muted-foreground"
+                >
+                  Similarity threshold (cosine)
+                </label>
+                <input
+                  id="similarity-threshold"
+                  type="number"
+                  inputMode="decimal"
+                  min={0.5}
+                  max={0.99}
+                  step={0.01}
+                  value={similarityThreshold}
+                  onChange={(e) => {
+                    const next = Number(e.target.value)
+                    if (Number.isFinite(next)) {
+                      // Clamp on commit to keep the input usable while typing.
+                      setSimilarityThreshold(Math.min(0.99, Math.max(0.5, next)))
+                    }
+                  }}
+                  disabled={running}
+                  className="block w-full rounded-md border bg-background px-2 py-1.5 text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                />
+                <p className="text-[11px] leading-tight text-muted-foreground">
+                  Default 0.86. Lower (e.g. 0.80) merges more aggressively;
+                  higher (0.90+) merges only near-duplicates. Tune against
+                  the per-batch similarity histogram below.
+                </p>
+              </div>
+              <div className="space-y-1">
+                <label
+                  htmlFor="min-cluster-size"
+                  className="block text-xs font-medium text-muted-foreground"
+                >
+                  Min cluster size
+                </label>
+                <input
+                  id="min-cluster-size"
+                  type="number"
+                  inputMode="numeric"
+                  min={2}
+                  max={10}
+                  step={1}
+                  value={minClusterSize}
+                  onChange={(e) => {
+                    const next = Number(e.target.value)
+                    if (Number.isFinite(next)) {
+                      setMinClusterSize(Math.min(10, Math.max(2, Math.floor(next))))
+                    }
+                  }}
+                  disabled={running}
+                  className="block w-full rounded-md border bg-background px-2 py-1.5 text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                />
+                <p className="text-[11px] leading-tight text-muted-foreground">
+                  Default 2. Groups smaller than this fall back to title-hash
+                  singletons rather than getting a semantic key.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -2843,7 +3060,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
               </div>
 
               {selectedBatch && (
-                <div className="rounded-md border p-3 space-y-2">
+                <div className="rounded-md border p-3 space-y-3">
                   <div className="flex items-center gap-2 text-sm">
                     <span className="font-medium">Batch #{selectedBatch.id}</span>
                     <Badge variant={selectedBatch.status === "completed" ? "default" : selectedBatch.status === "failed" ? "destructive" : "secondary"}>
@@ -2853,6 +3070,141 @@ function ClusteringPanel({ secret }: { secret: string }) {
                   {selectedBatch.error && (
                     <div className="text-xs text-destructive">{selectedBatch.error}</div>
                   )}
+
+                  {/* Embedding stats — only present for semantic-mode batches.
+                      Surfaces cache-hit rate and OpenAI fetch latency so an
+                      operator can tell at a glance whether a slow batch was
+                      bottlenecked on embeddings or on labeling. */}
+                  {selectedBatch.embeddingStats && (
+                    <div className="rounded-md bg-muted/30 p-2">
+                      <div className="mb-1 text-[11px] font-semibold uppercase text-muted-foreground">
+                        Embeddings
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+                        <div>
+                          <div className="text-muted-foreground">Cached</div>
+                          <div className="font-mono tabular-nums">
+                            {selectedBatch.embeddingStats.cached.toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Fetched</div>
+                          <div className="font-mono tabular-nums">
+                            {selectedBatch.embeddingStats.fetched.toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Failed</div>
+                          <div className="font-mono tabular-nums">
+                            {selectedBatch.embeddingStats.failed.toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">p50 ms</div>
+                          <div className="font-mono tabular-nums">
+                            {selectedBatch.embeddingStats.fetchLatencyP50Ms ?? "—"}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">p95 ms</div>
+                          <div className="font-mono tabular-nums">
+                            {selectedBatch.embeddingStats.fetchLatencyP95Ms ?? "—"}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">max ms</div>
+                          <div className="font-mono tabular-nums">
+                            {selectedBatch.embeddingStats.fetchLatencyMaxMs ?? "—"}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Group-formation summary: did this batch produce any
+                      real clustering, and how big was the largest? */}
+                  {(selectedBatch.semanticGroupsFormed != null ||
+                    selectedBatch.largestGroupSize != null) && (
+                    <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                      <div className="rounded-md border p-2">
+                        <div className="text-muted-foreground">Semantic groups</div>
+                        <div className="font-mono tabular-nums">
+                          {selectedBatch.semanticGroupsFormed?.toLocaleString() ?? "—"}
+                        </div>
+                      </div>
+                      <div className="rounded-md border p-2">
+                        <div className="text-muted-foreground">Largest group</div>
+                        <div className="font-mono tabular-nums">
+                          {selectedBatch.largestGroupSize?.toLocaleString() ?? "—"}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Pairwise similarity histogram — the threshold-tuning
+                      lens. Counts pairs by similarity bucket, with the
+                      active threshold rendered as a visual marker. */}
+                  {selectedBatch.similarityHistogram &&
+                    selectedBatch.similarityHistogram.totalPairs > 0 && (
+                      <div className="rounded-md bg-muted/30 p-2">
+                        <div className="mb-1 flex items-baseline justify-between">
+                          <div className="text-[11px] font-semibold uppercase text-muted-foreground">
+                            Pairwise similarity histogram
+                          </div>
+                          <div className="text-[11px] text-muted-foreground tabular-nums">
+                            {selectedBatch.similarityHistogram.totalPairs.toLocaleString()} pairs
+                            {selectedBatch.similarityHistogram.invalid > 0 &&
+                              ` · ${selectedBatch.similarityHistogram.invalid} invalid`}
+                          </div>
+                        </div>
+                        {(() => {
+                          const buckets = selectedBatch.similarityHistogram!.buckets
+                          const entries = Object.entries(buckets).sort(
+                            (a, b) => Number(a[0]) - Number(b[0]),
+                          )
+                          const maxCount = Math.max(1, ...entries.map(([, n]) => n))
+                          return (
+                            <div className="space-y-0.5">
+                              {entries.map(([lo, count]) => {
+                                const loNum = Number(lo)
+                                const isAtOrAboveThreshold = loNum >= similarityThreshold
+                                const widthPct = (count / maxCount) * 100
+                                return (
+                                  <div
+                                    key={lo}
+                                    className="flex items-center gap-2 text-[11px]"
+                                  >
+                                    <span className="w-12 font-mono tabular-nums text-muted-foreground">
+                                      ≥ {loNum.toFixed(2)}
+                                    </span>
+                                    <div className="flex-1 h-3 rounded bg-muted">
+                                      <div
+                                        className={
+                                          isAtOrAboveThreshold
+                                            ? "h-full rounded bg-primary"
+                                            : "h-full rounded bg-muted-foreground/40"
+                                        }
+                                        style={{ width: `${widthPct}%` }}
+                                      />
+                                    </div>
+                                    <span className="w-14 text-right font-mono tabular-nums">
+                                      {count.toLocaleString()}
+                                    </span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )
+                        })()}
+                        <p className="mt-1 text-[10px] leading-tight text-muted-foreground">
+                          Bars at or above the active threshold (
+                          {similarityThreshold.toFixed(2)}) are highlighted —
+                          those are the pairs the clusterer joined. If almost
+                          all pairs sit below the threshold, lower it.
+                        </p>
+                      </div>
+                    )}
+
                   {selectedBatch.sampleKeys.length > 0 ? (
                     <div className="overflow-x-auto rounded-md border">
                       <Table>

@@ -18,6 +18,27 @@ export interface EmbeddedObservation extends SemanticObservationInput {
 export interface SemanticGroupingResult {
   semanticGroups: EmbeddedObservation[][]
   fallbackObservationIds: string[]
+  /** Histogram of pairwise cosine similarities, bucketed for threshold
+   *  tuning. Keys are bucket lower-bounds (0.0, 0.5, 0.6, 0.7, 0.75, 0.8,
+   *  0.83, 0.86, 0.9, 0.95). Pairs with `sim < 0` (zero-norm vectors) are
+   *  counted in the `invalid` field. Total pair count = n*(n-1)/2 + invalid. */
+  similarityHistogram: {
+    buckets: Record<string, number>
+    invalid: number
+    totalPairs: number
+  }
+}
+
+/** Bucket lower-bounds for the pairwise similarity histogram. The wider
+ *  high-end buckets (0.83, 0.86, 0.9) are deliberately tighter because
+ *  threshold tuning happens in that range. */
+const HISTOGRAM_BUCKETS = [0.0, 0.5, 0.6, 0.7, 0.75, 0.8, 0.83, 0.86, 0.9, 0.95] as const
+
+function bucketKeyFor(sim: number): string {
+  for (let i = HISTOGRAM_BUCKETS.length - 1; i >= 0; i--) {
+    if (sim >= HISTOGRAM_BUCKETS[i]) return HISTOGRAM_BUCKETS[i].toFixed(2)
+  }
+  return HISTOGRAM_BUCKETS[0].toFixed(2)
 }
 
 function norm(vector: number[]): number {
@@ -55,9 +76,23 @@ export function clusterEmbeddings(
   const adjacency = new Map<string, Set<string>>()
   for (const obs of observations) adjacency.set(obs.id, new Set())
 
+  // Histogram counters — one per bucket plus `invalid` for sim < 0
+  // (zero-norm vectors, mismatched dims). Initialized at zero across all
+  // buckets so callers can render a stable shape even when no pairs exist.
+  const buckets: Record<string, number> = {}
+  for (const lo of HISTOGRAM_BUCKETS) buckets[lo.toFixed(2)] = 0
+  let invalid = 0
+  let totalPairs = 0
+
   for (let i = 0; i < observations.length; i++) {
     for (let j = i + 1; j < observations.length; j++) {
       const sim = cosineSimilarity(observations[i].embedding, observations[j].embedding)
+      totalPairs++
+      if (sim < 0) {
+        invalid++
+      } else {
+        buckets[bucketKeyFor(sim)] = (buckets[bucketKeyFor(sim)] ?? 0) + 1
+      }
       if (sim >= similarityThreshold) {
         adjacency.get(observations[i].id)?.add(observations[j].id)
         adjacency.get(observations[j].id)?.add(observations[i].id)
@@ -87,5 +122,9 @@ export function clusterEmbeddings(
     else fallbackObservationIds.push(...component.map((c) => c.id))
   }
 
-  return { semanticGroups, fallbackObservationIds }
+  return {
+    semanticGroups,
+    fallbackObservationIds,
+    similarityHistogram: { buckets, invalid, totalPairs },
+  }
 }

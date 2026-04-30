@@ -25,6 +25,34 @@ export interface SemanticClusterRunResult {
   fallbackAttached: number
   embeddingFailures: number
   labelingFailures: number
+  /** Per-batch observability: how many embeddings were served from
+   *  the DB cache vs freshly fetched from OpenAI, and the latency
+   *  distribution of fetched calls. Surfaced to admin clients for
+   *  debugging silent rebuild stalls. */
+  embeddingStats: {
+    cached: number
+    fetched: number
+    failed: number
+    fetchLatencyP50Ms: number | null
+    fetchLatencyP95Ms: number | null
+    fetchLatencyMaxMs: number | null
+  }
+  /** Number of semantic groups (clusters of size >= minClusterSize) the
+   *  algorithm formed, plus the largest such group's size. Together they
+   *  let an operator see "did this batch produce real grouping?" without
+   *  needing a follow-up SQL query. */
+  semanticGroupsFormed: number
+  largestGroupSize: number
+  /** Pairwise similarity histogram from clusterEmbeddings — used to
+   *  decide whether the active threshold is too tight/loose. */
+  similarityHistogram: {
+    buckets: Record<string, number>
+    invalid: number
+    totalPairs: number
+  }
+  /** Wall-clock duration of the run, useful when correlating with the
+   *  Vercel 300s function-timeout boundary. */
+  durationMs: number
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>
@@ -194,10 +222,19 @@ async function createEmbedding(input: string): Promise<number[] | null> {
   return vector
 }
 
+/** Outcome of `ensureEmbedding`. `source` distinguishes a DB cache hit
+ *  from a fresh OpenAI fetch so the caller can build per-batch
+ *  cache-hit-rate / fetch-latency stats without re-instrumenting the
+ *  internals of `recomputeObservationEmbedding`. */
+type EnsureEmbeddingOutcome =
+  | { ok: true; vector: number[]; source: "cache" | "fetched"; latencyMs: number }
+  | { ok: false; latencyMs: number }
+
 async function ensureEmbedding(
   supabase: AdminClient,
   observation: SemanticObservationInput,
-): Promise<number[] | null> {
+): Promise<EnsureEmbeddingOutcome> {
+  const startedAt = Date.now()
   const { data: existing } = await supabase
     .from("observation_embeddings")
     .select("vector")
@@ -206,18 +243,25 @@ async function ensureEmbedding(
     .maybeSingle()
 
   const vectorJson = existing?.vector as number[] | string | undefined
-  if (Array.isArray(vectorJson)) return vectorJson
+  if (Array.isArray(vectorJson)) {
+    return { ok: true, vector: vectorJson, source: "cache", latencyMs: Date.now() - startedAt }
+  }
   if (typeof vectorJson === "string") {
     try {
       const parsed = JSON.parse(vectorJson) as number[]
-      if (Array.isArray(parsed)) return parsed
+      if (Array.isArray(parsed)) {
+        return { ok: true, vector: parsed, source: "cache", latencyMs: Date.now() - startedAt }
+      }
     } catch {
       // no-op; will regenerate
     }
   }
 
   const outcome = await recomputeObservationEmbedding(supabase, observation, { trigger: "ensure" })
-  return outcome.ok ? outcome.vector : null
+  if (outcome.ok) {
+    return { ok: true, vector: outcome.vector, source: "fetched", latencyMs: Date.now() - startedAt }
+  }
+  return { ok: false, latencyMs: Date.now() - startedAt }
 }
 
 // Force-recompute the observation_embedding for a single row and upsert
@@ -546,17 +590,28 @@ export async function runSemanticClusteringForBatch(
   const similarityThreshold = options?.similarityThreshold ?? 0.86
   const minClusterSize = options?.minClusterSize ?? 2
   const redetach = options?.redetach === true
+  const runStartedAt = Date.now()
 
   const embedded: EmbeddedObservation[] = []
   let embeddingFailures = 0
+  let embeddingsFromCache = 0
+  let embeddingsFromFetch = 0
+  // Latencies of OpenAI fetch calls only (cache hits skipped) — used for
+  // p50/p95 reporting after the batch.
+  const fetchLatencies: number[] = []
 
   for (const observation of observations) {
-    const embedding = await ensureEmbedding(supabase, observation)
-    if (!embedding) {
+    const outcome = await ensureEmbedding(supabase, observation)
+    if (!outcome.ok) {
       embeddingFailures++
       continue
     }
-    embedded.push({ ...observation, embedding })
+    if (outcome.source === "cache") embeddingsFromCache++
+    else {
+      embeddingsFromFetch++
+      fetchLatencies.push(outcome.latencyMs)
+    }
+    embedded.push({ ...observation, embedding: outcome.vector })
   }
 
   const grouped = clusterEmbeddings(embedded, similarityThreshold, minClusterSize)
@@ -694,11 +749,72 @@ export async function runSemanticClusteringForBatch(
     })
   }
 
+  const durationMs = Date.now() - runStartedAt
+  const semanticGroupsFormed = grouped.semanticGroups.length
+  const largestGroupSize = semanticGroupsFormed
+    ? Math.max(...grouped.semanticGroups.map((g) => g.length))
+    : 0
+  const fetchLatencyP50Ms = percentile(fetchLatencies, 0.5)
+  const fetchLatencyP95Ms = percentile(fetchLatencies, 0.95)
+  const fetchLatencyMaxMs = fetchLatencies.length ? Math.max(...fetchLatencies) : null
+
+  // Single structured event per batch with everything an operator needs
+  // to diagnose a rebuild post-mortem (was the threshold too tight? did
+  // OpenAI rate-limit us? did anything actually merge?). Mirrors the
+  // depth of the per-call openai_request_succeeded log but at the batch
+  // level so 487 obs don't produce 487 noisy lines.
+  logServer({
+    component: "admin-cluster",
+    event: "rebuild_batch_completed",
+    level: "info",
+    data: {
+      processed: observations.length,
+      embedded: embedded.length,
+      embeddings_cached: embeddingsFromCache,
+      embeddings_fetched: embeddingsFromFetch,
+      embeddings_failed: embeddingFailures,
+      fetch_latency_p50_ms: fetchLatencyP50Ms,
+      fetch_latency_p95_ms: fetchLatencyP95Ms,
+      fetch_latency_max_ms: fetchLatencyMaxMs,
+      similarity_threshold: similarityThreshold,
+      min_cluster_size: minClusterSize,
+      redetach,
+      semantic_groups_formed: semanticGroupsFormed,
+      largest_group_size: largestGroupSize,
+      semantic_attached: semanticAttached,
+      fallback_attached: fallbackAttached,
+      labeling_failures: labelingFailures,
+      similarity_histogram: grouped.similarityHistogram,
+      duration_ms: durationMs,
+    },
+  })
+
   return {
     processed: observations.length,
     semanticAttached,
     fallbackAttached,
     embeddingFailures,
     labelingFailures,
+    embeddingStats: {
+      cached: embeddingsFromCache,
+      fetched: embeddingsFromFetch,
+      failed: embeddingFailures,
+      fetchLatencyP50Ms,
+      fetchLatencyP95Ms,
+      fetchLatencyMaxMs,
+    },
+    semanticGroupsFormed,
+    largestGroupSize,
+    similarityHistogram: grouped.similarityHistogram,
+    durationMs,
   }
+}
+
+/** Inclusive nearest-rank percentile over a numeric array. Returns null
+ *  for empty input so callers can render "—" instead of NaN. */
+function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))
+  return sorted[idx]
 }

@@ -6,7 +6,10 @@ import {
   buildClusterKey,
   detachFromCluster,
 } from "@/lib/storage/clusters"
-import { runSemanticClusteringForBatch } from "@/lib/storage/semantic-clusters"
+import {
+  runSemanticClusteringForBatch,
+  type SemanticClusterRunResult,
+} from "@/lib/storage/semantic-clusters"
 import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 
 export const maxDuration = 300
@@ -38,7 +41,7 @@ export async function GET(request: NextRequest) {
 
   const supabase = createAdminClient()
 
-  const [obsCountRes, clusterCountRes, activeMembershipsRes, topRes] =
+  const [obsCountRes, clusterCountRes, activeMembershipsRes, topRes, prefixRes] =
     await Promise.all([
       supabase.from("observations").select("*", { count: "exact", head: true }),
       supabase.from("clusters").select("*", { count: "exact", head: true }),
@@ -53,6 +56,15 @@ export async function GET(request: NextRequest) {
         .not("cluster_id", "is", null)
         .order("frequency_count", { ascending: false })
         .limit(10),
+      // Pull cluster_key prefixes for ACTIVE clusters only — clusters with
+      // no live members are leftover detritus from prior redetach cycles
+      // and shouldn't skew the operator's mental model of "what does the
+      // pipeline currently produce?". Inner-join via cluster_members so
+      // empty cluster rows don't get counted.
+      supabase
+        .from("cluster_members")
+        .select("cluster_id, clusters!inner(cluster_key)")
+        .is("detached_at", null),
     ])
 
   const firstError =
@@ -62,6 +74,11 @@ export async function GET(request: NextRequest) {
     topRes.error
   if (firstError) {
     return NextResponse.json({ error: firstError.message }, { status: 500 })
+  }
+  // Prefix query is best-effort: if it fails, log and continue with
+  // empty distribution. The numbers cards above still render.
+  if (prefixRes.error) {
+    logServerError("admin-cluster", "prefix_distribution_query_failed", prefixRes.error)
   }
 
   const observations = obsCountRes.count ?? 0
@@ -75,11 +92,31 @@ export async function GET(request: NextRequest) {
     frequency_count: (r.frequency_count as number) ?? 1,
   }))
 
+  // Build {semantic, title, other} histogram of cluster_key prefixes.
+  // De-duplicate by cluster_id first since cluster_members may have
+  // multiple active rows per cluster (one per observation).
+  const seenClusterIds = new Set<string>()
+  const cluster_path_distribution = { semantic: 0, title: 0, other: 0 }
+  for (const row of (prefixRes.data ?? []) as unknown as Array<{
+    cluster_id: string
+    clusters: { cluster_key: string } | { cluster_key: string }[]
+  }>) {
+    if (seenClusterIds.has(row.cluster_id)) continue
+    seenClusterIds.add(row.cluster_id)
+    const clusterRel = Array.isArray(row.clusters) ? row.clusters[0] : row.clusters
+    const key = clusterRel?.cluster_key ?? ""
+    if (key.startsWith("semantic:")) cluster_path_distribution.semantic++
+    else if (key.startsWith("title:")) cluster_path_distribution.title++
+    else cluster_path_distribution.other++
+  }
+
   return NextResponse.json({
     observations,
     clusters,
     active_memberships,
     orphans,
+    active_clusters: seenClusterIds.size,
+    cluster_path_distribution,
     top_clusters,
   })
 }
@@ -119,15 +156,26 @@ export async function POST(request: NextRequest) {
     const limit = Math.max(1, Math.min(body.limit ?? DEFAULT_LIMIT, MAX_LIMIT))
     const redetach = body.redetach === true
     const mode = body.mode ?? "title-hash"
+    const similarityThreshold = body.similarityThreshold
+    const minClusterSize = body.minClusterSize
 
     if (!cursor) {
       logServer({
         component: "admin-cluster",
         event: "rebuild_started",
         level: "info",
-        data: { limit, redetach, mode },
+        data: { limit, redetach, mode, similarityThreshold, minClusterSize },
       })
     }
+    // Per-batch start event so an operator scanning Vercel logs can
+    // correlate later embedding/labeling failures with which page of
+    // observations was being processed when they occurred.
+    logServer({
+      component: "admin-cluster",
+      event: "rebuild_batch_started",
+      level: "info",
+      data: { cursor, limit, redetach, mode, similarityThreshold, minClusterSize },
+    })
 
     let q = supabase
       .from("observations")
@@ -160,6 +208,10 @@ export async function POST(request: NextRequest) {
     let semanticAttached = 0
     let fallbackAttached = 0
     let fallbackEmbeddingFailures = 0
+    let embeddingStats: SemanticClusterRunResult["embeddingStats"] | null = null
+    let semanticGroupsFormed = 0
+    let largestGroupSize = 0
+    let similarityHistogram: SemanticClusterRunResult["similarityHistogram"] | null = null
     const sampleKeys: Array<{ id: string; title: string; cluster_key: string }> = []
 
     if (mode === "semantic") {
@@ -225,6 +277,10 @@ export async function POST(request: NextRequest) {
       semanticAttached = semanticResult.semanticAttached
       fallbackAttached = semanticResult.fallbackAttached
       fallbackEmbeddingFailures = semanticResult.embeddingFailures
+      embeddingStats = semanticResult.embeddingStats
+      semanticGroupsFormed = semanticResult.semanticGroupsFormed
+      largestGroupSize = semanticResult.largestGroupSize
+      similarityHistogram = semanticResult.similarityHistogram
       attached = semanticAttached + fallbackAttached
       detached = redetach ? rows.length : 0
     } else {
@@ -296,6 +352,17 @@ export async function POST(request: NextRequest) {
       done,
       refreshedMvs,
       sampleKeys,
+      // Surfaced to the admin UI so an operator can see, per batch:
+      // — embedding cache hit/miss + fetch latency
+      // — how many real semantic groups formed and the largest size
+      // — pairwise similarity histogram for threshold tuning
+      // Fields are null in title-hash mode (no embedding/similarity work).
+      embeddingStats,
+      semanticGroupsFormed,
+      largestGroupSize,
+      similarityHistogram,
+      similarityThreshold,
+      minClusterSize,
     })
   }
 
