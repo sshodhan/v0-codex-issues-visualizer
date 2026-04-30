@@ -28,6 +28,13 @@ export interface ClusterInfo {
   label: string | null
 }
 
+export interface ClusterFamilyInfo {
+  id: string
+  family_title: string | null
+}
+
+export type StoryTimelineMode = "topic" | "cluster_family" | "cluster_label" | "cluster"
+
 const FAMILY_PALETTE = [
   "#3b82f6", // blue
   "#10b981", // emerald
@@ -68,6 +75,8 @@ const MAX_POINTS = 240
 export function buildStoryTimeline(
   issues: Issue[],
   clusterLookup?: Map<string, ClusterInfo>,
+  clusterFamilyLookup?: Map<string, ClusterFamilyInfo>,
+  mode: StoryTimelineMode = "topic",
 ): StoryTimelinePoint[] {
   if (issues.length === 0) return []
 
@@ -91,9 +100,15 @@ export function buildStoryTimeline(
     const rScale = Math.min(1, Math.max(0.2, impact / 10))
     const clusterId = i.cluster_id ?? null
     const cluster = clusterId ? clusterLookup?.get(clusterId) : undefined
-    const familyName = clusterId
-      ? cluster?.label?.trim() || "Unlabelled Family"
-      : "Unclustered"
+    const familyTitle = clusterId ? clusterFamilyLookup?.get(clusterId)?.family_title?.trim() : undefined
+    const clusterLabel = cluster?.label?.trim()
+    const familyName = (() => {
+      if (!clusterId) return "Unclustered"
+      if (mode === "cluster_family") return familyTitle || "Pending family classification"
+      if (mode === "cluster_label") return clusterLabel || "Unlabelled cluster"
+      if (mode === "cluster") return familyTitle || clusterLabel || "Pending family classification"
+      return clusterLabel || "Unlabelled Family"
+    })()
     const familyColor = clusterId ? clusterIdToColor(clusterId) : "#6b7280"
     return {
       id: i.id,

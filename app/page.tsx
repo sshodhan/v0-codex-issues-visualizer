@@ -1126,6 +1126,7 @@ const handleHeroLlmCategoryDrill = (
                 onOpenIssuesTable={scrollToIssuesTable}
                 clusterRows={clusterRollup?.clusters}
                 clusterLabels={clusterRollup?.cluster_labels}
+                clusterFamilies={clusterRollup?.cluster_families}
                 onOpenClusterInTable={handleStoryOpenClusterInTable}
                 onOpenClusterInTriage={handleStoryOpenClusterInTriage}
                 activeClusterId={clusterIdFromUrl}

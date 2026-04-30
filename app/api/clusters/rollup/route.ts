@@ -142,7 +142,7 @@ export async function GET(request: NextRequest) {
 
   if (sorted.length === 0) {
     return NextResponse.json(
-      { clusters: [], cluster_labels: [], pipeline_state },
+      { clusters: [], cluster_labels: [], cluster_families: [], pipeline_state },
       { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
     )
   }
@@ -166,6 +166,22 @@ export async function GET(request: NextRequest) {
 
   const labelMap = new Map((clusterRows || []).map((c: any) => [c.id, c]))
   const clusterLabels = (clusterRows || []).map((c: any) => ({ id: c.id, label: c.label ?? null }))
+
+  // Stage-4 family titles for every cluster in the window — same long-tail
+  // rationale as the labels query above. Failures are non-fatal: the
+  // `family_classification_current` view is newer than `clusters` and may
+  // not be provisioned in every environment. The Signal cloud falls back
+  // to "Pending family classification" on the client when missing, so a
+  // broken read on this view shouldn't 500 the whole rollup.
+  const { data: familyRows, error: familyErr } = await supabase
+    .from("family_classification_current")
+    .select("cluster_id, family_title, family_kind, needs_human_review")
+    .in("cluster_id", allClusterIds)
+
+  if (familyErr) {
+    logServerError("clusters-rollup", "cluster_families_query_failed", familyErr, { allClusterCount: allClusterIds.length })
+  }
+  const safeFamilyRows = familyErr ? [] : (familyRows || [])
 
   const topIds = sorted.map((s) => s.id)
   const { data: exemplarRows } = await supabase
@@ -469,7 +485,17 @@ export async function GET(request: NextRequest) {
   })
 
   return NextResponse.json(
-    { clusters, cluster_labels: clusterLabels, pipeline_state },
+    {
+      clusters,
+      cluster_labels: clusterLabels,
+      cluster_families: safeFamilyRows.map((row: any) => ({
+        id: row.cluster_id,
+        family_title: row.family_title ?? null,
+        family_kind: row.family_kind ?? null,
+        needs_human_review: row.needs_human_review ?? null,
+      })),
+      pipeline_state,
+    },
     { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } },
   )
 }
