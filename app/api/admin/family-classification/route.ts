@@ -33,6 +33,14 @@ export const maxDuration = 300
 // is the right tool for large backlogs (parallel single-cluster POSTs);
 // keep DEFAULT_LIMIT small so an accidental "Classify batch" click
 // can't kill the function.
+//
+// API behavior change (2026-04 — was 50): callers that POST with no
+// `limit` field now process at most 5 clusters per request instead of
+// 50. The admin panel's "Classify batch" button has always passed no
+// limit and now classifies 5 per click; that's intentional. External
+// callers (curl, scripts, crons) that rely on the old 50 must pass
+// `{"limit": 50}` explicitly. MAX_LIMIT is unchanged so authorized
+// callers can still opt back into a larger batch.
 const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 500
 const PENDING_DEFAULT_LIMIT = 20

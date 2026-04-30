@@ -47,6 +47,7 @@ import {
   type ReviewDecision,
 } from "@/lib/admin/family-classification-review"
 import { logClientError, logClientEvent } from "@/lib/error-tracking/client-logger"
+import { runWorkerPool } from "@/lib/admin/run-worker-pool"
 
 const ROUTE = "/api/admin/family-classification"
 const REVIEW_ROUTE = "/api/admin/family-classification/review"
@@ -163,6 +164,10 @@ const DRAIN_CONCURRENCY = 3
 const DRAIN_PAGE_SIZE = 100
 // Stop the drain after this many consecutive failures so a broken
 // upstream (e.g. OpenAI outage) doesn't burn the whole backlog.
+// "Consecutive" means uninterrupted in completion order across all
+// in-flight workers — with concurrency > 1, a slow success completing
+// after a fast failure resets the counter. That's intentional: any
+// sign of life from the upstream takes the breaker off the hook.
 const DRAIN_MAX_CONSECUTIVE_FAILURES = 3
 
 // Mirrors lib/storage/family-classification.ts → FamilyClassificationDraft.
@@ -1849,9 +1854,13 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     cumulativeSucceeded: number
     cumulativeFailed: number
   } | null>(null)
-  // Mutable abort flag; useRef so flipping it doesn't trigger re-render
-  // and the in-flight worker pool can read the latest value mid-loop.
-  const drainAbortRef = useRef(false)
+  // Drain cancellation. The AbortController feeds into runWorkerPool,
+  // which checks signal.aborted before scheduling each new worker.
+  // Mirror the cancelling state into useState as well so the Stop
+  // button + "cancelling…" hint re-render the moment the user clicks
+  // (refs alone don't trigger re-render).
+  const drainAbortRef = useRef<AbortController | null>(null)
+  const [aborting, setAborting] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<BackfillResult | null>(null)
   const [qualityRows, setQualityRows] = useState<QualityRow[]>([])
@@ -2210,18 +2219,21 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     }
   }
 
-  // Drain the backlog by firing single-cluster POSTs at concurrency
-  // DRAIN_CONCURRENCY. Each request is bounded by the same timing as a
-  // manual single-cluster classify (~10-15s), so no individual call
+  // Drain the backlog by paging through pending clusters and firing
+  // single-cluster POSTs through runWorkerPool at concurrency
+  // DRAIN_CONCURRENCY. Each request is bounded by the same timing as
+  // a manual single-cluster classify (~10-15s), so no individual call
   // can hit the function timeout — the original bulk POST's serial
-  // for-loop did. Progress is reported live; cancelDrain() flips the
-  // abort flag and the next worker slot stops scheduling.
+  // for-loop did. cancelDrain() aborts the controller; the worker
+  // pool stops scheduling and resolves once in-flight workers settle.
   const runDrain = async () => {
     if (running) return
     setRunning("drain")
     setRunError(null)
     setLastResult(null)
-    drainAbortRef.current = false
+    setAborting(false)
+    const controller = new AbortController()
+    drainAbortRef.current = controller
     setDrainProgress({
       pageTotal: 0,
       pageSucceeded: 0,
@@ -2233,9 +2245,19 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     const startedAt = Date.now()
     let cumulativeSucceeded = 0
     let cumulativeFailed = 0
+    let breakerTripped = false
+
+    const classifyOne = async (clusterId: string): Promise<boolean> => {
+      const r = await fetch(ROUTE, {
+        method: "POST",
+        headers: authHeaders(secret),
+        body: JSON.stringify({ clusterId, dryRun: false }),
+      })
+      return r.ok
+    }
 
     try {
-      while (!drainAbortRef.current) {
+      while (!controller.signal.aborted) {
         const pageRes = await fetch(`${ROUTE}?pending=${DRAIN_PAGE_SIZE}`, {
           headers: authHeaders(secret),
         })
@@ -2244,102 +2266,45 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
         const page = pageData.pending ?? []
         if (page.length === 0) break
 
-        const queue = page.map((p) => p.cluster_id)
-        let pageSucceeded = 0
-        let pageFailed = 0
-        let inFlight = 0
-        let consecutiveFailures = 0
-
-        await new Promise<void>((resolve, reject) => {
-          let stopped = false
-
-          const updateProgress = () => {
+        const result = await runWorkerPool({
+          queue: page.map((p) => p.cluster_id),
+          worker: classifyOne,
+          concurrency: DRAIN_CONCURRENCY,
+          maxConsecutiveFailures: DRAIN_MAX_CONSECUTIVE_FAILURES,
+          signal: controller.signal,
+          onProgress: (p) => {
             setDrainProgress({
               pageTotal: page.length,
-              pageSucceeded,
-              pageFailed,
-              inFlight,
-              cumulativeSucceeded: cumulativeSucceeded + pageSucceeded,
-              cumulativeFailed: cumulativeFailed + pageFailed,
+              pageSucceeded: p.succeeded,
+              pageFailed: p.failed,
+              inFlight: p.inFlight,
+              cumulativeSucceeded: cumulativeSucceeded + p.succeeded,
+              cumulativeFailed: cumulativeFailed + p.failed,
             })
-          }
-
-          const tryStart = () => {
-            if (stopped) return
-            if (queue.length === 0 && inFlight === 0) {
-              resolve()
-              return
-            }
-            while (
-              inFlight < DRAIN_CONCURRENCY &&
-              queue.length > 0 &&
-              !drainAbortRef.current &&
-              !stopped
-            ) {
-              const clusterId = queue.shift() as string
-              inFlight++
-              updateProgress()
-
-              fetch(ROUTE, {
-                method: "POST",
-                headers: authHeaders(secret),
-                body: JSON.stringify({ clusterId, dryRun: false }),
-              })
-                .then(async (r) => {
-                  if (r.ok) {
-                    pageSucceeded++
-                    consecutiveFailures = 0
-                  } else {
-                    pageFailed++
-                    consecutiveFailures++
-                  }
-                })
-                .catch(() => {
-                  pageFailed++
-                  consecutiveFailures++
-                })
-                .finally(() => {
-                  inFlight--
-                  updateProgress()
-                  if (
-                    consecutiveFailures >= DRAIN_MAX_CONSECUTIVE_FAILURES &&
-                    !stopped
-                  ) {
-                    stopped = true
-                    drainAbortRef.current = true
-                    reject(
-                      new Error(
-                        `Stopped after ${DRAIN_MAX_CONSECUTIVE_FAILURES} consecutive failures — ` +
-                          "check Vercel logs and OpenAI status, then retry.",
-                      ),
-                    )
-                    return
-                  }
-                  tryStart()
-                })
-            }
-
-            // If aborted while queue still has items but nothing in flight,
-            // resolve so the outer loop sees the abort flag and exits.
-            if (drainAbortRef.current && inFlight === 0 && !stopped) {
-              stopped = true
-              resolve()
-            }
-          }
-
-          tryStart()
+          },
         })
 
-        cumulativeSucceeded += pageSucceeded
-        cumulativeFailed += pageFailed
+        cumulativeSucceeded += result.succeeded
+        cumulativeFailed += result.failed
 
-        if (drainAbortRef.current) break
+        if (result.consecutiveFailureLimitReached) {
+          breakerTripped = true
+          break
+        }
+        if (result.aborted) break
+      }
+
+      if (breakerTripped) {
+        throw new Error(
+          `Stopped after ${DRAIN_MAX_CONSECUTIVE_FAILURES} consecutive failures — ` +
+            "check Vercel logs and OpenAI status, then retry.",
+        )
       }
 
       logClientEvent("admin-family-classification-drain-succeeded", {
         succeeded: cumulativeSucceeded,
         failed: cumulativeFailed,
-        aborted: drainAbortRef.current,
+        aborted: controller.signal.aborted,
         durationMs: Date.now() - startedAt,
       })
       await loadStats()
@@ -2355,12 +2320,15 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
     } finally {
       setRunning(null)
       setDrainProgress(null)
-      drainAbortRef.current = false
+      setAborting(false)
+      drainAbortRef.current = null
     }
   }
 
   const cancelDrain = () => {
-    drainAbortRef.current = true
+    if (!drainAbortRef.current) return
+    drainAbortRef.current.abort()
+    setAborting(true)
   }
 
   return (
@@ -2632,10 +2600,10 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
                 type="button"
                 variant="destructive"
                 onClick={cancelDrain}
-                disabled={drainAbortRef.current}
+                disabled={aborting}
               >
                 <Square className="mr-1 h-4 w-4" />
-                Stop drain
+                {aborting ? "Stopping…" : "Stop drain"}
               </Button>
             ) : (
               <Button
@@ -2674,7 +2642,7 @@ export function FamilyClassificationPanel({ secret }: { secret: string }) {
                 Failed: {drainProgress.cumulativeFailed}
                 {" • "}
                 In flight: {drainProgress.inFlight}
-                {drainAbortRef.current ? " • cancelling…" : null}
+                {aborting ? " • cancelling…" : null}
               </AlertDescription>
             </Alert>
           ) : null}
