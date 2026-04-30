@@ -60,15 +60,15 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
       )
       .eq("observation_id", observationId)
       .order("created_at", { ascending: false }),
-    // Topic / regex_topic classifier (Layer 0). Joins categories.slug so the
-    // trace page can show "model-quality" instead of the bare category UUID;
-    // the PostgREST embed inflates as a single object at runtime even though
-    // Supabase typings model it as an array (same cast pattern as
-    // app/api/admin/cluster/route.ts).
+    // Topic / regex_topic classifier (Layer 0). Joins categories.slug AND
+    // categories.name so the trace page can show "Bug reports (bug)"
+    // instead of the bare category UUID; the PostgREST embed inflates as
+    // a single object at runtime even though Supabase typings model it
+    // as an array (same cast pattern as app/api/admin/cluster/route.ts).
     supabase
       .from("category_assignments")
       .select(
-        "id, observation_id, algorithm_version, category_id, confidence, evidence, computed_at, categories:category_id(slug)",
+        "id, observation_id, algorithm_version, category_id, confidence, evidence, computed_at, categories:category_id(slug, name)",
       )
       .eq("observation_id", observationId)
       .order("computed_at", { ascending: false }),
@@ -86,7 +86,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
     confidence: number | null
     evidence: unknown
     computed_at: string | null
-    categories: { slug: string } | null
+    categories: { slug: string; name: string } | null
   }>
 
   if (
@@ -231,6 +231,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
         latest_computed_at: categoryAssignments[0]?.computed_at ?? null,
         algorithm_version: categoryAssignments[0]?.algorithm_version ?? null,
         winner_slug: categoryAssignments[0]?.categories?.slug ?? null,
+        winner_name: categoryAssignments[0]?.categories?.name ?? null,
         confidence: categoryAssignments[0]?.confidence ?? null,
         evidence: categoryAssignments[0]?.evidence ?? null,
         total_versions: categoryAssignments.length,
