@@ -290,6 +290,9 @@ export async function POST(request: NextRequest) {
     let fallbackAttached = 0
     let fallbackEmbeddingFailures = 0
     let embeddingStats: SemanticClusterRunResult["embeddingStats"] | null = null
+    let embeddingSignalCoverage:
+      | SemanticClusterRunResult["embeddingSignalCoverage"]
+      | null = null
     let semanticGroupsFormed = 0
     let largestGroupSize = 0
     let similarityHistogram: SemanticClusterRunResult["similarityHistogram"] | null = null
@@ -408,6 +411,7 @@ export async function POST(request: NextRequest) {
       fallbackAttached = semanticResult.fallbackAttached
       fallbackEmbeddingFailures = semanticResult.embeddingFailures
       embeddingStats = semanticResult.embeddingStats
+      embeddingSignalCoverage = semanticResult.embeddingSignalCoverage
       semanticGroupsFormed = semanticResult.semanticGroupsFormed
       largestGroupSize = semanticResult.largestGroupSize
       similarityHistogram = semanticResult.similarityHistogram
@@ -486,8 +490,11 @@ export async function POST(request: NextRequest) {
       // — embedding cache hit/miss + fetch latency
       // — how many real semantic groups formed and the largest size
       // — pairwise similarity histogram for threshold tuning
+      // — v2 structured-signal coverage so a "low-signal" batch (which
+      //   degrades to v1-equivalent prose-only embeddings) is detectable
       // Fields are null in title-hash mode (no embedding/similarity work).
       embeddingStats,
+      embeddingSignalCoverage,
       semanticGroupsFormed,
       largestGroupSize,
       similarityHistogram,

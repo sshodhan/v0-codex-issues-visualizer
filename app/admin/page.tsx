@@ -145,6 +145,20 @@ interface ClusterEmbeddingStats {
   fetchLatencyMaxMs: number | null
 }
 
+/** Per-batch v2 structured-signal coverage. Tells operators whether
+ *  v2 actually delivered type-anchored embeddings (high coverage) or
+ *  silently degraded to prose-only inputs (low coverage). */
+interface ClusterEmbeddingSignalCoverage {
+  total: number
+  withType: number
+  withErrorCode: number
+  withComponent: number
+  withTopStackFrame: number
+  withPlatform: number
+  withAnySignal: number
+  withStrongSignal: number
+}
+
 interface ClusterSimilarityHistogram {
   buckets: Record<string, number>
   invalid: number
@@ -170,6 +184,7 @@ interface ClusterBatchResult {
   fallbackEmbeddingFailures?: number
   // Per-batch observability surfaced from the server (semantic mode only).
   embeddingStats?: ClusterEmbeddingStats | null
+  embeddingSignalCoverage?: ClusterEmbeddingSignalCoverage | null
   semanticGroupsFormed?: number
   largestGroupSize?: number
   similarityHistogram?: ClusterSimilarityHistogram | null
@@ -187,6 +202,7 @@ interface ClusterBatchRow {
   error: string | null
   sampleKeys: SampleKey[]
   embeddingStats?: ClusterEmbeddingStats | null
+  embeddingSignalCoverage?: ClusterEmbeddingSignalCoverage | null
   semanticGroupsFormed?: number
   largestGroupSize?: number
   similarityHistogram?: ClusterSimilarityHistogram | null
@@ -2523,6 +2539,7 @@ function ClusteringPanel({ secret }: { secret: string }) {
                   detached: batchDetached,
                   sampleKeys: Array.isArray(data.sampleKeys) ? data.sampleKeys : [],
                   embeddingStats: data.embeddingStats ?? null,
+                  embeddingSignalCoverage: data.embeddingSignalCoverage ?? null,
                   semanticGroupsFormed: data.semanticGroupsFormed ?? 0,
                   largestGroupSize: data.largestGroupSize ?? 0,
                   similarityHistogram: data.similarityHistogram ?? null,
@@ -2542,6 +2559,12 @@ function ClusteringPanel({ secret }: { secret: string }) {
           fetchLatencyP95Ms: data.embeddingStats?.fetchLatencyP95Ms ?? null,
           semanticGroupsFormed: data.semanticGroupsFormed ?? null,
           largestGroupSize: data.largestGroupSize ?? null,
+          // v2 signal coverage: track strong-signal share over time so
+          // an operator can spot regressions where v2 silently degrades
+          // to v1-equivalent prose-only inputs.
+          signalCoverageStrong: data.embeddingSignalCoverage?.withStrongSignal ?? null,
+          signalCoverageAny: data.embeddingSignalCoverage?.withAnySignal ?? null,
+          signalCoverageTotal: data.embeddingSignalCoverage?.total ?? null,
         })
         totalProcessed += batchProcessed
         totalSemanticAttached += Number(data.semanticAttached ?? 0)
@@ -2933,6 +2956,14 @@ function ClusteringPanel({ secret }: { secret: string }) {
                   higher (0.90+) merges only near-duplicates. Tune against
                   the per-batch similarity histogram below.
                 </p>
+                <p className="text-[11px] leading-tight text-amber-700/90 dark:text-amber-400/90">
+                  Threshold tuning only changes the cutoff in the
+                  current embedding space. Cluster quality also depends
+                  on the embedding input (see "v2 signal coverage" per
+                  batch) and on upstream signals (error_code, family_kind).
+                  If most observations have low signal coverage, lower
+                  threshold = more false-positive merges, not better quality.
+                </p>
               </div>
               <div className="space-y-1">
                 <label
@@ -3075,6 +3106,77 @@ function ClusteringPanel({ secret }: { secret: string }) {
               Cluster assignments on the dashboard now reflect this rebuild.
             </AlertDescription>
           </Alert>
+        )}
+
+        {/* Post-rebuild verification checklist. Surfaces ONLY after a
+            rebuild has completed (refreshedMvs flips true on the final
+            batch's response). Doesn't auto-evaluate pass/fail — that
+            requires before/after snapshots we don't currently store —
+            but tells the operator where on this same page to look for
+            each signal so the success criteria from PR #186 review are
+            answered without leaving the panel. */}
+        {refreshedMvs && !running && (
+          <div className="rounded-md border bg-muted/10 p-3">
+            <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+              Post-rebuild verification
+            </div>
+            <ul className="space-y-1 text-xs leading-relaxed">
+              <li>
+                <span className="text-muted-foreground">1.</span>{" "}
+                <span className="font-medium">Embeddings written:</span>{" "}
+                Sum of <code className="rounded bg-muted px-1 py-0.5 text-[10px]">embeddings.fetched</code>{" "}
+                across batches above should equal{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">processed</code>{" "}
+                ({processed.toLocaleString()}) when re-detach was used. Lower means
+                some observations failed to embed — see{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">embeddings.failed</code>.
+              </li>
+              <li>
+                <span className="text-muted-foreground">2.</span>{" "}
+                <span className="font-medium">Multi-member clusters increased:</span>{" "}
+                Compare "Cluster quality" → "Multi-member clusters" against
+                your pre-rebuild baseline (note before clicking Rebuild).
+                After v2, expect this to rise meaningfully if structured-signal
+                coverage is healthy.
+              </li>
+              <li>
+                <span className="text-muted-foreground">3.</span>{" "}
+                <span className="font-medium">Singleton rate dropped:</span>{" "}
+                "Active cluster_key distribution" semantic vs title share —
+                v2 should shift the mix toward semantic. A persistently high{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">title:</code>{" "}
+                share with low{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">semantic:</code>{" "}
+                share means clustering is still falling back to title-hash —
+                check the latest batch's similarity histogram and signal coverage.
+              </li>
+              <li>
+                <span className="text-muted-foreground">4.</span>{" "}
+                <span className="font-medium">Quality didn't collapse:</span>{" "}
+                "Avg dominant error share" should not be substantially lower
+                than before. If it dropped, threshold may be too loose for
+                the current embedding space — clusters formed but mixed
+                unrelated reports.
+              </li>
+              <li>
+                <span className="text-muted-foreground">5.</span>{" "}
+                <span className="font-medium">Spot-check the largest cluster:</span>{" "}
+                Open the Story tab, switch to "Cluster" mode, click the largest
+                chip, and read the member titles in the drawer. Confirm they
+                describe the same kind of issue — false merges from a too-loose
+                threshold are hardest to catch automatically.
+              </li>
+              <li>
+                <span className="text-muted-foreground">6.</span>{" "}
+                <span className="font-medium">Re-run family classification:</span>{" "}
+                Re-detach creates new cluster_ids. Existing{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-[10px]">family_classification_current</code>{" "}
+                rows reference the OLD ids. Run the family-classification drain
+                from the Family Classification tab so the dashboard's Family
+                mode regains rich titles for the new clusters.
+              </li>
+            </ul>
+          </div>
         )}
 
         {sampleKeys.length > 0 && (
@@ -3226,6 +3328,91 @@ function ClusteringPanel({ secret }: { secret: string }) {
                       </div>
                     </div>
                   )}
+
+                  {/* v2 signal coverage — present only on semantic-mode
+                      batches. Critical post-Option-A diagnostic: low
+                      coverage means v2 embeddings degraded to v1-equivalent
+                      prose-only inputs and tuning the threshold won't help. */}
+                  {selectedBatch.embeddingSignalCoverage && (() => {
+                    const cov = selectedBatch.embeddingSignalCoverage
+                    const pct = (n: number) =>
+                      cov.total > 0 ? `${((n / cov.total) * 100).toFixed(0)}%` : "—"
+                    const strongPct = cov.total > 0 ? cov.withStrongSignal / cov.total : 0
+                    const strongTone =
+                      strongPct >= 0.7
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                        : strongPct >= 0.4
+                          ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                          : "bg-destructive/15 text-destructive"
+                    return (
+                      <div className="rounded-md bg-muted/30 p-2">
+                        <div className="mb-1 flex items-baseline justify-between">
+                          <div className="text-[11px] font-semibold uppercase text-muted-foreground">
+                            v2 signal coverage
+                          </div>
+                          <div
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${strongTone}`}
+                            title="withStrongSignal / total — share of obs with at least one of: type, errorCode, topStackFrame"
+                          >
+                            strong: {pct(cov.withStrongSignal)}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+                          <div>
+                            <div className="text-muted-foreground">Type</div>
+                            <div className="font-mono tabular-nums">
+                              {cov.withType.toLocaleString()}{" "}
+                              <span className="text-muted-foreground">({pct(cov.withType)})</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">Error</div>
+                            <div className="font-mono tabular-nums">
+                              {cov.withErrorCode.toLocaleString()}{" "}
+                              <span className="text-muted-foreground">({pct(cov.withErrorCode)})</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">Component</div>
+                            <div className="font-mono tabular-nums">
+                              {cov.withComponent.toLocaleString()}{" "}
+                              <span className="text-muted-foreground">({pct(cov.withComponent)})</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">Stack</div>
+                            <div className="font-mono tabular-nums">
+                              {cov.withTopStackFrame.toLocaleString()}{" "}
+                              <span className="text-muted-foreground">({pct(cov.withTopStackFrame)})</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">Platform</div>
+                            <div className="font-mono tabular-nums">
+                              {cov.withPlatform.toLocaleString()}{" "}
+                              <span className="text-muted-foreground">({pct(cov.withPlatform)})</span>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-muted-foreground">Any</div>
+                            <div className="font-mono tabular-nums">
+                              {cov.withAnySignal.toLocaleString()}{" "}
+                              <span className="text-muted-foreground">({pct(cov.withAnySignal)})</span>
+                            </div>
+                          </div>
+                        </div>
+                        {strongPct < 0.4 && cov.total > 0 && (
+                          <p className="mt-1 text-[10px] leading-tight text-muted-foreground">
+                            Strong-signal share is &lt; 40% — most observations
+                            embedded with v1-equivalent prose-only input. Re-run
+                            after upstream stages (family classification,
+                            fingerprints) populate signals to actually exercise
+                            v2's type-anchored embedding behavior.
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })()}
 
                   {/* Group-formation summary: did this batch produce any
                       real clustering, and how big was the largest? */}

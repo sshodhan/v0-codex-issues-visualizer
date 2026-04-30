@@ -39,6 +39,28 @@ export interface SemanticClusterRunResult {
     fetchLatencyP95Ms: number | null
     fetchLatencyMaxMs: number | null
   }
+  /** Coverage of v2 structured-prefix signals across the batch. v2
+   *  embeddings degrade gracefully to prose-only input when signals
+   *  are absent — this counter set tells operators whether v2 is
+   *  actually delivering type-anchored embeddings or silently behaving
+   *  like v1 for most observations. `withAnySignal` and
+   *  `withStrongSignal` are derived (any-of-five and
+   *  any-of-{type,errorCode,topStackFrame}) so the operator doesn't
+   *  have to compute them client-side. Always includes every
+   *  observation passed in, even those that failed embedding — so the
+   *  ratio is "share of input with X populated", not "share of
+   *  successfully embedded with X populated".
+   */
+  embeddingSignalCoverage: {
+    total: number
+    withType: number
+    withErrorCode: number
+    withComponent: number
+    withTopStackFrame: number
+    withPlatform: number
+    withAnySignal: number
+    withStrongSignal: number
+  }
   /** Number of semantic groups (clusters of size >= minClusterSize) the
    *  algorithm formed, plus the largest such group's size. Together they
    *  let an operator see "did this batch produce real grouping?" without
@@ -615,6 +637,23 @@ export async function runSemanticClusteringForBatch(
   // Latencies of OpenAI fetch calls only (cache hits skipped) — used for
   // p50/p95 reporting after the batch.
   const fetchLatencies: number[] = []
+  // v2 signal-coverage tally. Counted across the FULL input set
+  // (including obs that subsequently fail embedding), because the
+  // operator question is "how many of my observations have the type
+  // signal populated?" — not "of those that successfully embedded".
+  // A non-empty trimmed string counts; null / undefined / "" / "  "
+  // do not (matches buildEmbeddingInputText's omission rule).
+  const coverage = {
+    total: observations.length,
+    withType: 0,
+    withErrorCode: 0,
+    withComponent: 0,
+    withTopStackFrame: 0,
+    withPlatform: 0,
+    withAnySignal: 0,
+    withStrongSignal: 0,
+  }
+  const present = (s: string | null | undefined) => Boolean(s && s.trim())
 
   for (const observation of observations) {
     // Build the v2 structured-signal payload from the observation's
@@ -628,6 +667,24 @@ export async function runSemanticClusteringForBatch(
       topStackFrame: observation.topStackFrame ?? null,
       platform: observation.platform ?? null,
     }
+    const hasType = present(signals.type)
+    const hasError = present(signals.errorCode)
+    const hasComponent = present(signals.component)
+    const hasFrame = present(signals.topStackFrame)
+    const hasPlatform = present(signals.platform)
+    if (hasType) coverage.withType++
+    if (hasError) coverage.withErrorCode++
+    if (hasComponent) coverage.withComponent++
+    if (hasFrame) coverage.withTopStackFrame++
+    if (hasPlatform) coverage.withPlatform++
+    if (hasType || hasError || hasComponent || hasFrame || hasPlatform) {
+      coverage.withAnySignal++
+    }
+    // "Strong" = any of the three signals that are most discriminating
+    // for issue type. component (heuristic Topic slug) is broad and
+    // platform alone tells you little, so they don't qualify on their own.
+    if (hasType || hasError || hasFrame) coverage.withStrongSignal++
+
     const outcome = await ensureEmbedding(supabase, observation, signals)
     if (!outcome.ok) {
       embeddingFailures++
@@ -812,6 +869,7 @@ export async function runSemanticClusteringForBatch(
       fallback_attached: fallbackAttached,
       labeling_failures: labelingFailures,
       similarity_histogram: grouped.similarityHistogram,
+      embedding_signal_coverage: coverage,
       duration_ms: durationMs,
     },
   })
@@ -830,6 +888,7 @@ export async function runSemanticClusteringForBatch(
       fetchLatencyP95Ms,
       fetchLatencyMaxMs,
     },
+    embeddingSignalCoverage: coverage,
     semanticGroupsFormed,
     largestGroupSize,
     similarityHistogram: grouped.similarityHistogram,

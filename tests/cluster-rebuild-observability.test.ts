@@ -1,5 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 
 import {
   buildEmbeddingInputText,
@@ -8,6 +9,7 @@ import {
   HISTOGRAM_BUCKETS,
   percentile,
 } from "../lib/storage/semantic-cluster-core.ts"
+import { CURRENT_VERSIONS } from "../lib/storage/algorithm-versions.ts"
 
 // ============================================================================
 // bucketKeyFor — boundary semantics
@@ -237,6 +239,84 @@ test("buildEmbeddingInputText v2: empty signals object → identical to no-signa
   const a = buildEmbeddingInputText("T", "B", {})
   const b = buildEmbeddingInputText("T", "B")
   assert.equal(a, b)
+})
+
+// ============================================================================
+// v2 algorithm-version invalidation — guards the migration contract
+// ============================================================================
+
+// The v1 → v2 invalidation is implicit: ensureEmbedding queries
+// observation_embeddings filtered by `algorithm_version =
+// CURRENT_VERSIONS.observation_embedding`. When CURRENT_VERSIONS is "v2",
+// existing v1 rows must not match — they're effectively invisible to
+// the cache check, forcing recomputeObservationEmbedding to write a v2
+// row. This test set guards both ends of that contract: (a) the
+// version constant is actually v2, and (b) ensureEmbedding's source
+// still filters on the current version (no accidental refactor that
+// drops the constraint).
+
+test("v2 invalidation: CURRENT_VERSIONS.observation_embedding === 'v2'", () => {
+  // If this assertion ever fails, every other v2-related claim in
+  // this PR (and the migration script 034) is invalid — pin it
+  // explicitly so a future un-bump is caught at test time.
+  assert.equal(CURRENT_VERSIONS.observation_embedding, "v2")
+})
+
+test("v2 invalidation: ensureEmbedding's cache lookup filters by CURRENT_VERSIONS.observation_embedding", () => {
+  // Static-source check (cheap, no Supabase mocking required). Reads
+  // semantic-clusters.ts and asserts the cache lookup contains both:
+  //   .from("observation_embeddings")
+  //   .eq("algorithm_version", CURRENT_VERSIONS.observation_embedding)
+  // If the version filter is ever removed (or replaced with a literal
+  // "v1" / "v2" string), this test fails — and the v2 migration
+  // promise that "v1 rows are skipped after the bump" stops holding.
+  const src = readFileSync(
+    new URL("../lib/storage/semantic-clusters.ts", import.meta.url),
+    "utf8",
+  )
+  // Locate ensureEmbedding's body. We don't need to parse it — we just
+  // need the (regex-extracted) span between the function header and
+  // its closing `}`.
+  const ensureStart = src.indexOf("async function ensureEmbedding(")
+  assert.ok(ensureStart >= 0, "ensureEmbedding function should exist")
+  // Walk forward until we exit the function body. Naive but sufficient
+  // because ensureEmbedding is short (<60 lines). Look for the next
+  // top-level `function` declaration as the body's upper bound.
+  const ensureEnd = src.indexOf("\n}\n", ensureStart)
+  assert.ok(ensureEnd > ensureStart, "ensureEmbedding body should close cleanly")
+  const body = src.slice(ensureStart, ensureEnd)
+
+  assert.match(
+    body,
+    /\.from\("observation_embeddings"\)/,
+    "ensureEmbedding must query observation_embeddings",
+  )
+  assert.match(
+    body,
+    /\.eq\(\s*"algorithm_version"\s*,\s*CURRENT_VERSIONS\.observation_embedding\s*\)/,
+    "ensureEmbedding must filter the cache lookup by CURRENT_VERSIONS.observation_embedding — not a hardcoded version string — so a version bump invalidates the cache automatically",
+  )
+})
+
+test("v2 invalidation: recomputeObservationEmbedding writes the current algorithm version, not a hardcoded one", () => {
+  // The on-conflict-do-update RPC is keyed on (observation_id,
+  // algorithm_version), so writing to the wrong version produces a
+  // stale row that ensureEmbedding never reads. Guard the write path
+  // with the same source-pattern check.
+  const src = readFileSync(
+    new URL("../lib/storage/semantic-clusters.ts", import.meta.url),
+    "utf8",
+  )
+  const recomputeStart = src.indexOf("export async function recomputeObservationEmbedding")
+  assert.ok(recomputeStart >= 0, "recomputeObservationEmbedding should exist")
+  const recomputeEnd = src.indexOf("\n}\n", recomputeStart)
+  const body = src.slice(recomputeStart, recomputeEnd)
+
+  assert.match(
+    body,
+    /ver:\s*CURRENT_VERSIONS\.observation_embedding/,
+    "record_observation_embedding RPC must be called with CURRENT_VERSIONS.observation_embedding so writes match the version the cache check reads",
+  )
 })
 
 test("clusterEmbeddings histogram: known bucket placement at boundaries", () => {
