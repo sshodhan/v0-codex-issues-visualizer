@@ -102,6 +102,13 @@ Verification run:
 - structured errors + deterministic success envelope;
 - redaction before persistence/logging.
 
+**Fallback section (required implementation path):**
+- If an existing observation insertion helper exists, use that helper.
+- Else, create one adapter utility at `lib/codex-feedback/normalize.ts` and call the existing DB client directly.
+- If a classification trigger hook exists, invoke that hook after persistence.
+- Else, persist with `classification_status = "pending"`.
+- Final output requirement: document exactly which fallback path was used, including exact module names.
+
 **Required verification/tests:** schema edge cases; API rejection/acceptance; method/body-size guardrails; structured errors.
 
 **Canonical command examples (Tier A):**
