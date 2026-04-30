@@ -9,3 +9,17 @@ This file is kept for compatibility links only.
 - `lib/codex-feedback/schema.ts`
 - `app/api/feedback/codex/route.ts`
 - `packages/codex-issue-collector/src/cli.ts`
+
+
+## Status report template (copy/paste)
+```md
+Phase: <Phase N Name>
+Status: PASS | FAIL | PARTIAL
+Summary: <one-line rationale>
+Missing/Failing criteria:
+- <criterion or "none">
+Verification run:
+- ✅ `<command>`
+- ❌ `<command>`
+- ⚠️ `<command>` (if omitted/blocked, explain why)
+```

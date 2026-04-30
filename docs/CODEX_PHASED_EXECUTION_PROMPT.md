@@ -10,22 +10,6 @@ Execute work in **phases**, with exactly **one phase implemented per run**. Each
 - Keep one canonical definition for schema fields, normalization, and redaction.
 - **Conflict resolution:** If two sections conflict, follow: Constraints > Required files > Acceptance criteria > examples.
 
-## Required files
-Use only the files relevant to the active phase:
-- **Phase 1 (Shared contracts + ingestion API):**
-  - `lib/**` (schema/redaction/normalization/type-safe mappers)
-  - `app/api/**/route.ts` (ingestion endpoints)
-  - `tests/**` (schema/redaction/normalization/route tests)
-  - `docs/**` (optional contract documentation)
-- **Phase 2 (CLI collector):**
-  - `packages/**` or `cli/**` (argument parsing, flow, transport client)
-  - `tests/**` (CLI and collector-to-ingestion coverage)
-  - shared interfaces required by CLI
-- **Phase 3 (GitHub integration + admin evidence UI):**
-  - provider integration files for GitHub ingestion
-  - admin evidence panel UI/API files
-  - `tests/**` (integration + UI/API behavior)
-
 ## Data schema
 Single canonical ingestion contract used across all phases:
 - Validate required/optional fields at parse time via shared schema utilities.
@@ -92,6 +76,20 @@ Use `PASS | FAIL | PARTIAL` for each phase and each required file.
 
 When reporting status, include: (1) phase status, (2) short rationale, (3) failing/missing criteria bullets, (4) exact verification/tests executed.
 
+
+### Status report template (copy/paste)
+```md
+Phase: <Phase N Name>
+Status: PASS | FAIL | PARTIAL
+Summary: <one-line rationale>
+Missing/Failing criteria:
+- <criterion or "none">
+Verification run:
+- ✅ `<command>`
+- ❌ `<command>`
+- ⚠️ `<command>` (if omitted/blocked, explain why)
+```
+
 ### Phase 1 — Feedback Contract + Server Ingestion
 **Required files:** `lib/codex-feedback/schema.ts`, `app/api/feedback/codex/route.ts`, `tests/**` for schema+ingestion.
 
@@ -106,12 +104,23 @@ When reporting status, include: (1) phase status, (2) short rationale, (3) faili
 
 **Required verification/tests:** schema edge cases; API rejection/acceptance; method/body-size guardrails; structured errors.
 
+**Canonical command examples (Tier A):**
+- `npm test -- tests/schema*.test.ts`
+- `npm test -- tests/*redaction*.test.ts`
+- `npm test -- tests/api*codex*.test.ts`
+- `npm test -- tests/*classifier*body*.test.ts`
+
 ### Phase 2 — Local Collector CLI
 **Required files:** `packages/codex-issue-collector/src/cli.ts`, supporting CLI modules, `tests/**` for command behavior/submission flow.
 
 **Exit criteria:** supports `capture|report|submit|github|doctor|preview`; invalid usage non-zero + help; failures propagate; preview avoids network; machine-readable mode separates stdout/stderr.
 
 **Required verification/tests:** command matrix; exit-code propagation; dry-run no-network; collector-to-ingestion integration.
+
+**Canonical command examples (Tier A + Tier C):**
+- `npm test -- tests/*schema*.test.ts tests/*redaction*.test.ts tests/*api*.test.ts`
+- `npm test -- tests/*cli*.test.ts`
+- `npm test -- tests/*collector*integration*.test.ts`
 
 ### Phase 3 — GitHub Issue Integration
 **Required files:** GitHub provider ingestion/fetch/map files, issue body builder modules, `tests/**` for fetch/map/ingest + body building.
@@ -120,6 +129,12 @@ When reporting status, include: (1) phase status, (2) short rationale, (3) faili
 
 **Required verification/tests:** mapping matrix, body builder structure/snapshot tests, end-to-end ingest simulation.
 
+**Canonical command examples (Tier A + Tier B):**
+- `npm test -- tests/*schema*.test.ts tests/*redaction*.test.ts tests/*api*.test.ts`
+- `npm test -- tests/*log*parser*matrix*.test.ts`
+- `npm test -- tests/*github*body*builder*.test.ts`
+- `npm test -- tests/*github*integration*.test.ts`
+
 ### Phase 4 — Admin Evidence Panel
 **Required files:** admin evidence UI components, admin evidence APIs/routes, shared evidence display types/selectors, `tests/**` for UI/API behavior.
 
@@ -127,9 +142,20 @@ When reporting status, include: (1) phase status, (2) short rationale, (3) faili
 
 **Required verification/tests:** API auth/shape/errors; UI state tests; sensitive-value non-render regression.
 
+**Canonical command examples:**
+- `npm test -- tests/*admin*api*.test.ts`
+- `npm test -- tests/*admin*evidence*panel*.test.ts`
+- `npm test -- tests/*sensitive*render*.test.ts`
+
 ### Phase 5 — Classification Quality Loop
 **Required files:** classifier payload handling modules, review/feedback loop files, quality metrics/audit modules, `tests/**` for classifier quality + review workflows.
 
 **Exit criteria:** stable validated classifier request body; adjudication/feedback loop supported; metrics detect regressions; prior phase contracts remain compatible.
 
 **Required verification/tests:** classifier body validation; review workflow paths; known-edge regression tests; cross-phase schema compatibility test.
+
+**Canonical command examples:**
+- `npm test -- tests/*classifier*body*.test.ts`
+- `npm test -- tests/*classification*review*.test.ts`
+- `npm test -- tests/*classification*edge*.test.ts`
+- `npm test -- tests/*schema*compat*.test.ts`
