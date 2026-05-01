@@ -1,6 +1,9 @@
 import {
   bucketConfidence,
+  buildClassificationAwareEmbeddingText,
+  buildRawEmbeddingText,
   canUseTaxonomySignals,
+  type ClassificationAwareEmbeddingInput,
   type ConfidenceBucket,
 } from "./classification-aware-input.ts"
 
@@ -31,11 +34,17 @@ export interface EmbeddingSignalCoverageRow {
   llm_category?: string | null
   llm_subcategory?: string | null
   llm_primary_tag?: string | null
+  llm_severity?: string | null
+  llm_reproducibility?: string | null
+  llm_impact?: string | null
   /** `classifications.confidence` is `numeric(3,2)` returned as either
    *  number (server-side) or JSON string (PostgREST client). */
   llm_confidence?: number | string | null
+  /** Optional list of LLM-emitted tags (`classifications.tags`, text[]). */
+  llm_tags?: string[] | null
   /** Resolved by the caller from `classification_reviews`
-   *  (needs_human_review = true OR status in {flagged, rejected, needs_review}). */
+   *  (needs_human_review = true OR status in {flagged, rejected,
+   *  needs_review, incorrect, invalid, ...}). */
   review_flagged?: boolean | null
   /** Reviewer-corrected category/subcategory, when a review row exists. */
   reviewer_category?: string | null
@@ -44,6 +53,12 @@ export interface EmbeddingSignalCoverageRow {
 
 export interface EmbeddingSignalCoveragePreview {
   observation_id: string
+  /** Baseline embedding text — title + summary only. The "without v3"
+   *  comparison point requested by the Phase 2 preview spec. */
+  raw_embedding_text: string
+  /** Full v3 embedding text, exactly what `buildClassificationAwareEmbeddingText`
+   *  would produce for this row given the gating rules. */
+  classification_embedding_text: string
   included_fields: string[]
   omitted_reasons: string[]
 }
@@ -74,12 +89,38 @@ export interface EmbeddingSignalCoverageSummary {
    *  output can verify that the bucket boundaries are dividing the
    *  data sensibly without round-tripping through SQL. */
   confidence_bucket_distribution: Record<ConfidenceBucket, number>
+  /** Derived percentages for the Phase 2 decision gate. These are the
+   *  numbers an operator looks at to answer "should we proceed to
+   *  Phase 4?" — surfacing them precomputed avoids manual calculation
+   *  and ensures every consumer of this endpoint reads the same
+   *  ratios. All values are 0..1 (multiply by 100 for display). null
+   *  when total_observations is 0 (avoids divide-by-zero NaN). */
+  percentages: {
+    usable_taxonomy_pct: number | null
+    raw_only_pct: number | null
+    review_flagged_pct: number | null
+    high_confidence_pct: number | null
+    medium_confidence_pct: number | null
+    low_confidence_pct: number | null
+    /** Share of observations with ANY structured-signal field
+     *  populated (Topic OR fingerprint OR usable taxonomy). Rough
+     *  proxy for "how often will v3 produce more than raw-only?". */
+    any_structured_signal_pct: number | null
+  }
 }
 
 const TOP_K_DISTRIBUTION = 20
 
 function isPresent(v?: string | null): boolean {
   return Boolean(v && v.trim())
+}
+
+/** Round a ratio to 4 decimal places (basis-point precision). Returns
+ *  null when denominator is zero so callers can render "—" instead of
+ *  the misleading 0%. */
+function ratio(numerator: number, denominator: number): number | null {
+  if (denominator <= 0) return null
+  return Number((numerator / denominator).toFixed(4))
 }
 
 /** Reduce an unbounded distribution object to the top-N keys plus an
@@ -97,18 +138,39 @@ function topN(d: Record<string, number>, n = TOP_K_DISTRIBUTION): Record<string,
   return out
 }
 
-/** Build the `classification` shape the helper expects from the row's
- *  raw signals. Used by both the metric (to evaluate
- *  `canUseTaxonomySignals` consistently) and the preview (to label
- *  the omission reasons identically). */
-function classificationFromRow(row: EmbeddingSignalCoverageRow) {
+/** Assemble the helper-input shape from a coverage row. Used by both
+ *  the metric (to evaluate `canUseTaxonomySignals` consistently) and
+ *  the preview (to label omission reasons + render the actual v3
+ *  string). Centralizing this is what keeps the metric and the helper
+ *  from drifting. */
+function helperInputFromRow(row: EmbeddingSignalCoverageRow): ClassificationAwareEmbeddingInput {
+  const bucket = bucketConfidence(row.llm_confidence)
   return {
-    category: row.llm_category ?? null,
-    subcategory: row.llm_subcategory ?? null,
-    confidence_bucket: bucketConfidence(row.llm_confidence),
-    review_flagged: Boolean(row.review_flagged),
-    reviewer_category: row.reviewer_category ?? null,
-    reviewer_subcategory: row.reviewer_subcategory ?? null,
+    title: row.title ?? "",
+    body: row.content ?? null,
+    topic: row.category_slug ?? null,
+    bugFingerprint: {
+      error_code: row.error_code ?? null,
+      top_stack_frame: row.top_stack_frame ?? null,
+      cli_version: row.cli_version ?? null,
+      os: row.fp_os ?? null,
+      shell: row.fp_shell ?? null,
+      editor: row.fp_editor ?? null,
+      model_id: row.model_id ?? null,
+      repro_markers: row.repro_markers ?? null,
+    },
+    classification: {
+      category: row.llm_category ?? null,
+      subcategory: row.llm_subcategory ?? null,
+      tags: row.llm_tags ?? null,
+      severity: row.llm_severity ?? null,
+      reproducibility: row.llm_reproducibility ?? null,
+      impact: row.llm_impact ?? null,
+      confidence_bucket: bucket,
+      review_flagged: Boolean(row.review_flagged),
+      reviewer_category: row.reviewer_category ?? null,
+      reviewer_subcategory: row.reviewer_subcategory ?? null,
+    },
   }
 }
 
@@ -128,7 +190,18 @@ export function summarizeEmbeddingSignalCoverage(
     llm_subcategory_distribution: {},
     topic_distribution: {},
     confidence_bucket_distribution: { high: 0, medium: 0, low: 0, unknown: 0 },
+    percentages: {
+      usable_taxonomy_pct: null,
+      raw_only_pct: null,
+      review_flagged_pct: null,
+      high_confidence_pct: null,
+      medium_confidence_pct: null,
+      low_confidence_pct: null,
+      any_structured_signal_pct: null,
+    },
   }
+
+  let withAnyStructuredSignal = 0
 
   for (const row of rows) {
     const hasTopic = isPresent(row.category_slug)
@@ -146,9 +219,10 @@ export function summarizeEmbeddingSignalCoverage(
       isPresent(row.llm_subcategory) ||
       isPresent(row.llm_primary_tag)
 
-    const cls = classificationFromRow(row)
-    const bucket = cls.confidence_bucket
-    const reviewFlagged = cls.review_flagged
+    const helperInput = helperInputFromRow(row)
+    const cls = helperInput.classification!
+    const bucket = cls.confidence_bucket as ConfidenceBucket
+    const reviewFlagged = cls.review_flagged === true
 
     summary.confidence_bucket_distribution[bucket]++
 
@@ -175,16 +249,12 @@ export function summarizeEmbeddingSignalCoverage(
     if (bucket === "high") summary.with_high_confidence_llm_classification++
     if (reviewFlagged) summary.with_review_flagged_llm_classification++
 
-    // Gate signal: same predicate the helper uses, applied through the
-    // shared canUseTaxonomySignals so the metric can never drift from
-    // the helper's runtime behavior.
-    if (canUseTaxonomySignals(cls) && hasAnyLlm) summary.with_usable_taxonomy_triplet++
+    const usable = canUseTaxonomySignals(cls) && hasAnyLlm
+    if (usable) summary.with_usable_taxonomy_triplet++
 
-    const rawOnly =
-      !hasTopic &&
-      !hasFingerprint &&
-      !(canUseTaxonomySignals(cls) && hasAnyLlm)
+    const rawOnly = !hasTopic && !hasFingerprint && !usable
     if (rawOnly) summary.raw_only_fallback_count++
+    else withAnyStructuredSignal++
   }
 
   // Top-K the unbounded distribution maps before returning.
@@ -192,18 +262,34 @@ export function summarizeEmbeddingSignalCoverage(
   summary.llm_subcategory_distribution = topN(summary.llm_subcategory_distribution)
   summary.topic_distribution = topN(summary.topic_distribution)
 
+  // Derived ratios for the Phase 2 decision gate.
+  const total = summary.total_observations
+  summary.percentages = {
+    usable_taxonomy_pct: ratio(summary.with_usable_taxonomy_triplet, total),
+    raw_only_pct: ratio(summary.raw_only_fallback_count, total),
+    review_flagged_pct: ratio(summary.with_review_flagged_llm_classification, total),
+    high_confidence_pct: ratio(summary.confidence_bucket_distribution.high, total),
+    medium_confidence_pct: ratio(summary.confidence_bucket_distribution.medium, total),
+    low_confidence_pct: ratio(summary.confidence_bucket_distribution.low, total),
+    any_structured_signal_pct: ratio(withAnyStructuredSignal, total),
+  }
+
   return summary
 }
 
-/** Per-observation preview for debugging: which fields the helper
- *  WOULD include vs. omit if we generated the embedding for this row.
- *  The omission reasons are deliberately specific so an operator
- *  scanning a sample can map "wait, why was Tags omitted on row X?"
- *  to a concrete explanation rather than guessing. */
+/** Per-observation preview for debugging. The Phase 2 plan's optional
+ *  preview asks for raw embedding text, classification-aware embedding
+ *  text, included fields, and omitted fields with reasons — all four
+ *  appear here so an operator can verify "would Phase 4 actually
+ *  improve this row's embedding?" without round-tripping through SQL. */
 export function buildCoveragePreview(
   rows: EmbeddingSignalCoverageRow[],
 ): EmbeddingSignalCoveragePreview[] {
   return rows.map((row) => {
+    const helperInput = helperInputFromRow(row)
+    const raw_embedding_text = buildRawEmbeddingText(helperInput.title, helperInput.body)
+    const classification_embedding_text = buildClassificationAwareEmbeddingText(helperInput)
+
     const included: string[] = ["title"]
     const omitted: string[] = []
 
@@ -229,7 +315,7 @@ export function buildCoveragePreview(
       omitted.push("fingerprint_missing")
     }
 
-    const cls = classificationFromRow(row)
+    const cls = helperInput.classification!
     const hasAnyLlm =
       isPresent(row.llm_category) ||
       isPresent(row.llm_subcategory) ||
@@ -249,6 +335,12 @@ export function buildCoveragePreview(
       included.push("llm_taxonomy")
     }
 
-    return { observation_id: row.observation_id, included_fields: included, omitted_reasons: omitted }
+    return {
+      observation_id: row.observation_id,
+      raw_embedding_text,
+      classification_embedding_text,
+      included_fields: included,
+      omitted_reasons: omitted,
+    }
   })
 }

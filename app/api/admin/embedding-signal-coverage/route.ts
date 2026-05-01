@@ -15,11 +15,32 @@ const MAX_DAYS = 365
 
 /** Status values from `classification_reviews.status` that count as
  *  "review-flagged" — i.e., reviewer explicitly does not endorse the
- *  LLM output. Boolean `needs_human_review` also counts. The set is
- *  intentionally permissive (any non-approved status) so we don't have
- *  to enumerate every review-decision string the reviewer UI might
- *  emit. */
-const FLAGGED_REVIEW_STATUSES = new Set(["flagged", "needs_review", "rejected"])
+ *  LLM output and v3 should NOT use its taxonomy.
+ *
+ *  `classification_reviews.status` is `text` (no enum constraint), so
+ *  the set of values that can land in this column is determined by
+ *  the reviewer UI rather than the schema. The list below covers the
+ *  documented review-decision states across reviewer flows:
+ *    - `flagged` / `needs_review` — reviewer escalated for follow-up
+ *    - `rejected` / `incorrect` / `invalid` — reviewer disagreed with
+ *      the LLM's assignment
+ *    - `unclear` — reviewer couldn't decide; treat as untrusted
+ *  Approved/correct values are intentionally absent — those should
+ *  let the LLM taxonomy through unchanged.
+ *
+ *  Operators verifying the live distribution can run:
+ *    SELECT status, COUNT(*) FROM classification_reviews GROUP BY 1;
+ *  If a reviewer state appears that should also gate the LLM output,
+ *  add it here in one place — every consumer (this route + the
+ *  signal-coverage metric + the Phase 4 caller) uses the same set. */
+const FLAGGED_REVIEW_STATUSES = new Set([
+  "flagged",
+  "needs_review",
+  "rejected",
+  "incorrect",
+  "invalid",
+  "unclear",
+])
 
 export async function GET(request: NextRequest) {
   const authErr = requireAdminSecret(request)
@@ -46,10 +67,16 @@ export async function GET(request: NextRequest) {
   // `llm_review_status`. We fetch `category_id` here and resolve to
   // slug via a follow-up `categories` lookup; review state is fetched
   // from `classification_reviews` in step 2.
+  // We also pull llm_severity here — the helper consumes it as part
+  // of the always-included scalar fields (alongside Confidence /
+  // Reproducibility / Impact). The MV currently exposes `llm_severity`
+  // but not `llm_reproducibility` / `llm_impact` — those would need a
+  // separate `classifications` lookup if/when we want them in the
+  // metric. Leaving them null here is honest for now.
   let q = supabase
     .from("mv_observation_current")
     .select(
-      "observation_id, title, content, category_id, error_code, top_stack_frame, cli_version, fp_os, fp_shell, fp_editor, model_id, repro_markers, llm_category, llm_subcategory, llm_primary_tag, llm_confidence",
+      "observation_id, title, content, category_id, error_code, top_stack_frame, cli_version, fp_os, fp_shell, fp_editor, model_id, repro_markers, llm_category, llm_subcategory, llm_primary_tag, llm_confidence, llm_severity",
     )
     .eq("is_canonical", true)
     .order("captured_at", { ascending: false })
@@ -158,6 +185,7 @@ export async function GET(request: NextRequest) {
       llm_category: (mv.llm_category as string | null) ?? null,
       llm_subcategory: (mv.llm_subcategory as string | null) ?? null,
       llm_primary_tag: (mv.llm_primary_tag as string | null) ?? null,
+      llm_severity: (mv.llm_severity as string | null) ?? null,
       // PostgREST may return `numeric` as either string or number;
       // bucketConfidence in the summarizer handles both.
       llm_confidence: (mv.llm_confidence as number | string | null) ?? null,

@@ -137,6 +137,59 @@ test("buildCoveragePreview labels omission reasons correctly", () => {
   assert.ok(rows[2].included_fields.includes("llm_taxonomy"))
 })
 
+test("buildCoveragePreview returns BOTH raw and classification-aware text for side-by-side comparison", () => {
+  // Phase 2 spec calls for the preview to surface what an embedding
+  // would contain WITH and WITHOUT v3's structured signals so an
+  // operator can verify "v3 actually adds something here" before
+  // proceeding to Phase 4.
+  const [row] = buildCoveragePreview([
+    {
+      observation_id: "1",
+      title: "Crash on save",
+      content: "Repro when opening palette",
+      category_slug: "ux-ui",
+      error_code: "EBADSTATE",
+      llm_category: "bug",
+      llm_subcategory: "state-loss",
+      llm_confidence: "0.92",
+      review_flagged: false,
+    },
+  ])
+
+  // Raw is title + summary only — no Topic, no Error, no Category.
+  assert.match(row.raw_embedding_text, /^Title: Crash on save\nSummary: Repro when opening palette$/)
+  assert.doesNotMatch(row.raw_embedding_text, /Topic:/)
+  assert.doesNotMatch(row.raw_embedding_text, /Error:/)
+  assert.doesNotMatch(row.raw_embedding_text, /Category:/)
+
+  // Classification-aware includes everything raw has PLUS structured signals.
+  assert.match(row.classification_embedding_text, /Title: Crash on save/)
+  assert.match(row.classification_embedding_text, /Summary: Repro when opening palette/)
+  assert.match(row.classification_embedding_text, /Topic: ux-ui/)
+  assert.match(row.classification_embedding_text, /Error: EBADSTATE/)
+  assert.match(row.classification_embedding_text, /Category: bug/)
+  assert.match(row.classification_embedding_text, /Subcategory: state-loss/)
+
+  // The point of having both: classification-aware MUST be longer than raw
+  // (or equal, when no signals are available) — never shorter.
+  assert.ok(row.classification_embedding_text.length >= row.raw_embedding_text.length)
+})
+
+test("buildCoveragePreview raw and classification text are EQUAL when no structured signals", () => {
+  // For a row with no Topic / fingerprint / classification, v3 has
+  // nothing to add and degrades to raw-equivalent. Both strings should
+  // be identical, which lets an operator visually confirm "this row
+  // doesn't benefit from v3".
+  const [row] = buildCoveragePreview([
+    {
+      observation_id: "1",
+      title: "Just a title",
+      content: "Just a body",
+    },
+  ])
+  assert.equal(row.raw_embedding_text, row.classification_embedding_text)
+})
+
 test("preview review_flagged short-circuits before low_confidence", () => {
   // A row with both low confidence AND review-flagged is more
   // actionably labeled "review_flagged" — the reviewer explicitly
@@ -166,4 +219,71 @@ test("medium confidence in preview → llm_taxonomy is INCLUDED (not omitted)", 
   ])
   assert.ok(row.included_fields.includes("llm_taxonomy"))
   assert.ok(!row.omitted_reasons.some((r) => r.startsWith("llm_")))
+})
+
+// ============================================================================
+// Derived percentages — the Phase 2 decision-gate inputs
+// ============================================================================
+
+test("summary.percentages computes ratios at 4-decimal precision", () => {
+  const summary = summarizeEmbeddingSignalCoverage([
+    {
+      observation_id: "1",
+      llm_category: "bug",
+      llm_confidence: "0.90",
+      category_slug: "ux-ui",
+      review_flagged: false,
+    },
+    {
+      observation_id: "2",
+      llm_category: "bug",
+      llm_confidence: "0.40",
+      review_flagged: false,
+    },
+    { observation_id: "3" }, // no signals → raw-only
+    { observation_id: "4" }, // no signals → raw-only
+  ])
+
+  // 1 of 4 has usable taxonomy (high-conf with topic)
+  assert.equal(summary.percentages.usable_taxonomy_pct, 0.25)
+  // 2 of 4 are raw-only (rows 3 + 4 — row 2 has llm_category so not raw-only,
+  //                        but it's not usable either; classification helper still
+  //                        produces only Title + Summary for row 2, so... wait)
+  // Actually row 2 has llm_category populated — `with_any_llm_classification`
+  // counts it. But raw-only is defined as no topic AND no fingerprint AND no
+  // usable taxonomy. Row 2 has none of those → raw-only.
+  assert.equal(summary.percentages.raw_only_pct, 0.75)
+  assert.equal(summary.percentages.high_confidence_pct, 0.25)
+  assert.equal(summary.percentages.low_confidence_pct, 0.25)
+  assert.equal(summary.percentages.review_flagged_pct, 0)
+  // Any-structured-signal = rows that aren't raw-only = 1 of 4
+  assert.equal(summary.percentages.any_structured_signal_pct, 0.25)
+})
+
+test("summary.percentages returns null on empty input (no divide-by-zero)", () => {
+  const summary = summarizeEmbeddingSignalCoverage([])
+  assert.equal(summary.percentages.usable_taxonomy_pct, null)
+  assert.equal(summary.percentages.raw_only_pct, null)
+  assert.equal(summary.percentages.high_confidence_pct, null)
+  assert.equal(summary.percentages.review_flagged_pct, null)
+  assert.equal(summary.percentages.any_structured_signal_pct, null)
+})
+
+test("summary.confidence_bucket_distribution sums to total_observations", () => {
+  // Invariant: every row falls into exactly one bucket. The four
+  // bucket counts must sum to total — guards against double-counting
+  // or skipping rows in the loop.
+  const summary = summarizeEmbeddingSignalCoverage([
+    { observation_id: "1", llm_confidence: "0.90" }, // high
+    { observation_id: "2", llm_confidence: "0.65" }, // medium
+    { observation_id: "3", llm_confidence: "0.30" }, // low
+    { observation_id: "4" },                          // unknown (null confidence)
+    { observation_id: "5", llm_confidence: "not-a-number" }, // unknown
+  ])
+  const dist = summary.confidence_bucket_distribution
+  assert.equal(dist.high + dist.medium + dist.low + dist.unknown, summary.total_observations)
+  assert.equal(dist.high, 1)
+  assert.equal(dist.medium, 1)
+  assert.equal(dist.low, 1)
+  assert.equal(dist.unknown, 2)
 })

@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   bucketConfidence,
   buildClassificationAwareEmbeddingText,
+  buildRawEmbeddingText,
   canUseTaxonomySignals,
 } from "../lib/embeddings/classification-aware-input.ts"
 
@@ -193,6 +194,41 @@ test("bucketConfidence: null/undefined/non-finite map to 'unknown'", () => {
 // ============================================================================
 // canUseTaxonomySignals — exported gate
 // ============================================================================
+
+// ============================================================================
+// buildRawEmbeddingText — baseline for Phase 2 preview comparison
+// ============================================================================
+
+test("buildRawEmbeddingText: title-only when body absent", () => {
+  assert.equal(buildRawEmbeddingText("My title"), "Title: My title")
+  assert.equal(buildRawEmbeddingText("My title", null), "Title: My title")
+  assert.equal(buildRawEmbeddingText("My title", ""), "Title: My title")
+  assert.equal(buildRawEmbeddingText("My title", "   "), "Title: My title")
+})
+
+test("buildRawEmbeddingText: trims title and body", () => {
+  assert.equal(
+    buildRawEmbeddingText("  My title  ", "  My body  "),
+    "Title: My title\nSummary: My body",
+  )
+})
+
+test("buildRawEmbeddingText: applies the same body truncation as the classification-aware variant", () => {
+  // Both functions use SUMMARY_MAX (1200). Critical: the raw vs
+  // classification-aware preview comparison MUST start from the same
+  // base — if raw truncates differently, the operator can't tell
+  // whether observed length differences come from v3's signals or
+  // from inconsistent truncation.
+  const longBody = "x".repeat(1500)
+  const raw = buildRawEmbeddingText("A", longBody)
+  const cls = buildClassificationAwareEmbeddingText({ title: "A", body: longBody })
+  // The "Summary: " prefix length is 9; total line length should be
+  // 9 + 1200 = 1209 in both.
+  const rawSummary = raw.split("\n").find((l) => l.startsWith("Summary: "))
+  const clsSummary = cls.split("\n").find((l) => l.startsWith("Summary: "))
+  assert.equal(rawSummary?.length, 1209)
+  assert.equal(clsSummary?.length, 1209)
+})
 
 test("canUseTaxonomySignals: gates exactly as documented", () => {
   // High + not flagged → use

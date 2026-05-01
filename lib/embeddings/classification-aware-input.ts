@@ -153,3 +153,16 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
 
   return lines.join("\n")
 }
+
+/** Baseline "raw" embedding input — title + summary only, with the
+ *  same body-truncation rule as the classification-aware variant.
+ *  Used by the Phase 2 preview to surface what an embedding would
+ *  contain WITHOUT any of v3's structured signals, so an operator
+ *  comparing the two sees the actual delta v3 contributes. The
+ *  Phase 2 plan's preview spec calls for both strings side by side. */
+export function buildRawEmbeddingText(title: string, body?: string | null): string {
+  const lines: string[] = [`Title: ${title.trim()}`]
+  const trimmedBody = body?.trim()
+  if (trimmedBody) lines.push(`Summary: ${trimmedBody.slice(0, SUMMARY_MAX)}`)
+  return lines.join("\n")
+}
