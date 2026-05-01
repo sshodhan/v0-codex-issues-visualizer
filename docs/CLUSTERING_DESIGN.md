@@ -69,9 +69,21 @@ This prevents the triage panel from staying empty unless ingestion itself is emp
 ## 4) Clustering Algorithm Details
 
 ### 4.1 Embedding generation
-- Embedding model: `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`).
-- Input text: compact title+content form from `buildEmbeddingInputText(...)`.
-- Embeddings are cached in `observation_embeddings` with algorithm version (`observation_embedding`) to support replay/versioning.
+- Embedding model: `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`, 1536-dim).
+- Input text: structured-prefix form built by `buildEmbeddingInputText(...)`. As of `observation_embedding` v2 (2026-04, scripts/034), the input prepends bracketed type-anchoring signals before the existing title/summary text:
+  ```
+  [Type: bug] [Error: TIMEOUT] [Component: codex-cli] [Stack: tokio::runtime::block_on] [Platform: windows]
+  Title: <title>
+  Summary: <body, capped at 1200 chars>
+  ```
+  Each tag is omitted when its source signal is null/whitespace, so an observation with no structured context degrades gracefully to v1's prose-only `Title: …\nSummary: …` format. See §4.8 for the production diagnostic that motivated the v1→v2 input change.
+- Tag sources, in render order:
+  - `Type` ← `family_classification_current.family_kind` (Stage 4 #2)
+  - `Error` ← `bug_fingerprints.error_code`
+  - `Component` ← `category_assignments.categories.slug` (Layer 0 heuristic)
+  - `Stack` ← `bug_fingerprints.top_stack_frame`, truncated to 60 chars
+  - `Platform` ← `bug_fingerprints.os`
+- Embeddings are cached in `observation_embeddings` with `algorithm_version`. The version is bumped (v1 → v2 in scripts/034) whenever the input format changes; `ensureEmbedding`'s cache lookup filters by `CURRENT_VERSIONS.observation_embedding` so stale-format vectors are skipped and recomputed on demand.
 
 ### 4.2 Grouping strategy
 - Compute pairwise cosine similarity among embedded observations in the batch.
@@ -514,6 +526,81 @@ select common_matched_phrases
 from mv_cluster_topic_metadata
 where cluster_id = '<uuid>';
 ```
+
+### 4.7 Operator observability for clustering rebuilds
+
+The admin "Layer A Clustering" panel (`/admin`, `app/admin/page.tsx` ClusteringPanel) is the operator surface for diagnosing and tuning the pipeline. It exposes:
+
+- **Live stats**: total observations, total clusters, active memberships, orphans, and (added 2026-04) the active `cluster_key` prefix distribution (`semantic:` vs `title:` share). The prefix distribution is the single most useful at-a-glance diagnostic for "is the embedding pipeline actually being used?". Computed from `cluster_members` (active rows only) inner-joined with `clusters`, so empty clusters left over from prior re-detach cycles don't pollute the percentages.
+- **Cluster quality lens**: aggregated `dominant_error_code_share` and `dominant_stack_frame_share` over multi-member (`cluster_size >= 2`) clusters from `mv_cluster_health_current`. Surfaces avg, perfect-coherence count (≥99%), and low-coherence count (<50%). Caveat in the UI text: dominant share is computed as `top_count / cluster_size`, not `top_count / members_with_codes`, so clusters with many fingerprint-less members score lower than they "deserve".
+- **Tunable knobs**: `similarityThreshold` (0.5–0.99) and `minClusterSize` (2–10). Defaults match server (0.86 / 2). UI text below the threshold input names the limit explicitly: tuning the threshold only changes the cutoff in the *current* embedding space; cluster quality also depends on what we're embedding (signal coverage, see §4.1).
+- **Per-batch observability** during a rebuild:
+  - `embeddingStats`: cached / fetched / failed counts and p50/p95/max OpenAI fetch latency. Distinguishes "embedding pipeline slow" from "clustering algorithm slow" without needing a debugger.
+  - `embeddingSignalCoverage`: how many observations had each v2 structured signal populated (`withType`, `withErrorCode`, `withComponent`, `withTopStackFrame`, `withPlatform`, `withAnySignal`, `withStrongSignal` where strong = any of `{type, errorCode, topStackFrame}`). A "strong-share" badge (green ≥70%, amber ≥40%, red <40%) flags batches where v2 silently degraded to v1-equivalent prose-only embeddings because upstream stages haven't populated signals yet.
+  - `semanticGroupsFormed` + `largestGroupSize`: did this batch produce any real grouping?
+  - `similarityHistogram`: counts pairs by cosine-similarity bucket (`[0.0, 0.5, 0.6, 0.7, 0.75, 0.8, 0.83, 0.86, 0.9, 0.95]`). Bars at-or-above the active threshold are highlighted, so the next threshold to try is visually obvious. Bucket boundaries calibrated for `text-embedding-3-small`; switching models invalidates them — re-tune.
+- **Post-rebuild verification checklist**: surfaced as a card after `refreshedMvs` flips. Six checks pointing to where on the same panel each signal lives (embeddings accounted, multi-member clusters increased, singleton rate dropped, quality didn't collapse, manual spot-check of the largest cluster, re-run family classification on new cluster_ids — see §5.1's bootstrap caveat).
+- **Server-side structured logs**: every batch emits `rebuild_batch_started` (with cursor, threshold, mode, redetach) and `rebuild_batch_completed` (with the full metric set above). Vercel-log-only post-mortems work even when the function hits its 300s timeout boundary and the client UI never sees a final response.
+- **Client-side lifecycle events** (`logClientEvent`): `admin-cluster-rebuild-started`, `admin-cluster-batch-completed`, `admin-cluster-rebuild-completed`. Mirrors `docs/ERROR_TRACKING_SYSTEM.md` so client-side stalls (browser tab closed mid-rebuild, network failure between batches) are recoverable from logs.
+
+### 4.8 Lessons: why v1 prose-only embeddings produced singletons (2026-04)
+
+Diagnostic finding (2026-04-30 production trace on 487 observations):
+- **407 of 417 active clusters were `title:`-keyed** (deterministic title-hash fallback).
+- **Only 10 of 417 clusters were `semantic:`-keyed** — the embedding-based grouping path produced a tiny fraction of clusters across the entire database history.
+- **Every cluster, including the 10 semantic ones, had exactly 1 observation.** Pure singletons. No real grouping anywhere in the system.
+
+We confirmed via `mv_cluster_health_current` that the embedding pipeline was running end-to-end:
+- 411/487 observations had embeddings stored at the current `algorithm_version`.
+- Embeddings were a single consistent model (`text-embedding-3-small`, 1536-dim, normalized).
+- Input text averaged 748 chars (title + body summary — not title-only).
+
+So embeddings existed, were homogeneous, and had reasonable input. Clustering still produced no merges. **Surface-prose similarity wasn't capturing issue-type similarity** — the failure mode was at the embedding-input level, not the threshold or the model.
+
+Concrete failure cases observed in the corpus:
+
+| Two reports | v1 embedding similarity | Should cluster? |
+|---|---|---|
+| "CLI hangs on Windows" + 5-paragraph repro | "Windows: process freezes" + 1-paragraph repro | typically <0.86 (different lengths/vocab) | **Yes** — same root cause |
+| "Bug in CLI: Windows ACL prevents writing to .git" | "Feature request: better Windows ACL handling for git" | typically >0.86 (high vocab overlap) | **No** — different intents |
+| Two TIMEOUT reports from different users | Same error code, different writeups | could land either side of 0.86 | **Yes** — same fingerprint |
+
+The threshold knob can't fix any of these — the underlying signal is wrong, not the cutoff.
+
+#### Strategy options considered
+
+| Option | What it changes | Cost | Quality unlock |
+|---|---|---|---|
+| **A. Structured-prefix embedding input** | Prepend `[Type: bug] [Error: TIMEOUT] [Component: cli] [Stack: …] [Platform: …]` before title/summary | Bump `observation_embedding` v1 → v2; re-embed (~$0.50 per 500 obs) | Medium — model gets explicit type signal anchored at the front of the input |
+| **B. Cluster on structured features first, embeddings refine** | Group by `(error_code, top_stack_frame)` first; use embedding only to subdivide partitions or bridge null-fingerprint observations | Pure code, no re-embed | Large — exact-feature matches are deterministic |
+| **C. Two-vector clustering** | Embed signature + prose separately; require high similarity on both | 2× embedding cost | Large — false positives drop sharply |
+| **D. family_kind pre-partitioning** | Use Stage-4 LLM-inferred `family_kind` (Bug / Feature / Question) as the first axis; embeddings cluster within partition | Mostly free — `family_classification_current` already has this | Medium — coarser but principled |
+| **E. Fine-tune embeddings on labeled pairs** | Train an adapter on "are these the same bug?" labels | Weeks of work + label collection | Largest — but impractical now |
+
+#### What this PR ships: Option A only
+
+This PR (#186) implements **Option A**. Rationale: cheapest to try, additive (doesn't replace the existing pipeline), gracefully degrades to v1 behavior when signals are missing, and the observability work shipped alongside it (§4.7) makes the result measurable. Whether v2 actually delivers better grouping than v1 is the **observable bet** of the change — the post-rebuild verification checklist asks the operator to confirm:
+
+- Multi-member cluster count rose vs. baseline
+- Singleton rate dropped vs. baseline
+- Avg dominant error share didn't collapse (would indicate over-loose threshold or false-positive merges)
+
+If Option A doesn't deliver, the next follow-up is Option B (deterministic feature-first clustering) — that approach doesn't depend on embedding quality at all, so it's the safer fallback.
+
+#### What v2 does NOT fix on its own
+
+- **Cold start during the FIRST re-detach rebuild after the v1→v2 bump**: signals are pulled per-observation BEFORE clustering runs, so `family_kind` resolves against each obs's *prior* cluster_id. New cluster_ids created by this rebuild won't have a family classification until the family-classification drain re-runs. v2 embeddings during the first cycle therefore use stale family_kind — better than no signal, not as good as fresh signal. Post-rebuild verification checklist item #6 covers the re-classification follow-up that closes this gap.
+- **Observations with no fingerprint and no family classification**: render as v1-equivalent (prose-only) under v2. The signal-coverage card (§4.7) flags this — a strong-share <40% means most of the batch fell back to v1 behavior and threshold tuning won't help until upstream stages catch up.
+- **Threshold tuning by itself**: see the amber UI caveat. Threshold changes the cutoff *in the current embedding space*. Cluster quality also depends on the embedding input and signal coverage. With low signal coverage, lowering threshold = more false-positive merges, not better quality.
+
+#### Activation flow
+
+The v1→v2 cutover is operator-driven:
+
+1. Apply `scripts/034_observation_embedding_v2_bump.sql` (registers v2 as `current_effective`).
+2. Open `/admin` → Layer A Clustering, select **Semantic** mode, tick **Re-detach first**, click **Rebuild**. `ensureEmbedding`'s cache lookup filters by `CURRENT_VERSIONS.observation_embedding`, so existing v1 rows no longer match — every observation gets a fresh v2 vector on first read. v1 rows are preserved for replay (unique constraint is per `algorithm_version`).
+3. Re-run family-classification drain (Family Classification tab) on the new cluster_ids. New clusters have no `family_classification_current` row until this completes.
+4. Optionally trigger a second rebuild (without re-detach) so v2 embeddings refresh against the now-populated `family_kind` from step 3 — closing the cold-start gap noted above.
 
 ---
 

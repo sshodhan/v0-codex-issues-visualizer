@@ -15,7 +15,9 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 import {
   buildEmbeddingInputText,
   clusterEmbeddings,
+  percentile,
   type EmbeddedObservation,
+  type EmbeddingStructuredSignals,
   type SemanticObservationInput,
 } from "@/lib/storage/semantic-cluster-core"
 
@@ -25,6 +27,56 @@ export interface SemanticClusterRunResult {
   fallbackAttached: number
   embeddingFailures: number
   labelingFailures: number
+  /** Per-batch observability: how many embeddings were served from
+   *  the DB cache vs freshly fetched from OpenAI, and the latency
+   *  distribution of fetched calls. Surfaced to admin clients for
+   *  debugging silent rebuild stalls. */
+  embeddingStats: {
+    cached: number
+    fetched: number
+    failed: number
+    fetchLatencyP50Ms: number | null
+    fetchLatencyP95Ms: number | null
+    fetchLatencyMaxMs: number | null
+  }
+  /** Coverage of v2 structured-prefix signals across the batch. v2
+   *  embeddings degrade gracefully to prose-only input when signals
+   *  are absent — this counter set tells operators whether v2 is
+   *  actually delivering type-anchored embeddings or silently behaving
+   *  like v1 for most observations. `withAnySignal` and
+   *  `withStrongSignal` are derived (any-of-five and
+   *  any-of-{type,errorCode,topStackFrame}) so the operator doesn't
+   *  have to compute them client-side. Always includes every
+   *  observation passed in, even those that failed embedding — so the
+   *  ratio is "share of input with X populated", not "share of
+   *  successfully embedded with X populated".
+   */
+  embeddingSignalCoverage: {
+    total: number
+    withType: number
+    withErrorCode: number
+    withComponent: number
+    withTopStackFrame: number
+    withPlatform: number
+    withAnySignal: number
+    withStrongSignal: number
+  }
+  /** Number of semantic groups (clusters of size >= minClusterSize) the
+   *  algorithm formed, plus the largest such group's size. Together they
+   *  let an operator see "did this batch produce real grouping?" without
+   *  needing a follow-up SQL query. */
+  semanticGroupsFormed: number
+  largestGroupSize: number
+  /** Pairwise similarity histogram from clusterEmbeddings — used to
+   *  decide whether the active threshold is too tight/loose. */
+  similarityHistogram: {
+    buckets: Record<string, number>
+    invalid: number
+    totalPairs: number
+  }
+  /** Wall-clock duration of the run, useful when correlating with the
+   *  Vercel 300s function-timeout boundary. */
+  durationMs: number
 }
 
 type AdminClient = ReturnType<typeof createAdminClient>
@@ -194,10 +246,20 @@ async function createEmbedding(input: string): Promise<number[] | null> {
   return vector
 }
 
+/** Outcome of `ensureEmbedding`. `source` distinguishes a DB cache hit
+ *  from a fresh OpenAI fetch so the caller can build per-batch
+ *  cache-hit-rate / fetch-latency stats without re-instrumenting the
+ *  internals of `recomputeObservationEmbedding`. */
+type EnsureEmbeddingOutcome =
+  | { ok: true; vector: number[]; source: "cache" | "fetched"; latencyMs: number }
+  | { ok: false; latencyMs: number }
+
 async function ensureEmbedding(
   supabase: AdminClient,
   observation: SemanticObservationInput,
-): Promise<number[] | null> {
+  signals?: EmbeddingStructuredSignals,
+): Promise<EnsureEmbeddingOutcome> {
+  const startedAt = Date.now()
   const { data: existing } = await supabase
     .from("observation_embeddings")
     .select("vector")
@@ -206,18 +268,28 @@ async function ensureEmbedding(
     .maybeSingle()
 
   const vectorJson = existing?.vector as number[] | string | undefined
-  if (Array.isArray(vectorJson)) return vectorJson
+  if (Array.isArray(vectorJson)) {
+    return { ok: true, vector: vectorJson, source: "cache", latencyMs: Date.now() - startedAt }
+  }
   if (typeof vectorJson === "string") {
     try {
       const parsed = JSON.parse(vectorJson) as number[]
-      if (Array.isArray(parsed)) return parsed
+      if (Array.isArray(parsed)) {
+        return { ok: true, vector: parsed, source: "cache", latencyMs: Date.now() - startedAt }
+      }
     } catch {
       // no-op; will regenerate
     }
   }
 
-  const outcome = await recomputeObservationEmbedding(supabase, observation, { trigger: "ensure" })
-  return outcome.ok ? outcome.vector : null
+  const outcome = await recomputeObservationEmbedding(supabase, observation, {
+    trigger: "ensure",
+    signals,
+  })
+  if (outcome.ok) {
+    return { ok: true, vector: outcome.vector, source: "fetched", latencyMs: Date.now() - startedAt }
+  }
+  return { ok: false, latencyMs: Date.now() - startedAt }
 }
 
 // Force-recompute the observation_embedding for a single row and upsert
@@ -235,7 +307,7 @@ async function ensureEmbedding(
 export async function recomputeObservationEmbedding(
   supabase: AdminClient,
   observation: { id: string; title: string; content?: string | null },
-  options: { trigger?: string } = {},
+  options: { trigger?: string; signals?: EmbeddingStructuredSignals } = {},
 ): Promise<
   | { ok: true; vector: number[]; model: string; algorithmVersion: string; dimensions: number }
   | { ok: false; reason: string }
@@ -243,7 +315,17 @@ export async function recomputeObservationEmbedding(
   const trigger = options.trigger ?? "unspecified"
   const algorithmVersionModel = `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`
 
-  const input = buildEmbeddingInputText(observation.title, observation.content ?? null)
+  // v2 input prepends structured signals (when caller passed them) so
+  // the embedding model encodes issue type, not just prose vocabulary.
+  // Callers without structured context (legacy single-observation
+  // recomputes from the trace-page Re-run button) get the v1-equivalent
+  // prose-only input and still produce valid v2 vectors — just less
+  // semantically anchored.
+  const input = buildEmbeddingInputText(
+    observation.title,
+    observation.content ?? null,
+    options.signals,
+  )
   const embedding = await createEmbedding(input)
   if (!embedding) {
     await recordProcessingEvent(supabase, {
@@ -546,17 +628,74 @@ export async function runSemanticClusteringForBatch(
   const similarityThreshold = options?.similarityThreshold ?? 0.86
   const minClusterSize = options?.minClusterSize ?? 2
   const redetach = options?.redetach === true
+  const runStartedAt = Date.now()
 
   const embedded: EmbeddedObservation[] = []
   let embeddingFailures = 0
+  let embeddingsFromCache = 0
+  let embeddingsFromFetch = 0
+  // Latencies of OpenAI fetch calls only (cache hits skipped) — used for
+  // p50/p95 reporting after the batch.
+  const fetchLatencies: number[] = []
+  // v2 signal-coverage tally. Counted across the FULL input set
+  // (including obs that subsequently fail embedding), because the
+  // operator question is "how many of my observations have the type
+  // signal populated?" — not "of those that successfully embedded".
+  // A non-empty trimmed string counts; null / undefined / "" / "  "
+  // do not (matches buildEmbeddingInputText's omission rule).
+  const coverage = {
+    total: observations.length,
+    withType: 0,
+    withErrorCode: 0,
+    withComponent: 0,
+    withTopStackFrame: 0,
+    withPlatform: 0,
+    withAnySignal: 0,
+    withStrongSignal: 0,
+  }
+  const present = (s: string | null | undefined) => Boolean(s && s.trim())
 
   for (const observation of observations) {
-    const embedding = await ensureEmbedding(supabase, observation)
-    if (!embedding) {
+    // Build the v2 structured-signal payload from the observation's
+    // optional context fields. Each absent field is silently omitted by
+    // buildEmbeddingInputText; an observation with no signals at all
+    // still embeds successfully with prose-only input.
+    const signals: EmbeddingStructuredSignals = {
+      type: observation.familyKind ?? null,
+      errorCode: observation.errorCode ?? null,
+      component: observation.topicSlug ?? null,
+      topStackFrame: observation.topStackFrame ?? null,
+      platform: observation.platform ?? null,
+    }
+    const hasType = present(signals.type)
+    const hasError = present(signals.errorCode)
+    const hasComponent = present(signals.component)
+    const hasFrame = present(signals.topStackFrame)
+    const hasPlatform = present(signals.platform)
+    if (hasType) coverage.withType++
+    if (hasError) coverage.withErrorCode++
+    if (hasComponent) coverage.withComponent++
+    if (hasFrame) coverage.withTopStackFrame++
+    if (hasPlatform) coverage.withPlatform++
+    if (hasType || hasError || hasComponent || hasFrame || hasPlatform) {
+      coverage.withAnySignal++
+    }
+    // "Strong" = any of the three signals that are most discriminating
+    // for issue type. component (heuristic Topic slug) is broad and
+    // platform alone tells you little, so they don't qualify on their own.
+    if (hasType || hasError || hasFrame) coverage.withStrongSignal++
+
+    const outcome = await ensureEmbedding(supabase, observation, signals)
+    if (!outcome.ok) {
       embeddingFailures++
       continue
     }
-    embedded.push({ ...observation, embedding })
+    if (outcome.source === "cache") embeddingsFromCache++
+    else {
+      embeddingsFromFetch++
+      fetchLatencies.push(outcome.latencyMs)
+    }
+    embedded.push({ ...observation, embedding: outcome.vector })
   }
 
   const grouped = clusterEmbeddings(embedded, similarityThreshold, minClusterSize)
@@ -694,11 +833,66 @@ export async function runSemanticClusteringForBatch(
     })
   }
 
+  const durationMs = Date.now() - runStartedAt
+  const semanticGroupsFormed = grouped.semanticGroups.length
+  const largestGroupSize = semanticGroupsFormed
+    ? Math.max(...grouped.semanticGroups.map((g) => g.length))
+    : 0
+  const fetchLatencyP50Ms = percentile(fetchLatencies, 0.5)
+  const fetchLatencyP95Ms = percentile(fetchLatencies, 0.95)
+  const fetchLatencyMaxMs = fetchLatencies.length ? Math.max(...fetchLatencies) : null
+
+  // Single structured event per batch with everything an operator needs
+  // to diagnose a rebuild post-mortem (was the threshold too tight? did
+  // OpenAI rate-limit us? did anything actually merge?). Mirrors the
+  // depth of the per-call openai_request_succeeded log but at the batch
+  // level so 487 obs don't produce 487 noisy lines.
+  logServer({
+    component: "admin-cluster",
+    event: "rebuild_batch_completed",
+    level: "info",
+    data: {
+      processed: observations.length,
+      embedded: embedded.length,
+      embeddings_cached: embeddingsFromCache,
+      embeddings_fetched: embeddingsFromFetch,
+      embeddings_failed: embeddingFailures,
+      fetch_latency_p50_ms: fetchLatencyP50Ms,
+      fetch_latency_p95_ms: fetchLatencyP95Ms,
+      fetch_latency_max_ms: fetchLatencyMaxMs,
+      similarity_threshold: similarityThreshold,
+      min_cluster_size: minClusterSize,
+      redetach,
+      semantic_groups_formed: semanticGroupsFormed,
+      largest_group_size: largestGroupSize,
+      semantic_attached: semanticAttached,
+      fallback_attached: fallbackAttached,
+      labeling_failures: labelingFailures,
+      similarity_histogram: grouped.similarityHistogram,
+      embedding_signal_coverage: coverage,
+      duration_ms: durationMs,
+    },
+  })
+
   return {
     processed: observations.length,
     semanticAttached,
     fallbackAttached,
     embeddingFailures,
     labelingFailures,
+    embeddingStats: {
+      cached: embeddingsFromCache,
+      fetched: embeddingsFromFetch,
+      failed: embeddingFailures,
+      fetchLatencyP50Ms,
+      fetchLatencyP95Ms,
+      fetchLatencyMaxMs,
+    },
+    embeddingSignalCoverage: coverage,
+    semanticGroupsFormed,
+    largestGroupSize,
+    similarityHistogram: grouped.similarityHistogram,
+    durationMs,
   }
 }
+

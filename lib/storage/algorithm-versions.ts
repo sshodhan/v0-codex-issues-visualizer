@@ -43,7 +43,17 @@ export const CURRENT_VERSIONS = {
   // replay integrity. See scripts/011_algorithm_v2_bump.sql.
   competitor_mention: "v2",
   classification: "v1",
-  observation_embedding: "v1",
+  // v2 (2026-04): structured-prefix embedding input. v1 embedded raw
+  // `Title: …\nSummary: …` prose, which optimized for surface
+  // similarity rather than issue-type similarity — a known root cause
+  // of the singleton-cluster problem (see docs/CLUSTERING_DESIGN.md
+  // §4.8). v2 prepends bracketed structured signals when available
+  // (`[Type: bug] [Error: TIMEOUT] [Component: codex-cli]\n…`) so the
+  // embedding model gets explicit type context before the prose. v1
+  // rows remain in observation_embeddings for reproducibility; v2
+  // rows get computed on demand by ensureEmbedding when the rebuild
+  // is run after this bump. See scripts/034_observation_embedding_v2_bump.sql.
+  observation_embedding: "v2",
   // v2 (2026-04): the labeller pipeline grew prompt context (Topic +
   // recurring error codes), small-→-large model escalation mirroring the
   // classifier, and a deterministic fallback derived from cluster
