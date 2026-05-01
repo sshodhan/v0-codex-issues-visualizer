@@ -45,6 +45,33 @@ This revision explicitly addresses review feedback by:
 
 ---
 
+## Corpus characteristics
+
+This system processes **user feedback reports**, not stack-trace-driven crash data. That difference dictates which signals are high-value for grouping similar reports and which are merely supportive context. Every phase that touches embedding input, similarity scoring, or cluster validation MUST treat the hierarchy below as a foundational assumption — drift away from it (e.g., weighting a sparse environment field as a peer of LLM category) is a known root cause of the singleton / over-merge failure modes.
+
+### Signal value hierarchy
+
+| Tier | Signals | Why |
+|---|---|---|
+| **Primary (high signal)** | Title, Body / Summary, regex Topic (Stage 1 / Layer 0), LLM 4.a Category / Subcategory / Tags (when confidence ≥ medium and not review-flagged), reviewer-corrected category/subcategory | These are what the *user* and the *trusted classifier* say the issue is about. They carry meaningful semantic content for grouping reports about the same recurring problem. |
+| **Secondary (medium signal)** | LLM 4.a Severity, Reproducibility, Impact | Honest scalar self-reports about the report. Useful disambiguation but rarely the primary anchor. |
+| **Tertiary (supportive only)** | Bug fingerprint fields — `error_code`, `top_stack_frame`, `cli_version`, `os`, `shell`, `editor`, `model_id`, `repro_markers` | Sparse in user-feedback corpus (most reports lack them). When present, they're useful tiebreakers — but each individual field is a literal-match anchor that can over-merge two unrelated reports that happen to share an environment value. Treat as a *single collapsed `Environment` signal*, not as N independent peers. |
+
+### What this implies, by phase
+
+- **Phase 1 (embedding text builder)**: emit Tier 1 first, then Tier 2, then a single collapsed `Environment` line summarizing Tier 3 — never N separate fingerprint lines that compete with high-value structured signals for embedding-space attention. See Phase 1 §"Implementation tasks" below.
+- **Phase 4 (v3 generation)**: the helper reshape that enacts the above is the first commit.
+- **Phase 5 (dry-run comparison)**: the diff output MUST flag merges driven solely by fingerprint match as a suspicious-merge category, so Phase 6 has evidence to weight fingerprint correctly.
+- **Phase 6 (soft-prior scoring)**: `fingerprint_match_bonus` MUST be smaller than `category_match_bonus` / `subcategory_match_bonus` / `topic_match_bonus`. It's a tiebreaker that nudges already-similar reports together, not a peer signal that merges otherwise-different reports. See Phase 6 §"Scoring helper" below.
+
+### What this is NOT
+
+- This hierarchy applies to **embedding text and similarity scoring**. It does not change Stage 4a's classification prompt (which already uses title + body) or Stage 4b's family interpretation (which reads cluster contents holistically).
+- Tier 3 is not "useless" — when LLM 4.a is unavailable or low-confidence and Stage 1 Topic is missing, the collapsed Environment line is the *only* structured signal a report carries. The helper still emits it; it just doesn't get top-billing.
+- The hierarchy does not justify dropping Tier 3 from the embedding text. The point is *placement and shape*, not omission.
+
+---
+
 ## PHASE 0 — Code-grounded system map
 
 ### Goal
@@ -139,35 +166,48 @@ Add a pure, versioned formatter that combines raw text and structured signals wi
 - Add helper module (example): `lib/embeddings/classification-aware-input.ts`.
 - Implement `buildClassificationAwareEmbeddingText(input)`.
 
-Input fields:
+Input fields, grouped by the corpus signal hierarchy (see [Corpus characteristics](#corpus-characteristics) for the full rationale):
 
+**Tier 1 — primary signals (high value, emit first):**
 - raw title
-- raw body/summary/content
-- Stage 1 Topic (if available)
-- bug fingerprint fields (if available): `error_code`, `top_stack_frame`, `cli_version`, `os`, `shell`, `editor`, `model_id`, repro markers
-- Stage 4a LLM classification (safe subset): category, subcategory, tags, severity, confidence bucket, reproducibility, impact
+- raw body / summary / content
+- Stage 1 / Layer 0 Topic (regex-derived; deterministic)
+- Stage 4a LLM classification — category, subcategory, tags (gated: confidence ≥ medium and not review-flagged)
+
+**Tier 2 — secondary signals (medium value, emit after Tier 1):**
+- Stage 4a LLM severity, reproducibility, impact (always emit when present, no confidence gate — they are honest scalar self-reports)
+- LLM confidence bucket itself (informational; helps the model down-weight low-confidence neighbors)
+
+**Tier 3 — supportive context (low value, emit LAST as a single collapsed line):**
+- Bug fingerprint fields: `error_code`, `top_stack_frame`, `cli_version`, `os`, `shell`, `editor`, `model_id`, `repro_markers`
+- These collapse into a single `Environment: cli=… os=… editor=… model=…` line. `error_code` and `top_stack_frame`, when present, get their own lines AFTER the Environment line.
+- Rationale: user-feedback corpus has sparse fingerprint data. Emitting each field as a separate line creates literal-match anchors that over-merge unrelated reports sharing one environment value (e.g., two unrelated bugs both running `model=gpt-4o`).
 
 Rules:
 
 - Raw title/body always present.
-- Omit missing fields.
-- Do not insert fake unknowns unless unknown is semantically meaningful in source.
-- Exclude long `evidence_quotes`.
-- Sort tags deterministically.
+- Omit missing fields entirely (no placeholder text).
+- Do not insert fake "unknowns" — `unknown` strings filtered out so they can't act as a shared sentinel.
+- Exclude long `evidence_quotes` from embedding text.
+- Sort tags deterministically (ASCII order, deduplicated).
 - Include LLM category/subcategory/tags only if confidence is sufficient and row is not review-flagged.
-- If low-confidence/review-flagged, omit LLM category/subcategory/tags from embedding text.
+- If low-confidence/review-flagged, omit LLM category/subcategory/tags from embedding text (raw text + Topic + Tier 3 still emitted).
 - Prefer reviewer-corrected category/subcategory when computing effective classification for backfills.
+- **Order within the emitted text follows the tier hierarchy above**: Title → Summary → Topic → LLM Category/Subcategory/Tags → Severity/Reproducibility/Impact/Confidence → Environment (collapsed) → Error / Stack / Repro markers (only when present).
+- **Fingerprint fields collapse into one `Environment` line.** Do not emit individual `CLI:` / `OS:` / `Shell:` / `Editor:` / `Model:` lines.
 
 Tests:
 
-- deterministic ordering
-- missing fields omitted
-- tags sorted
+- deterministic ordering — pinned to the tier hierarchy
+- missing fields omitted (no placeholders, no empty labels)
+- tags sorted deterministically
 - low-confidence LLM fields omitted
 - review-flagged LLM fields omitted
-- raw title/body always present
+- raw title/body always present (even when every other signal is missing)
 - evidence_quotes excluded
-- reviewer override preferred
+- reviewer override preferred over LLM category/subcategory
+- **Tier ordering pinned**: a row with all signals present produces them in the documented order; reordering inputs does NOT change output order
+- **Environment collapse pinned**: a row with N fingerprint fields produces one `Environment:` line, not N individual lines
 
 ### Exit criteria
 
@@ -357,7 +397,7 @@ Add dry-run comparison output:
 - mixed-category delta
 - dominant share deltas
 - improved merge examples
-- suspicious over-merge examples
+- suspicious over-merge examples — **must include a `fingerprint_only_merge` flagged subset**: merges where the only shared structured signal is fingerprint (no shared Topic, no shared LLM category/subcategory). This is the empirical check that the Tier 3 demotion (see [Corpus characteristics](#corpus-characteristics)) holds in practice. If the flagged subset is large, Phase 6 must lower `fingerprint_match_bonus` further before enabling.
 - lost-good-cluster examples
 - representative member lists
 
@@ -388,11 +428,11 @@ Implement classification as soft prior in similarity scoring.
 ```text
 final_similarity =
   semantic_similarity
-  + category_match_bonus
-  + subcategory_match_bonus
-  + tag_overlap_bonus
-  + topic_match_bonus
-  + fingerprint_match_bonus
+  + category_match_bonus       (Tier 1 — primary)
+  + subcategory_match_bonus    (Tier 1 — primary)
+  + tag_overlap_bonus          (Tier 1 — primary)
+  + topic_match_bonus          (Tier 1 — primary)
+  + fingerprint_match_bonus    (Tier 3 — TIEBREAKER ONLY)
   - category_conflict_penalty
 ```
 
@@ -404,6 +444,8 @@ Hard rules:
 - same category/subcategory lowers threshold modestly
 - different category raises evidence threshold modestly
 - low-confidence/review-flagged classification contributes little/no bonus
+- **`fingerprint_match_bonus` is a Tier 3 tiebreaker, not a peer of category/subcategory/topic bonuses.** Numerically: `fingerprint_match_bonus` MUST be smaller (recommended: ≤ 1/3) than any Tier 1 bonus. Rationale: in a user-feedback corpus, two reports sharing `model=gpt-4o` is weak evidence they're the same issue, while two reports sharing `category=auth` + `subcategory=2fa-failure` is strong evidence. See [Corpus characteristics](#corpus-characteristics).
+- The fingerprint bonus should only fire when at least 2 fingerprint fields match (single-field match is too weak to merit a bonus).
 
 Suggested threshold bands:
 
