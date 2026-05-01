@@ -370,12 +370,68 @@ Tests:
 - fallback when classification missing
 - no hard failure when LLM unavailable
 - formatter stability
+- staleness round-trip: classification update → marker emitted → next rebuild re-embeds the affected row
+
+### Stage 4a / Stage 2 sequencing model
+
+The directional architecture diagram places Stage 4a (LLM classification) *before* Stage 2 (embeddings) in the logical pipeline. This subsection documents how that logical ordering is reconciled with the hard invariant that **ingestion must not depend hard on OpenAI availability**.
+
+**Hard invariant.** No synchronous reorder of 4a before 2 in the ingestion path. If 4a sat in ingestion, an OpenAI outage would drop new observations on the floor — explicitly forbidden by the plan's hard invariants.
+
+**Convergence model.** Ingestion runs the fast path only (raw observation row + Stage 1 deterministic enrichment). Stage 4a runs out-of-band, queued, best-effort. Stage 2 v3 embedding is computed lazily — by `ensureEmbedding` when the next admin cluster rebuild touches the row. Rebuilds are the convergence point: a v3 embedding always reflects "the 4a state at last rebuild".
+
+**Three failure modes Phase 4 PR2 must handle:**
+
+1. **Embedding computed before classification arrived.** The v3 helper falls through `canUseTaxonomySignals` and emits Tier 1 minus LLM taxonomy (Title + Summary + Topic + collapsed Environment). Functional but bounded. The next rebuild after 4a completes will re-embed the row and the embedding will reflect the LLM signals.
+
+2. **Classification updated after embedding (review override or LLM re-run).** The existing v3 embedding still encodes the prior LLM verdict. Cluster membership is now stale. PR2 emits a `processing_events` row when this happens — `stage='embedding'`, `status='stale'`, `detail.reason='classification_updated'` — so the next rebuild knows to re-embed.
+
+3. **OpenAI unavailable at rebuild time.** `recomputeObservationEmbedding` already returns `{ ok: false, reason: 'embedding_api_failed' }` and logs a `processing_events` row in the existing v2 path. The v3 path inherits this contract unchanged.
+
+**Implementation requirements (Phase 4 PR2):**
+
+- Hook the `classifications` write path (`lib/classification/pipeline.ts`) and the `classification_reviews` write path. When either fires for an observation that already has an `observation_embeddings` row at `algorithm_version='v3'`, emit a `processing_events` row with `stage='embedding'`, `status='stale'`, `detail.reason='classification_updated'`.
+- Extend the existing admin cluster rebuild route with an `?include_stale=true` mode. When set, the route picks up observations whose latest `processing_events.stage='embedding' / status='stale'` row is more recent than their `observation_embeddings` row at the current algorithm version, and re-embeds them alongside any rows missing a v3 embedding entirely.
+- Append-only: never mutate or delete prior `observation_embeddings` rows. v1/v2 rows persist for replay; v3 rows are added on rebuild.
+- Idempotent: running the rebuild twice produces no duplicate rows (handled by the existing `record_observation_embedding` RPC's on-conflict-do-update behavior).
+
+**New-observation lifecycle, end-to-end:**
+
+```
+T=0     INGEST: observation row + Stage 1 deterministic enrichment.
+        Returns ~immediately. No LLM, no embedding.
+
+T=ε     QUEUE: per-obs Stage 4a job enqueued (best-effort).
+
+T<60s   STAGE 4a runs. Writes classifications row. If the obs already
+        had a v3 embedding, also writes a `processing_events`
+        embedding/stale marker.
+
+T<24h   ADMIN CLUSTER REBUILD (operator-triggered or scheduled).
+        ensureEmbedding picks up the obs:
+          - if no v3 embedding row exists: compute fresh v3, using
+            whatever 4a state is current
+          - if v3 exists AND a stale marker is newer than it:
+            compute fresh v3
+          - otherwise: cache hit, no recompute
+
+CONVERGENCE: every observation eventually reaches a v3 embedding
+that reflects its current classification + reviewer override state,
+with at-most one rebuild's worth of lag after the latest input
+change.
+```
+
+**4a coverage co-requisite.** v3 embedding *quality* is bounded by 4a coverage. As of the Phase 3 baseline (2026-05-01), 4a coverage is 16% (78 / 487 active observations). The remaining 84% of v3 embeddings will fall through the gate and emit only Tier 1 minus LLM taxonomy — functionally a small upgrade over v2, but not the full v3 win. Phase 4 PR3 (the backfill UI) MUST NOT trigger v3 generation until 4a coverage is pushed to ≥ 80% via the existing classification admin tools. This is an operational track that runs in parallel with PR2 review, not a code change.
+
+**At-least-once consistency.** The stale-marker mechanism is at-least-once: extra re-embeds during a race window (classification write commits, marker emits, second classification write happens, rebuild runs once) are wasted work but produce a correct final state on the next rebuild. Embedding writes are idempotent so duplicate work doesn't produce duplicate rows.
 
 ### Exit criteria
 
 - v3 generation works append-only and replayably.
 - v1/v2 preserved.
 - No cluster membership changes.
+- Staleness markers round-trip end-to-end (classification update → marker → next rebuild re-embeds).
+- 4a coverage is ≥ 80% before PR3's backfill UI is exposed to operators.
 
 ### Decision gate
 Proceed only if v3 coverage is sufficient and nearest-neighbor spot checks are neutral/better.
