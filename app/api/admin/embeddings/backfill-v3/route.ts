@@ -283,28 +283,42 @@ async function collectCandidates(
   const totalActive = activeIds.size
 
   // Already-embedded at v3: filter observation_embeddings by current
-  // algorithm_version. We pull obs_id + created_at because the stale
+  // algorithm_version. We pull obs_id + computed_at because the stale
   // check below joins on this set.
+  //
+  // Schema note: `observation_embeddings` has `computed_at` (bumped on
+  // both INSERT and on-conflict UPDATE per scripts/012's
+  // record_observation_embedding RPC). It does NOT have a `created_at`
+  // column — querying for `created_at` returns "column does not exist"
+  // and silently makes the v3CreatedByObs map empty, which would make
+  // every active obs look "awaiting" forever.
   const { data: existingV3, error: existingErr } = await supabase
     .from("observation_embeddings")
-    .select("observation_id, created_at")
+    .select("observation_id, computed_at")
     .eq("algorithm_version", CURRENT_VERSIONS.observation_embedding)
   if (existingErr) {
     logServerError("v3-backfill", "existing_v3_query_failed", existingErr)
   }
-  const v3CreatedByObs = new Map<string, string>()
-  for (const row of (existingV3 ?? []) as Array<{ observation_id: string; created_at: string }>) {
-    if (row.observation_id) v3CreatedByObs.set(row.observation_id, row.created_at)
+  const v3ComputedByObs = new Map<string, string>()
+  for (const row of (existingV3 ?? []) as Array<{ observation_id: string; computed_at: string }>) {
+    if (row.observation_id) v3ComputedByObs.set(row.observation_id, row.computed_at)
   }
-  const withV3 = v3CreatedByObs.size
+  const withV3 = v3ComputedByObs.size
 
   // Stale subset (only relevant when includeStale=true): obs with a
   // v3 embedding AND a `processing_events.stage='embedding' /
   // status='stale'` row whose created_at > the embedding's
-  // created_at. This is the convergence-model signal from PR #198 +
+  // computed_at. This is the convergence-model signal from PR #198 +
   // PR #199's stale-marker emission.
+  //
+  // Note: processing_events.created_at vs observation_embeddings.computed_at
+  // is the right comparison — both represent "when did this row become
+  // current in production". The marker is emitted at the moment a
+  // classification/review write commits; the embedding's computed_at
+  // bumps every time we (re-)embed. Marker > computed_at means the
+  // upstream signal changed AFTER the most recent embed.
   let staleIds = new Set<string>()
-  if (opts.includeStale && v3CreatedByObs.size > 0) {
+  if (opts.includeStale && v3ComputedByObs.size > 0) {
     const { data: staleEvents, error: staleErr } = await supabase
       .from("processing_events")
       .select("observation_id, created_at, stage, status")
@@ -313,15 +327,15 @@ async function collectCandidates(
     if (staleErr) {
       logServerError("v3-backfill", "stale_events_query_failed", staleErr)
     }
-    // For each stale event newer than the v3 row's created_at,
+    // For each stale event newer than the v3 row's computed_at,
     // include the observation_id in the stale set.
     for (const row of (staleEvents ?? []) as Array<{
       observation_id: string
       created_at: string
     }>) {
-      const v3Created = v3CreatedByObs.get(row.observation_id)
-      if (!v3Created) continue
-      if (row.created_at > v3Created) {
+      const v3Computed = v3ComputedByObs.get(row.observation_id)
+      if (!v3Computed) continue
+      if (row.created_at > v3Computed) {
         staleIds.add(row.observation_id)
       }
     }
@@ -334,7 +348,7 @@ async function collectCandidates(
   // deterministic.
   const candidates: string[] = []
   for (const id of activeIds) {
-    if (!v3CreatedByObs.has(id)) candidates.push(id)
+    if (!v3ComputedByObs.has(id)) candidates.push(id)
   }
   if (opts.includeStale) {
     for (const id of staleIds) candidates.push(id)
