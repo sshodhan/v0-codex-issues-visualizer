@@ -1,4 +1,10 @@
 export type ConfidenceBucket = "high" | "medium" | "low" | "unknown"
+const SUMMARY_MAX = 1200
+const FIELD_VALUE_MAX = 200
+
+function stableAsciiSort(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
 
 export interface ClassificationAwareEmbeddingInput {
   title: string
@@ -40,7 +46,7 @@ function pushIfPresent(lines: string[], label: string, value?: string | null): v
 function normalizeTags(tags?: string[] | null): string[] {
   if (!tags) return []
   const cleaned = tags.map((t) => t.trim()).filter(Boolean)
-  return [...new Set(cleaned)].sort((a, b) => a.localeCompare(b))
+  return [...new Set(cleaned)].sort(stableAsciiSort)
 }
 
 function canUseTaxonomySignals(classification?: ClassificationAwareEmbeddingInput["classification"] | null): boolean {
@@ -55,7 +61,7 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
   // Raw text is always present.
   lines.push(`Title: ${input.title.trim()}`)
   const body = input.body?.trim()
-  if (body) lines.push(`Summary: ${body}`)
+  if (body) lines.push(`Summary: ${body.slice(0, SUMMARY_MAX)}`)
 
   pushIfPresent(lines, "Topic", input.topic)
 
@@ -70,7 +76,7 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
 
   const repro = fp?.repro_markers?.map((m) => m.trim()).filter(Boolean)
   if (repro && repro.length > 0) {
-    const sorted = [...new Set(repro)].sort((a, b) => a.localeCompare(b))
+    const sorted = [...new Set(repro)].sort(stableAsciiSort)
     lines.push(`Repro markers: ${sorted.join(", ")}`)
   }
 
@@ -78,11 +84,11 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
   if (canUseTaxonomySignals(cls)) {
     const effectiveCategory = cls?.reviewer_category?.trim() || cls?.category?.trim() || null
     const effectiveSubcategory = cls?.reviewer_subcategory?.trim() || cls?.subcategory?.trim() || null
-    pushIfPresent(lines, "Category", effectiveCategory)
-    pushIfPresent(lines, "Subcategory", effectiveSubcategory)
+    pushIfPresent(lines, "Category", effectiveCategory?.slice(0, FIELD_VALUE_MAX))
+    pushIfPresent(lines, "Subcategory", effectiveSubcategory?.slice(0, FIELD_VALUE_MAX))
 
     const tags = normalizeTags(cls?.tags)
-    if (tags.length > 0) lines.push(`Tags: ${tags.join(", ")}`)
+    if (tags.length > 0) lines.push(`Tags: ${tags.map((t) => t.slice(0, FIELD_VALUE_MAX)).join(", ")}`)
   }
 
   pushIfPresent(lines, "Severity", cls?.severity)

@@ -96,3 +96,23 @@ test("repro markers are de-duplicated and sorted", () => {
   })
   assert.match(text, /Repro markers: always, intermittent, sometimes/)
 })
+
+test("summary is truncated to bounded length", () => {
+  const longBody = "x".repeat(1500)
+  const text = buildClassificationAwareEmbeddingText({ title: "A", body: longBody })
+  const summaryLine = text.split("\n").find((line) => line.startsWith("Summary: "))
+  assert.ok(summaryLine)
+  assert.equal(summaryLine!.length, "Summary: ".length + 1200)
+})
+
+test("tag sorting is stable ascii order", () => {
+  const text = buildClassificationAwareEmbeddingText({
+    title: "A",
+    classification: {
+      category: "bugs",
+      confidence_bucket: "high",
+      tags: ["b", "A", "a"],
+    },
+  })
+  assert.match(text, /Tags: A, a, b/)
+})
