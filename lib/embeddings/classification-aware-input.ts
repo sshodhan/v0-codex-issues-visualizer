@@ -1,15 +1,52 @@
 export type ConfidenceBucket = "high" | "medium" | "low" | "unknown"
-const SUMMARY_MAX = 1200
-const FIELD_VALUE_MAX = 200
 
-/** Numeric thresholds for the confidence bucket. The thresholds are
- *  calibrated against the live `classifications.confidence` distribution
- *  (verified 2026-05-01: 76.6% ≥ 0.80, 15.6% in [0.50, 0.80), 7.8% < 0.50
- *  across 77 classifications) — none of the buckets are degenerate. If
- *  the production distribution shifts materially these can be re-tuned
- *  in one place. */
-const CONFIDENCE_BUCKET_HIGH_MIN = 0.8
-const CONFIDENCE_BUCKET_MEDIUM_MIN = 0.5
+/** v3 algorithm signature — the numeric and structural parameters that
+ *  define what "v3" means in `observation_embeddings.algorithm_version`.
+ *  These are the only knobs that affect output text. Changing any value
+ *  here implies a new algorithm version (v4): existing v3 rows would no
+ *  longer be reproducible from the new code, and the
+ *  `algorithm_version` filter in `ensureEmbedding` would still match
+ *  them as cache hits despite producing different text. Bump in lockstep
+ *  with `lib/storage/algorithm-versions.ts` and a new migration script.
+ *
+ *  The hierarchy of signals (Tier 1 / Tier 2 / Tier 3) is documented in
+ *  the plan doc's "Corpus characteristics" section and enforced by the
+ *  emit order below. The hierarchy is not encoded as data here because
+ *  it's a structural property of the function, not a tunable parameter
+ *  — re-tiering signals would also require renaming the function and
+ *  rewriting tests, which is a stronger signal than a constant change. */
+export const V3_ALGORITHM_SIGNATURE = Object.freeze({
+  /** Body / Summary truncation cap. Matches Phase 1 v3 spec; chosen so
+   *  the embedding model's context budget stays comfortably within
+   *  text-embedding-3-small's 8192-token limit even with all structured
+   *  signals present. */
+  summary_max: 1200,
+  /** Per-field truncation cap for label values (Category, Subcategory,
+   *  Tag, etc). Prevents a runaway hallucinated string from dominating
+   *  the embedding text. */
+  field_value_max: 200,
+  /** Top of the high-confidence band. `classifications.confidence` ≥
+   *  this value → "high"; the helper emits gated taxonomy signals.
+   *  Live distribution (verified 2026-05-01): 76.6% of rows are at or
+   *  above this threshold. */
+  confidence_high_min: 0.8,
+  /** Top of the medium-confidence band. `classifications.confidence` ≥
+   *  this value → "medium"; helper still emits gated taxonomy signals.
+   *  Live distribution: 15.6% of rows are in [0.50, 0.80). */
+  confidence_medium_min: 0.5,
+  /** Repro-marker count threshold. `bug_fingerprints.repro_markers` ≥
+   *  this value → emit `Repro markers: N`. Below this, the count is
+   *  too noisy to discriminate (almost every report has 0 markers, so
+   *  emitting "Repro markers: 0" for everyone would just pull all
+   *  reports toward each other). */
+  repro_marker_min: 2,
+} as const)
+
+const SUMMARY_MAX = V3_ALGORITHM_SIGNATURE.summary_max
+const FIELD_VALUE_MAX = V3_ALGORITHM_SIGNATURE.field_value_max
+const CONFIDENCE_BUCKET_HIGH_MIN = V3_ALGORITHM_SIGNATURE.confidence_high_min
+const CONFIDENCE_BUCKET_MEDIUM_MIN = V3_ALGORITHM_SIGNATURE.confidence_medium_min
+const REPRO_MARKER_MIN = V3_ALGORITHM_SIGNATURE.repro_marker_min
 
 function stableAsciiSort(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0
@@ -97,33 +134,65 @@ export function canUseTaxonomySignals(
   return classification.confidence_bucket === "high" || classification.confidence_bucket === "medium"
 }
 
+/** Build an `Environment: ...` line collapsing the supportive (Tier 3)
+ *  fingerprint fields into one k=v string. Returns null when no field
+ *  is populated (so the caller skips emitting the line entirely).
+ *
+ *  Why collapse: in a user-feedback corpus, fingerprint fields are
+ *  sparse and mostly act as supporting context. Emitting each as a
+ *  separate `CLI: …` / `OS: …` / `Editor: …` line creates seven
+ *  literal-match anchors that can over-merge two unrelated reports
+ *  sharing one environment value (e.g., both running `model=gpt-4o`).
+ *  The collapsed form keeps the signal informative for the model
+ *  without making any single field strong enough to dominate
+ *  similarity scoring. See the plan's "Corpus characteristics" section.
+ *
+ *  Fields are emitted in fixed order (cli, os, shell, editor, model) so
+ *  the produced string is byte-identical for byte-identical inputs —
+ *  reproducibility is part of the v3 algorithm signature. */
+function buildEnvironmentLine(
+  fp: ClassificationAwareEmbeddingInput["bugFingerprint"],
+): string | null {
+  if (!fp) return null
+  const parts: string[] = []
+  const push = (key: string, value?: string | null) => {
+    const trimmed = value?.trim()
+    if (!trimmed) return
+    if (trimmed.toLowerCase() === "unknown") return
+    parts.push(`${key}=${trimmed.slice(0, FIELD_VALUE_MAX)}`)
+  }
+  push("cli", fp.cli_version)
+  push("os", fp.os)
+  push("shell", fp.shell)
+  push("editor", fp.editor)
+  push("model", fp.model_id)
+  return parts.length > 0 ? `Environment: ${parts.join(" ")}` : null
+}
+
+/** v3 embedding text builder, tier-ordered for a user-feedback corpus.
+ *
+ *  Emit order is fixed and corresponds to the signal-value hierarchy
+ *  documented in the plan doc's "Corpus characteristics" section:
+ *
+ *    Tier 1 (primary)    — Title, Summary, Topic, LLM Category /
+ *                           Subcategory / Tags (gated)
+ *    Tier 2 (secondary)  — Severity, Reproducibility, Impact, Confidence
+ *    Tier 3 (supportive) — Environment (collapsed), Error, Stack,
+ *                           Repro markers
+ *
+ *  This order is also the test contract — `tests/classification-aware-input.test.ts`
+ *  pins it. Reordering fields here without also re-running and updating
+ *  the test that asserts the order is a v3 algorithm-signature change
+ *  and requires a new algorithm version. */
 export function buildClassificationAwareEmbeddingText(input: ClassificationAwareEmbeddingInput): string {
   const lines: string[] = []
 
-  // Raw text is always present.
+  // ---- Tier 1: primary signals ----
   lines.push(`Title: ${input.title.trim()}`)
   const body = input.body?.trim()
   if (body) lines.push(`Summary: ${body.slice(0, SUMMARY_MAX)}`)
 
   pushIfPresent(lines, "Topic", input.topic)
-
-  const fp = input.bugFingerprint
-  pushIfPresent(lines, "Error", fp?.error_code)
-  pushIfPresent(lines, "Stack", fp?.top_stack_frame)
-  pushIfPresent(lines, "CLI", fp?.cli_version)
-  pushIfPresent(lines, "OS", fp?.os)
-  pushIfPresent(lines, "Shell", fp?.shell)
-  pushIfPresent(lines, "Editor", fp?.editor)
-  pushIfPresent(lines, "Model", fp?.model_id)
-
-  // Repro marker count: emit only when it's high enough to discriminate
-  // (≥ 2). A bug with 0 or 1 marker carries no grouping signal — almost
-  // every report has 0, so embedding `Repro markers: 0` for everyone
-  // would just pull all reports toward each other.
-  const reproCount = fp?.repro_markers
-  if (typeof reproCount === "number" && reproCount >= 2) {
-    lines.push(`Repro markers: ${reproCount}`)
-  }
 
   const cls = input.classification
   if (canUseTaxonomySignals(cls)) {
@@ -136,6 +205,7 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
     if (tags.length > 0) lines.push(`Tags: ${tags.map((t) => t.slice(0, FIELD_VALUE_MAX)).join(", ")}`)
   }
 
+  // ---- Tier 2: secondary signals (always emit when present) ----
   // Severity / Confidence / Reproducibility / Impact intentionally
   // bypass `canUseTaxonomySignals`. Rationale: severity/impact/repro
   // are short scalar enums where the model treats `high` / `low` /
@@ -147,9 +217,31 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
   // a single severity enum. The `pushIfPresent` "unknown" filter
   // already prevents the most-common low-confidence noise.
   pushIfPresent(lines, "Severity", cls?.severity)
-  pushIfPresent(lines, "Confidence", cls?.confidence_bucket)
   pushIfPresent(lines, "Reproducibility", cls?.reproducibility)
   pushIfPresent(lines, "Impact", cls?.impact)
+  pushIfPresent(lines, "Confidence", cls?.confidence_bucket)
+
+  // ---- Tier 3: supportive context (collapsed; emit last) ----
+  const fp = input.bugFingerprint
+  const envLine = buildEnvironmentLine(fp)
+  if (envLine) lines.push(envLine)
+
+  // Error code and top stack frame are conceptually distinct from the
+  // collapsed Environment line — they describe the *failure*, not the
+  // *runtime context*. Emit each on its own line when present, but
+  // place them after the Environment line so high-value Tier 1/2
+  // signals are positioned earlier in the prompt.
+  pushIfPresent(lines, "Error", fp?.error_code)
+  pushIfPresent(lines, "Stack", fp?.top_stack_frame)
+
+  // Repro marker count: emit only when it's high enough to discriminate
+  // (≥ REPRO_MARKER_MIN). A bug with 0 or 1 marker carries no grouping
+  // signal — almost every report has 0, so embedding `Repro markers: 0`
+  // for everyone would just pull all reports toward each other.
+  const reproCount = fp?.repro_markers
+  if (typeof reproCount === "number" && reproCount >= REPRO_MARKER_MIN) {
+    lines.push(`Repro markers: ${reproCount}`)
+  }
 
   return lines.join("\n")
 }

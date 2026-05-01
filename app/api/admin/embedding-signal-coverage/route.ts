@@ -67,12 +67,12 @@ export async function GET(request: NextRequest) {
   // `llm_review_status`. We fetch `category_id` here and resolve to
   // slug via a follow-up `categories` lookup; review state is fetched
   // from `classification_reviews` in step 2.
-  // We also pull llm_severity here — the helper consumes it as part
-  // of the always-included scalar fields (alongside Confidence /
-  // Reproducibility / Impact). The MV currently exposes `llm_severity`
-  // but not `llm_reproducibility` / `llm_impact` — those would need a
-  // separate `classifications` lookup if/when we want them in the
-  // metric. Leaving them null here is honest for now.
+  // We also pull llm_severity here — the MV exposes it directly. The
+  // remaining helper-input fields that live on `classifications` but
+  // NOT on the MV (`reproducibility`, `impact`, full `tags` array) are
+  // fetched in step 2 via a `classifications` lookup, so the Phase 2
+  // metric and Phase 4 production pipeline see the same row shape and
+  // the v3 helper can emit the full Tier 2 signal set.
   let q = supabase
     .from("mv_observation_current")
     .select(
@@ -97,14 +97,25 @@ export async function GET(request: NextRequest) {
     new Set((mvRows ?? []).map((r) => r.category_id as string | null).filter(Boolean) as string[]),
   )
 
-  // ---- Step 2: side-tables for category_slug + reviewer overrides ----
-  // Both lookups are best-effort. If either fails we log and continue
+  // ---- Step 2: side-tables for category_slug, classifications side fields, reviewer overrides ----
+  // All three lookups are best-effort. If any fails we log and continue
   // with the partial dataset — the summary numbers will be slightly
   // lower than reality but the endpoint still returns a usable response.
-  const [catRes, reviewRes] = await Promise.all([
+  // The `classifications` query fetches reproducibility / impact / tags
+  // (Tier 2 helper inputs that the MV doesn't expose) plus a duplicate
+  // of subcategory we use as a freshness check; we take the latest row
+  // per observation_id.
+  const [catRes, clsRes, reviewRes] = await Promise.all([
     categoryIds.length > 0
       ? supabase.from("categories").select("id, slug").in("id", categoryIds)
       : Promise.resolve({ data: [] as Array<{ id: string; slug: string }>, error: null }),
+    observationIds.length > 0
+      ? supabase
+          .from("classifications")
+          .select("observation_id, reproducibility, impact, tags, created_at")
+          .in("observation_id", observationIds)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
     observationIds.length > 0
       ? supabase
           .from("classification_reviews")
@@ -119,6 +130,9 @@ export async function GET(request: NextRequest) {
   if (catRes.error) {
     logServerError("admin-embedding-signal-coverage", "categories_lookup_failed", catRes.error)
   }
+  if (clsRes.error) {
+    logServerError("admin-embedding-signal-coverage", "classifications_lookup_failed", clsRes.error)
+  }
   if (reviewRes.error) {
     logServerError("admin-embedding-signal-coverage", "reviews_lookup_failed", reviewRes.error)
   }
@@ -126,6 +140,28 @@ export async function GET(request: NextRequest) {
   const slugById = new Map<string, string>()
   for (const row of (catRes.data ?? []) as Array<{ id: string; slug: string }>) {
     if (row.id && row.slug) slugById.set(row.id, row.slug)
+  }
+
+  // Latest classification row per observation. The query was ordered
+  // by `created_at desc` so the first row we see for a given
+  // observation_id is the freshest; we take that and ignore older
+  // rows. `tags` is `text[]`; PostgREST returns it as a JS array.
+  const clsByObsId = new Map<
+    string,
+    { reproducibility: string | null; impact: string | null; tags: string[] | null }
+  >()
+  for (const row of (clsRes.data ?? []) as Array<{
+    observation_id: string
+    reproducibility: string | null
+    impact: string | null
+    tags: string[] | null
+  }>) {
+    if (!row.observation_id || clsByObsId.has(row.observation_id)) continue
+    clsByObsId.set(row.observation_id, {
+      reproducibility: row.reproducibility ?? null,
+      impact: row.impact ?? null,
+      tags: row.tags ?? null,
+    })
   }
 
   // Most-recent review per observation. PostgREST returns the embedded
@@ -165,6 +201,7 @@ export async function GET(request: NextRequest) {
   const rows: EmbeddingSignalCoverageRow[] = (mvRows ?? []).map((mv) => {
     const obsId = mv.observation_id as string
     const review = reviewByObsId.get(obsId)
+    const cls = clsByObsId.get(obsId)
     const reviewStatusLower = review?.status?.toLowerCase().trim() ?? ""
     const reviewFlagged =
       review?.needs_human_review === true || FLAGGED_REVIEW_STATUSES.has(reviewStatusLower)
@@ -186,6 +223,10 @@ export async function GET(request: NextRequest) {
       llm_subcategory: (mv.llm_subcategory as string | null) ?? null,
       llm_primary_tag: (mv.llm_primary_tag as string | null) ?? null,
       llm_severity: (mv.llm_severity as string | null) ?? null,
+      // Tier 2 helper inputs from `classifications` (not on the MV).
+      llm_reproducibility: cls?.reproducibility ?? null,
+      llm_impact: cls?.impact ?? null,
+      llm_tags: cls?.tags ?? null,
       // PostgREST may return `numeric` as either string or number;
       // bucketConfidence in the summarizer handles both.
       llm_confidence: (mv.llm_confidence as number | string | null) ?? null,

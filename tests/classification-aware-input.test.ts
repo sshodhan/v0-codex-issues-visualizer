@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  V3_ALGORITHM_SIGNATURE,
   bucketConfidence,
   buildClassificationAwareEmbeddingText,
   buildRawEmbeddingText,
@@ -228,6 +229,147 @@ test("buildRawEmbeddingText: applies the same body truncation as the classificat
   const clsSummary = cls.split("\n").find((l) => l.startsWith("Summary: "))
   assert.equal(rawSummary?.length, 1209)
   assert.equal(clsSummary?.length, 1209)
+})
+
+// ============================================================================
+// Tier ordering and Environment collapse — locked by the plan doc's
+// "Corpus characteristics" section. Reordering signals here without
+// also updating these tests AND bumping the algorithm version is a
+// reproducibility violation: existing v3 rows would no longer be
+// derivable from the new code.
+// ============================================================================
+
+test("tier ordering: Tier 1 (primary) → Tier 2 (secondary) → Tier 3 (supportive)", () => {
+  // Build an input where every emit-worthy field is populated, so we
+  // can pin the full ordered output. Reordering inputs in this object
+  // literal MUST NOT change output order — order is structural, not
+  // input-dependent.
+  const text = buildClassificationAwareEmbeddingText({
+    title: "App freezes on save",
+    body: "Body text describing the freeze",
+    topic: "performance",
+    classification: {
+      category: "bugs",
+      subcategory: "ui-freeze",
+      tags: ["zeta", "alpha"],
+      severity: "high",
+      reproducibility: "always",
+      impact: "blocking",
+      confidence_bucket: "high",
+    },
+    bugFingerprint: {
+      cli_version: "0.10.4",
+      os: "macos",
+      shell: "zsh",
+      editor: "vscode",
+      model_id: "gpt-4o",
+      error_code: "TIMEOUT",
+      top_stack_frame: "save_handler",
+      repro_markers: 3,
+    },
+  })
+
+  const expectedOrder = [
+    /^Title: /, // Tier 1
+    /^Summary: /, // Tier 1
+    /^Topic: /, // Tier 1
+    /^Category: /, // Tier 1
+    /^Subcategory: /, // Tier 1
+    /^Tags: /, // Tier 1
+    /^Severity: /, // Tier 2
+    /^Reproducibility: /, // Tier 2
+    /^Impact: /, // Tier 2
+    /^Confidence: /, // Tier 2
+    /^Environment: /, // Tier 3 (collapsed)
+    /^Error: /, // Tier 3
+    /^Stack: /, // Tier 3
+    /^Repro markers: /, // Tier 3
+  ]
+
+  const lines = text.split("\n")
+  assert.equal(
+    lines.length,
+    expectedOrder.length,
+    `expected ${expectedOrder.length} lines, got ${lines.length}\n${text}`,
+  )
+  for (let i = 0; i < expectedOrder.length; i++) {
+    assert.match(
+      lines[i],
+      expectedOrder[i],
+      `line ${i} should match ${expectedOrder[i]} but got: ${lines[i]}`,
+    )
+  }
+})
+
+test("Environment collapse: 5 fingerprint fields → ONE Environment line, not five", () => {
+  const text = buildClassificationAwareEmbeddingText({
+    title: "A",
+    bugFingerprint: {
+      cli_version: "0.10.4",
+      os: "macos",
+      shell: "zsh",
+      editor: "vscode",
+      model_id: "gpt-4o",
+    },
+  })
+
+  // Exactly one Environment line.
+  const envLines = text.split("\n").filter((l) => l.startsWith("Environment:"))
+  assert.equal(envLines.length, 1, `expected 1 Environment line, got ${envLines.length}\n${text}`)
+
+  // The collapsed form contains all five k=v pairs in fixed order.
+  assert.match(envLines[0], /^Environment: cli=0\.10\.4 os=macos shell=zsh editor=vscode model=gpt-4o$/)
+
+  // No legacy individual lines.
+  assert.doesNotMatch(text, /^CLI:/m)
+  assert.doesNotMatch(text, /^OS:/m)
+  assert.doesNotMatch(text, /^Shell:/m)
+  assert.doesNotMatch(text, /^Editor:/m)
+  assert.doesNotMatch(text, /^Model:/m)
+})
+
+test("Environment line: omitted entirely when no fingerprint env fields populated", () => {
+  // error_code and top_stack_frame are NOT part of Environment; they
+  // get their own lines. So a row with only error_code should not
+  // produce an empty Environment: line.
+  const text = buildClassificationAwareEmbeddingText({
+    title: "A",
+    bugFingerprint: {
+      error_code: "EACCES",
+    },
+  })
+  assert.doesNotMatch(text, /^Environment:/m)
+  assert.match(text, /^Error: EACCES$/m)
+})
+
+test("Environment line: filters 'unknown' values (sentinel pollution guard)", () => {
+  const text = buildClassificationAwareEmbeddingText({
+    title: "A",
+    bugFingerprint: {
+      cli_version: "0.10.4",
+      os: "unknown",
+      editor: "UNKNOWN",
+      model_id: "gpt-4o",
+    },
+  })
+  const envLine = text.split("\n").find((l) => l.startsWith("Environment:"))
+  assert.ok(envLine)
+  assert.match(envLine!, /cli=0\.10\.4/)
+  assert.match(envLine!, /model=gpt-4o/)
+  assert.doesNotMatch(envLine!, /os=/)
+  assert.doesNotMatch(envLine!, /editor=/)
+})
+
+test("V3_ALGORITHM_SIGNATURE: locked numeric parameters", () => {
+  // Pinning the version-defining numeric parameters in the test so a
+  // future change forces an explicit choice: re-tune in this test AND
+  // bump the algorithm version, OR don't change the numbers.
+  // Re-tuning silently is a reproducibility violation.
+  assert.equal(V3_ALGORITHM_SIGNATURE.summary_max, 1200)
+  assert.equal(V3_ALGORITHM_SIGNATURE.field_value_max, 200)
+  assert.equal(V3_ALGORITHM_SIGNATURE.confidence_high_min, 0.8)
+  assert.equal(V3_ALGORITHM_SIGNATURE.confidence_medium_min, 0.5)
+  assert.equal(V3_ALGORITHM_SIGNATURE.repro_marker_min, 2)
 })
 
 test("canUseTaxonomySignals: gates exactly as documented", () => {

@@ -138,12 +138,20 @@ function topN(d: Record<string, number>, n = TOP_K_DISTRIBUTION): Record<string,
   return out
 }
 
-/** Assemble the helper-input shape from a coverage row. Used by both
- *  the metric (to evaluate `canUseTaxonomySignals` consistently) and
- *  the preview (to label omission reasons + render the actual v3
- *  string). Centralizing this is what keeps the metric and the helper
- *  from drifting. */
-function helperInputFromRow(row: EmbeddingSignalCoverageRow): ClassificationAwareEmbeddingInput {
+/** Assemble the helper-input shape from a flat database row. Used by:
+ *  - the Phase 2 metric (to evaluate `canUseTaxonomySignals` consistently),
+ *  - the Phase 2 preview (to label omission reasons + render the actual v3
+ *    string),
+ *  - the Phase 4 production embedding pipeline (to feed the v3 helper
+ *    when `CURRENT_VERSIONS.observation_embedding === "v3"`).
+ *
+ *  Centralizing this is what keeps the metric, the preview, and the
+ *  runtime in sync — every consumer turns a flat DB row into a
+ *  `ClassificationAwareEmbeddingInput` through this single function.
+ *  Exported (not just internal) so Phase 4 PR2's wiring change in
+ *  `lib/storage/semantic-clusters.ts` can reuse the same mapping
+ *  without duplicating the field list. */
+export function helperInputFromRow(row: EmbeddingSignalCoverageRow): ClassificationAwareEmbeddingInput {
   const bucket = bucketConfidence(row.llm_confidence)
   return {
     title: row.title ?? "",
