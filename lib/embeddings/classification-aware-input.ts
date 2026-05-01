@@ -100,30 +100,12 @@ export function canUseTaxonomySignals(
 export function buildClassificationAwareEmbeddingText(input: ClassificationAwareEmbeddingInput): string {
   const lines: string[] = []
 
-  // Raw text is always present.
+  // Tier 1 — raw text is always present.
   lines.push(`Title: ${input.title.trim()}`)
   const body = input.body?.trim()
   if (body) lines.push(`Summary: ${body.slice(0, SUMMARY_MAX)}`)
 
   pushIfPresent(lines, "Topic", input.topic)
-
-  const fp = input.bugFingerprint
-  pushIfPresent(lines, "Error", fp?.error_code)
-  pushIfPresent(lines, "Stack", fp?.top_stack_frame)
-  pushIfPresent(lines, "CLI", fp?.cli_version)
-  pushIfPresent(lines, "OS", fp?.os)
-  pushIfPresent(lines, "Shell", fp?.shell)
-  pushIfPresent(lines, "Editor", fp?.editor)
-  pushIfPresent(lines, "Model", fp?.model_id)
-
-  // Repro marker count: emit only when it's high enough to discriminate
-  // (≥ 2). A bug with 0 or 1 marker carries no grouping signal — almost
-  // every report has 0, so embedding `Repro markers: 0` for everyone
-  // would just pull all reports toward each other.
-  const reproCount = fp?.repro_markers
-  if (typeof reproCount === "number" && reproCount >= 2) {
-    lines.push(`Repro markers: ${reproCount}`)
-  }
 
   const cls = input.classification
   if (canUseTaxonomySignals(cls)) {
@@ -136,20 +118,34 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
     if (tags.length > 0) lines.push(`Tags: ${tags.map((t) => t.slice(0, FIELD_VALUE_MAX)).join(", ")}`)
   }
 
-  // Severity / Confidence / Reproducibility / Impact intentionally
-  // bypass `canUseTaxonomySignals`. Rationale: severity/impact/repro
-  // are short scalar enums where the model treats `high` / `low` /
-  // `unknown` as honest signals about the *report*; even at low
-  // overall classification confidence, knowing the LLM rated the
-  // severity as "high" is useful self-anchoring data. The taxonomy
-  // gate exists to protect against false-positive *grouping* on
-  // hallucinated category/tag strings — a different failure mode than
-  // a single severity enum. The `pushIfPresent` "unknown" filter
-  // already prevents the most-common low-confidence noise.
+  // Tier 2 — scalar classification fields remain valuable even when
+  // taxonomy strings are gated out.
   pushIfPresent(lines, "Severity", cls?.severity)
   pushIfPresent(lines, "Confidence", cls?.confidence_bucket)
   pushIfPresent(lines, "Reproducibility", cls?.reproducibility)
   pushIfPresent(lines, "Impact", cls?.impact)
+
+  // Tier 3 — collapse environment fingerprint into one line so sparse
+  // literal environment values don't over-anchor unrelated reports.
+  const fp = input.bugFingerprint
+  const envParts: string[] = []
+  const cli = fp?.cli_version?.trim()
+  if (cli && cli.toLowerCase() !== "unknown") envParts.push(`cli=${cli}`)
+  const os = fp?.os?.trim()
+  if (os && os.toLowerCase() !== "unknown") envParts.push(`os=${os}`)
+  const shell = fp?.shell?.trim()
+  if (shell && shell.toLowerCase() !== "unknown") envParts.push(`shell=${shell}`)
+  const editor = fp?.editor?.trim()
+  if (editor && editor.toLowerCase() !== "unknown") envParts.push(`editor=${editor}`)
+  const model = fp?.model_id?.trim()
+  if (model && model.toLowerCase() !== "unknown") envParts.push(`model=${model}`)
+  if (envParts.length > 0) lines.push(`Environment: ${envParts.join(" ")}`)
+
+  pushIfPresent(lines, "Error", fp?.error_code)
+  pushIfPresent(lines, "Stack", fp?.top_stack_frame)
+
+  const reproCount = fp?.repro_markers
+  if (typeof reproCount === "number" && reproCount >= 2) lines.push(`Repro markers: ${reproCount}`)
 
   return lines.join("\n")
 }
