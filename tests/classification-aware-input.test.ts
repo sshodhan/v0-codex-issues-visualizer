@@ -248,3 +248,70 @@ test("canUseTaxonomySignals: gates exactly as documented", () => {
   assert.equal(canUseTaxonomySignals(null), false)
   assert.equal(canUseTaxonomySignals(undefined), false)
 })
+
+
+test("tier ordering is stable and pinned", () => {
+  const text = buildClassificationAwareEmbeddingText({
+    title: "T",
+    body: "B",
+    topic: "bug",
+    bugFingerprint: {
+      error_code: "E1",
+      top_stack_frame: "frame",
+      cli_version: "1.2.3",
+      os: "macOS",
+      shell: "zsh",
+      editor: "vscode",
+      model_id: "gpt-4o",
+      repro_markers: 2,
+    },
+    classification: {
+      category: "stability",
+      subcategory: "timeout",
+      tags: ["b", "a"],
+      severity: "high",
+      confidence_bucket: "high",
+      reproducibility: "always",
+      impact: "high",
+    },
+  })
+
+  const lines = text.split("\n")
+  assert.deepEqual(lines, [
+    "Title: T",
+    "Summary: B",
+    "Topic: bug",
+    "Category: stability",
+    "Subcategory: timeout",
+    "Tags: a, b",
+    "Severity: high",
+    "Confidence: high",
+    "Reproducibility: always",
+    "Impact: high",
+    "Environment: cli=1.2.3 os=macOS shell=zsh editor=vscode model=gpt-4o",
+    "Error: E1",
+    "Stack: frame",
+    "Repro markers: 2",
+  ])
+})
+
+test("environment fingerprint fields collapse into one Environment line", () => {
+  const text = buildClassificationAwareEmbeddingText({
+    title: "A",
+    bugFingerprint: {
+      cli_version: "1.2.3",
+      os: "macOS",
+      shell: "zsh",
+      editor: "vscode",
+      model_id: "gpt-4o",
+    },
+  })
+
+  const lines = text.split("\n")
+  assert.equal(lines.filter((l) => l.startsWith("Environment:")).length, 1)
+  assert.doesNotMatch(text, /^CLI:/m)
+  assert.doesNotMatch(text, /^OS:/m)
+  assert.doesNotMatch(text, /^Shell:/m)
+  assert.doesNotMatch(text, /^Editor:/m)
+  assert.doesNotMatch(text, /^Model:/m)
+})
