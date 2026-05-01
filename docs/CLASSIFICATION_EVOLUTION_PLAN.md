@@ -21,6 +21,16 @@ Classification is a soft prior and quality lens for clustering, not a replacemen
 - LLM output must not silently override deterministic cluster membership.
 - Every behavior change must be algorithm-versioned, dry-runnable, and auditable.
 
+## PR feedback resolution checklist
+
+This revision explicitly addresses review feedback by:
+
+- Making phase gates stricter (no default behavior switch without evidence and rollback readiness).
+- Calling out confidence/review-flag gating before LLM classification signals can influence embedding text.
+- Separating read-time Layer B grouping from Stage 3 membership ownership in every relevant phase.
+- Expanding dry-run-only requirements before any membership-affecting algorithm change.
+- Keeping schema evolution additive for family/review layers and preserving append-only history.
+
 ## Current system summary
 
 - Raw evidence: `observations`, `observation_revisions`, `engagement_snapshots`, `ingestion_artifacts`.
