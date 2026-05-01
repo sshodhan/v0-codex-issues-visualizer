@@ -31,6 +31,9 @@ export interface ClassificationAwareEmbeddingInput {
 
 function pushIfPresent(lines: string[], label: string, value?: string | null): void {
   const trimmed = value?.trim()
+  if (!trimmed) return
+  // Avoid inventing placeholder semantics in embedding text.
+  if (trimmed.toLowerCase() === "unknown") return
   if (trimmed) lines.push(`${label}: ${trimmed}`)
 }
 
@@ -66,7 +69,10 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
   pushIfPresent(lines, "Model", fp?.model_id)
 
   const repro = fp?.repro_markers?.map((m) => m.trim()).filter(Boolean)
-  if (repro && repro.length > 0) lines.push(`Repro markers: ${repro.join(", ")}`)
+  if (repro && repro.length > 0) {
+    const sorted = [...new Set(repro)].sort((a, b) => a.localeCompare(b))
+    lines.push(`Repro markers: ${sorted.join(", ")}`)
+  }
 
   const cls = input.classification
   if (canUseTaxonomySignals(cls)) {

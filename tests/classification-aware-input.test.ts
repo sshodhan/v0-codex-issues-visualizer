@@ -14,7 +14,7 @@ test("raw title/body always present", () => {
 
 test("missing optional fields omitted", () => {
   const text = buildClassificationAwareEmbeddingText({ title: "A", classification: { confidence_bucket: "unknown" } })
-  assert.equal(text, "Title: A\nConfidence: unknown")
+  assert.equal(text, "Title: A")
 })
 
 test("tags are sorted deterministically", () => {
@@ -85,4 +85,14 @@ test("evidence quotes are excluded", () => {
     },
   })
   assert.doesNotMatch(text, /quote/i)
+})
+
+test("repro markers are de-duplicated and sorted", () => {
+  const text = buildClassificationAwareEmbeddingText({
+    title: "A",
+    bugFingerprint: {
+      repro_markers: ["intermittent", "always", "always", " sometimes "],
+    },
+  })
+  assert.match(text, /Repro markers: always, intermittent, sometimes/)
 })
