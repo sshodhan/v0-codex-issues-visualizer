@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import type { createAdminClient } from "@/lib/supabase/admin"
 import { extractResponsesOutputText } from "@/lib/classification/openai-responses"
+import { buildV3InputFromObservation } from "@/lib/embeddings/v3-input-from-observation"
 import { CURRENT_VERSIONS } from "@/lib/storage/algorithm-versions"
 import { attachToCluster } from "@/lib/storage/clusters"
 import {
@@ -315,17 +316,41 @@ export async function recomputeObservationEmbedding(
   const trigger = options.trigger ?? "unspecified"
   const algorithmVersionModel = `${CURRENT_VERSIONS.observation_embedding}:${DEFAULT_EMBEDDING_MODEL}`
 
-  // v2 input prepends structured signals (when caller passed them) so
-  // the embedding model encodes issue type, not just prose vocabulary.
-  // Callers without structured context (legacy single-observation
-  // recomputes from the trace-page Re-run button) get the v1-equivalent
-  // prose-only input and still produce valid v2 vectors — just less
-  // semantically anchored.
-  const input = buildEmbeddingInputText(
-    observation.title,
-    observation.content ?? null,
-    options.signals,
-  )
+  // Version dispatch — produces the embedding-input text. Each
+  // version corresponds to a specific helper:
+  //
+  //   v2 → buildEmbeddingInputText (lib/storage/semantic-cluster-core.ts)
+  //        Bracketed structured signals prepended to title/body.
+  //        Inputs come from the caller's `options.signals` shape.
+  //
+  //   v3 → buildClassificationAwareEmbeddingText (lib/embeddings/
+  //        classification-aware-input.ts), with input fetched from
+  //        five upstream tables by buildV3InputFromObservation.
+  //        Tier-ordered for the user-feedback corpus signal hierarchy
+  //        (PR #193's plan amendment). The v3 path IGNORES
+  //        `options.signals` because v3 needs a richer input set
+  //        (LLM 4.a category/subcategory/tags + reviewer override +
+  //        full bug fingerprint + Topic) than the v2 signals shape
+  //        carries — it fetches its own.
+  //
+  // This is a runtime branch on a single constant. Adding a v4 means
+  // adding a new branch here AND bumping CURRENT_VERSIONS.observation_embedding
+  // AND adding scripts/0XX_observation_embedding_v4_bump.sql.
+  let input: string
+  let v3Detail: Record<string, unknown> | undefined
+  if (CURRENT_VERSIONS.observation_embedding === "v3") {
+    const v3 = await buildV3InputFromObservation(supabase, observation)
+    input = v3.text
+    v3Detail = { v3_side_tables: v3.sideTableSummary }
+  } else {
+    // v1 / v2 path. v1 (no signals) collapses to prose-only output
+    // by buildEmbeddingInputText's degraded-input behavior.
+    input = buildEmbeddingInputText(
+      observation.title,
+      observation.content ?? null,
+      options.signals,
+    )
+  }
   const embedding = await createEmbedding(input)
   if (!embedding) {
     await recordProcessingEvent(supabase, {
@@ -361,7 +386,7 @@ export async function recomputeObservationEmbedding(
     stage: "embedding",
     status: "completed",
     algorithmVersionModel,
-    detail: { dimensions: embedding.length, trigger },
+    detail: { dimensions: embedding.length, trigger, ...(v3Detail ?? {}) },
   })
 
   return {

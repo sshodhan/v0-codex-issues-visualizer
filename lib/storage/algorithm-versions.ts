@@ -43,17 +43,53 @@ export const CURRENT_VERSIONS = {
   // replay integrity. See scripts/011_algorithm_v2_bump.sql.
   competitor_mention: "v2",
   classification: "v1",
-  // v2 (2026-04): structured-prefix embedding input. v1 embedded raw
-  // `Title: …\nSummary: …` prose, which optimized for surface
-  // similarity rather than issue-type similarity — a known root cause
-  // of the singleton-cluster problem (see docs/CLUSTERING_DESIGN.md
-  // §4.8). v2 prepends bracketed structured signals when available
-  // (`[Type: bug] [Error: TIMEOUT] [Component: codex-cli]\n…`) so the
-  // embedding model gets explicit type context before the prose. v1
-  // rows remain in observation_embeddings for reproducibility; v2
-  // rows get computed on demand by ensureEmbedding when the rebuild
-  // is run after this bump. See scripts/034_observation_embedding_v2_bump.sql.
-  observation_embedding: "v2",
+  // v3 (2026-05): classification-aware embedding input, tier-ordered
+  // for a user-feedback corpus. The 2026-05-01 baseline snapshot
+  // (singleton_rate 95.9%, semantic-key share 3.9%, title-fallback
+  // share 96.1%) confirmed v2's structured-prefix approach was not
+  // producing real semantic groupings — the embedding pipeline was
+  // essentially producing one cluster per title.
+  //
+  // v3 changes the helper that produces input text. Instead of
+  // bracketed [Type: …] [Error: …] tags prepended to title/body, v3
+  // emits a tier-ordered structure that matches the user-feedback
+  // corpus signal hierarchy locked in PR #193:
+  //
+  //   Tier 1 (primary):    Title, Summary, Topic, Category, Subcategory,
+  //                        Tags (gated on confidence ≥ medium AND not
+  //                        review-flagged)
+  //   Tier 2 (secondary):  Severity, Reproducibility, Impact, Confidence
+  //                        (gated on review-flagged only)
+  //   Tier 3 (supportive): Environment (collapsed cli/os/shell/editor/
+  //                        model), Error, Stack, Repro markers
+  //
+  // The collapse of the 6 fingerprint env fields into one
+  // Environment: cli=… os=… line is the key change vs v2 — sparse
+  // environment values were over-anchoring unrelated reports that
+  // happened to share one runtime value (e.g., both running gpt-4o).
+  //
+  // v3 also requires the production embedding pipeline to FETCH more
+  // upstream signals than v2: full classifications row, classification
+  // reviews, complete bug_fingerprints. The v3 dispatch in
+  // recomputeObservationEmbedding calls into v3-input-from-observation.ts
+  // (which reuses Phase 2's helperInputFromRow) to assemble the input.
+  //
+  // v1/v2 rows remain in observation_embeddings for replay; v3 rows
+  // get computed on demand by ensureEmbedding when the rebuild is run
+  // after this bump. Phase 4 PR3 (backfill UI) provides the
+  // operator-facing surface to trigger v3 generation across the
+  // corpus. Stage 4a coverage MUST be pushed to ≥ 80% before that
+  // backfill runs (currently 16%) — see Phase 4 §"Stage 4a / Stage 2
+  // sequencing model" in CLASSIFICATION_EVOLUTION_PLAN.md.
+  //
+  // Algorithm-defining knobs are pinned in
+  // V3_ALGORITHM_SIGNATURE inside lib/embeddings/classification-aware-input.ts;
+  // structural properties (emit order, gating policy, collapse format)
+  // are pinned by tests/classification-aware-input.test.ts. Changing
+  // either bumps to v4.
+  //
+  // See scripts/035_observation_embedding_v3_bump.sql.
+  observation_embedding: "v3",
   // v2 (2026-04): the labeller pipeline grew prompt context (Topic +
   // recurring error codes), small-→-large model escalation mirroring the
   // classifier, and a deterministic fallback derived from cluster
