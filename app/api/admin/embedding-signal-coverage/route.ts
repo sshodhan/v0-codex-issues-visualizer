@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server"
 import { requireAdminSecret } from "@/lib/admin/auth"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { logServerError } from "@/lib/error-tracking/server-logger"
+// Single source of truth for the reviewer-flagged signal. Phase 4's
+// production runtime (lib/embeddings/v3-input-from-observation.ts)
+// imports the same module — adding/removing a reviewer state that
+// gates the LLM output is one edit to lib/classification/review-flag.ts.
+import { computeReviewFlagged } from "@/lib/classification/review-flag"
 import {
   buildCoveragePreview,
   summarizeEmbeddingSignalCoverage,
@@ -12,35 +17,6 @@ const DEFAULT_LIMIT = 5000
 const MAX_LIMIT = 20000
 const DEFAULT_DAYS = 30
 const MAX_DAYS = 365
-
-/** Status values from `classification_reviews.status` that count as
- *  "review-flagged" — i.e., reviewer explicitly does not endorse the
- *  LLM output and v3 should NOT use its taxonomy.
- *
- *  `classification_reviews.status` is `text` (no enum constraint), so
- *  the set of values that can land in this column is determined by
- *  the reviewer UI rather than the schema. The list below covers the
- *  documented review-decision states across reviewer flows:
- *    - `flagged` / `needs_review` — reviewer escalated for follow-up
- *    - `rejected` / `incorrect` / `invalid` — reviewer disagreed with
- *      the LLM's assignment
- *    - `unclear` — reviewer couldn't decide; treat as untrusted
- *  Approved/correct values are intentionally absent — those should
- *  let the LLM taxonomy through unchanged.
- *
- *  Operators verifying the live distribution can run:
- *    SELECT status, COUNT(*) FROM classification_reviews GROUP BY 1;
- *  If a reviewer state appears that should also gate the LLM output,
- *  add it here in one place — every consumer (this route + the
- *  signal-coverage metric + the Phase 4 caller) uses the same set. */
-const FLAGGED_REVIEW_STATUSES = new Set([
-  "flagged",
-  "needs_review",
-  "rejected",
-  "incorrect",
-  "invalid",
-  "unclear",
-])
 
 export async function GET(request: NextRequest) {
   const authErr = requireAdminSecret(request)
@@ -237,9 +213,7 @@ export async function GET(request: NextRequest) {
     const obsId = mv.observation_id as string
     const review = reviewByObsId.get(obsId)
     const cls = clsByObsId.get(obsId)
-    const reviewStatusLower = review?.status?.toLowerCase().trim() ?? ""
-    const reviewFlagged =
-      review?.needs_human_review === true || FLAGGED_REVIEW_STATUSES.has(reviewStatusLower)
+    const reviewFlagged = computeReviewFlagged(review)
 
     // LLM fields prefer the side-table `classifications` row (always
     // current); MV columns are a fallback when the side-table query
