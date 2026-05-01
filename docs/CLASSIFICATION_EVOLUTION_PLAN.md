@@ -390,10 +390,14 @@ The directional architecture diagram places Stage 4a (LLM classification) *befor
 
 **Implementation requirements (Phase 4 PR2):**
 
-- Hook the `classifications` write path (`lib/classification/pipeline.ts`) and the `classification_reviews` write path. When either fires for an observation that already has an `observation_embeddings` row at `algorithm_version='v3'`, emit a `processing_events` row with `stage='embedding'`, `status='stale'`, `detail.reason='classification_updated'`.
-- Extend the existing admin cluster rebuild route with an `?include_stale=true` mode. When set, the route picks up observations whose latest `processing_events.stage='embedding' / status='stale'` row is more recent than their `observation_embeddings` row at the current algorithm version, and re-embeds them alongside any rows missing a v3 embedding entirely.
+- Hook the `classifications` write path (`lib/classification/pipeline.ts`) and the `classification_reviews` write path. When either fires for an observation that already has an `observation_embeddings` row at `algorithm_version='v3'`, emit a `processing_events` row with `stage='embedding'`, `status='stale'`, `detail.reason='classification_updated'` (or `'review_updated'`). Marker carries `detail.trigger_id` (the upstream `classification_id` or review id) so an operator can chain back to the cause.
 - Append-only: never mutate or delete prior `observation_embeddings` rows. v1/v2 rows persist for replay; v3 rows are added on rebuild.
 - Idempotent: running the rebuild twice produces no duplicate rows (handled by the existing `record_observation_embedding` RPC's on-conflict-do-update behavior).
+
+**Implementation requirements (Phase 4 PR3 — backfill orchestration):**
+
+- Provide a dedicated admin route (`/api/admin/embeddings/backfill-v3`) with `?dry_run=true|false`, `?limit=N`, `?resume_from=<obs_id>`, and `?include_stale=true` modes. Picks up observations whose latest `processing_events.stage='embedding'/status='stale'` row is more recent than their `observation_embeddings` row at the current algorithm version, and re-embeds them alongside any rows missing a v3 embedding entirely.
+- Rationale for a separate route (vs. extending the existing cluster rebuild route): v3 generation is a distinct operator concern from cluster reformation. Having dry-run-first as the default and a clear "Generate v3 embeddings" affordance lets the operator preview impact before spending OpenAI quota. The existing cluster rebuild route continues to call `ensureEmbedding` per obs, which transparently picks up the bumped algorithm version on cache miss — so v3 also flows through the existing rebuild path naturally. The dedicated PR3 route just gives the operator an explicit surface for the embedding-only step.
 
 **New-observation lifecycle, end-to-end:**
 
