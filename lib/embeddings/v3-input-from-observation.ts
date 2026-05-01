@@ -42,6 +42,11 @@ import {
   helperInputFromRow,
   type EmbeddingSignalCoverageRow,
 } from "./signal-coverage.ts"
+// Single source of truth for the reviewer-flagged signal. Phase 2's
+// admin metric (app/api/admin/embedding-signal-coverage/route.ts)
+// imports the same module, so adding/removing a reviewer state that
+// gates the LLM output is one edit to lib/classification/review-flag.ts.
+import { computeReviewFlagged } from "../classification/review-flag.ts"
 
 // `AdminClient` is the runtime supabase client. Typed as any for test
 // portability — the production wiring in lib/storage/semantic-clusters.ts
@@ -56,23 +61,6 @@ import {
 // `.maybeSingle()`. Both real PostgREST and the test mock satisfy that.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminClient = any
-
-/** Status values from `classification_reviews.status` that count as
- *  "review-flagged". Same set Phase 2's admin route uses; centralizing
- *  here would create a cross-module import that doesn't exist today,
- *  so kept duplicated with a comment. If a reviewer state is added
- *  that should also gate the LLM output, update both:
- *    - app/api/admin/embedding-signal-coverage/route.ts
- *    - this file
- *  Or refactor to import from a shared lib/classification module. */
-const FLAGGED_REVIEW_STATUSES = new Set([
-  "flagged",
-  "needs_review",
-  "rejected",
-  "incorrect",
-  "invalid",
-  "unclear",
-])
 
 /**
  * Assemble the v3 helper input for a single observation, then run the
@@ -182,12 +170,10 @@ export async function buildV3InputFromObservation(
     ? topicRel[0]?.slug ?? null
     : topicRel?.slug ?? null
 
-  // Compute review-flagged: needs_human_review is the strong signal;
-  // status is the secondary signal. Same logic as
-  // app/api/admin/embedding-signal-coverage/route.ts.
-  const reviewStatusLower = reviewRes.data?.status?.toLowerCase().trim() ?? ""
-  const reviewFlagged =
-    reviewRes.data?.needs_human_review === true || FLAGGED_REVIEW_STATUSES.has(reviewStatusLower)
+  // Compute review-flagged via the shared module. Phase 2's admin
+  // metric goes through the same function, so the two stay in
+  // lockstep without per-call-site drift.
+  const reviewFlagged = computeReviewFlagged(reviewRes.data)
 
   // Assemble the flat row in the shape the Phase 2 helperInputFromRow
   // expects. Reusing this mapping ensures the production runtime, the
