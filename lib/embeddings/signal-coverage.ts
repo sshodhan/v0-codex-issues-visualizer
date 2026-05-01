@@ -1,5 +1,7 @@
 export interface EmbeddingSignalCoverageRow {
   observation_id: string
+  title?: string | null
+  content?: string | null
   category_slug?: string | null
   error_code?: string | null
   top_stack_frame?: string | null
@@ -13,6 +15,11 @@ export interface EmbeddingSignalCoverageRow {
   llm_primary_tag?: string | null
   llm_confidence?: string | null
   llm_review_status?: string | null
+}
+export interface EmbeddingSignalCoveragePreview {
+  observation_id: string
+  included_fields: string[]
+  omitted_reasons: string[]
 }
 
 export interface EmbeddingSignalCoverageSummary {
@@ -95,4 +102,30 @@ export function summarizeEmbeddingSignalCoverage(rows: EmbeddingSignalCoverageRo
   }
 
   return summary
+}
+
+export function buildCoveragePreview(rows: EmbeddingSignalCoverageRow[]): EmbeddingSignalCoveragePreview[] {
+  return rows.map((row) => {
+    const included: string[] = ["title"]
+    const omitted: string[] = []
+    if (isPresent(row.content)) included.push("content")
+    else omitted.push("content_missing")
+    if (isPresent(row.category_slug)) included.push("topic")
+    else omitted.push("topic_missing")
+    if ([row.error_code, row.top_stack_frame, row.cli_version, row.fp_os, row.fp_shell, row.fp_editor, row.model_id].some(isPresent)) {
+      included.push("fingerprint")
+    } else {
+      omitted.push("fingerprint_missing")
+    }
+    const confidence = (row.llm_confidence ?? "").trim().toLowerCase()
+    const reviewStatus = (row.llm_review_status ?? "").trim().toLowerCase()
+    const highConfidence = HIGH_CONFIDENCE_VALUES.has(confidence)
+    const reviewFlagged = FLAGGED_REVIEW_VALUES.has(reviewStatus)
+    const hasAnyLlm = isPresent(row.llm_category) || isPresent(row.llm_subcategory) || isPresent(row.llm_primary_tag)
+    if (!hasAnyLlm) omitted.push("llm_missing")
+    else if (!highConfidence) omitted.push("llm_low_confidence")
+    else if (reviewFlagged) omitted.push("llm_review_flagged")
+    else included.push("llm_taxonomy")
+    return { observation_id: row.observation_id, included_fields: included, omitted_reasons: omitted }
+  })
 }
