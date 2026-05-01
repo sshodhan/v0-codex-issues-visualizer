@@ -1,6 +1,6 @@
 import type { createAdminClient } from "@/lib/supabase/admin"
 import { CURRENT_VERSIONS, LEXICON_VERSION } from "@/lib/storage/algorithm-versions"
-import { recordProcessingEvent } from "@/lib/storage/processing-events"
+import { emitEmbeddingStaleMarkerIfNeeded } from "@/lib/storage/embedding-staleness-marker"
 
 // The only module permitted to write to the derivation layer.
 // Every write is stamped with algorithm_version; derivations are immutable
@@ -9,73 +9,6 @@ import { recordProcessingEvent } from "@/lib/storage/processing-events"
 // See docs/ARCHITECTURE.md v10 §§3.1b, 5.2, 7.4.
 
 type AdminClient = ReturnType<typeof createAdminClient>
-
-/**
- * Phase 4 staleness marker.
- *
- * When a classification or review is written for an observation that
- * already has an `observation_embeddings` row at the current
- * `observation_embedding` algorithm version, the embedding's content
- * is now stale relative to the new classification. Emit a
- * `processing_events` row so the next admin cluster rebuild (with
- * `?include_stale=true`) re-embeds this observation.
- *
- * Why this exists:
- *   v3 embeddings encode LLM 4.a category/subcategory/tags + reviewer
- *   override. Without staleness markers, `ensureEmbedding` would
- *   return the cached pre-classification vector forever. The
- *   convergence model in `docs/CLASSIFICATION_EVOLUTION_PLAN.md`
- *   Phase 4 §"Stage 4a / Stage 2 sequencing model" specifies that
- *   rebuilds are the convergence point — markers tell the rebuild
- *   which rows to recompute.
- *
- * Best-effort: a failure here doesn't block the calling write
- * (classification or review). The embedding stays stale until the
- * next manual re-embed. The marker emit is a hint, not a
- * correctness guarantee — at-least-once consistency is the design.
- *
- * No-op when the observation has no v3 embedding yet (the next
- * `ensureEmbedding` call on a cold cache produces a fresh v3 row
- * anyway).
- */
-async function emitEmbeddingStaleMarkerIfNeeded(
-  supabase: AdminClient,
-  observationId: string,
-  reason: "classification_updated" | "review_updated",
-): Promise<void> {
-  if (!observationId) return
-
-  const { data, error } = await supabase
-    .from("observation_embeddings")
-    .select("created_at")
-    .eq("observation_id", observationId)
-    .eq("algorithm_version", CURRENT_VERSIONS.observation_embedding)
-    .maybeSingle()
-
-  if (error) {
-    // Best-effort: log + continue. The classification write itself
-    // succeeded; the embedding's freshness is a downstream concern.
-    console.error("[derivations] embedding staleness check failed:", error)
-    return
-  }
-
-  if (!data) {
-    // No embedding at the current version — nothing to mark stale.
-    // The next ensureEmbedding will compute fresh using the new
-    // classification.
-    return
-  }
-
-  // There IS an embedding, and a classification/review just changed
-  // for the same observation. Emit the stale marker.
-  await recordProcessingEvent(supabase, {
-    observationId,
-    stage: "embedding",
-    status: "stale",
-    algorithmVersionModel: `${CURRENT_VERSIONS.observation_embedding}:upstream-changed`,
-    detail: { reason, marked_at: new Date().toISOString() },
-  })
-}
 
 /**
  * Look up the `observation_id` for a given classification_id. Used
@@ -269,6 +202,7 @@ export async function recordClassification(
       supabase,
       payload.observation_id,
       "classification_updated",
+      data as string | null, // classification_id returned by the RPC
     )
   }
 
@@ -309,7 +243,15 @@ export async function recordClassificationReview(
   // carry it directly), then emit. Best-effort.
   const observationId = await observationIdForClassification(supabase, classificationId)
   if (observationId) {
-    await emitEmbeddingStaleMarkerIfNeeded(supabase, observationId, "review_updated")
+    await emitEmbeddingStaleMarkerIfNeeded(
+      supabase,
+      observationId,
+      "review_updated",
+      // The RPC returns the new review_id; if it's null/unavailable
+      // we fall back to passing the classification_id so the marker
+      // still chains to the upstream identifier.
+      (data as string | null) ?? classificationId,
+    )
   }
 
   return data as string | null
