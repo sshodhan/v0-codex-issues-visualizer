@@ -227,41 +227,82 @@ Capture baseline clustering quality before behavior changes.
 2. `singleton_rate`
 3. `mixed_cluster_rate`
 
-Definitions:
+#### Concrete definitions (locked in PR #192)
 
-- `coherent_cluster_rate = clusters marked coherent_single_issue / clusters with family classification or review`
-- `singleton_rate = single-member clusters / total clusters`
-- `mixed_cluster_rate = clusters where dominant category/subcategory share is below threshold`
+The plan's original prose definitions left ambiguities (which threshold? which denominator? which clusters count?). Below is the exact formula every consumer (the metric, the UI, Phase 6's experiment, Phase 11's go-live gate) reads. The mixed-cluster threshold is centralized as a single constant in `lib/cluster-quality/baseline-metrics.ts` so a future re-tune happens in one place.
+
+| KPI | Numerator | Denominator | Threshold |
+|---|---|---|---|
+| `coherent_cluster_rate` | clusters with `family_classification_current.family_kind = 'coherent_single_issue'` | clusters that have a row in `family_classification_current` OR `family_classification_review_current` | n/a |
+| `singleton_rate` | active clusters with exactly 1 active member (`size_in_window = 1`) | total active clusters (any cluster with ≥ 1 active member) | n/a |
+| `mixed_cluster_rate` | multi-member classified clusters where the dominant LLM category share < `MIXED_CLUSTER_THRESHOLD` | multi-member clusters with at least one classified observation | `MIXED_CLUSTER_THRESHOLD = 0.5` |
+
+Notes:
+- `singleton_rate` uses **active** members only — clusters with all members detached don't count toward either numerator or denominator. This matches the `cluster_path_distribution` card already on `/admin`.
+- `mixed_cluster_rate` denominator is **multi-member classified** — a singleton can't be "mixed", and an unclassified cluster can't be evaluated for mixedness. Reporting it over all clusters would mix two different concerns.
+- The threshold value is captured here so a future re-tune is one edit, not a search-and-replace.
 
 ### Diagnostic metrics
 
-- total clusters
-- semantic clusters
-- deterministic fallback clusters
-- multi-member clusters
-- singleton rate by category/subcategory
-- multi-member clusters by category/subcategory
-- dominant category/subcategory share per cluster
-- mixed-category clusters
-- mixed-subcategory clusters
-- topic distribution per cluster
-- family classification coverage
-- coherent family rate
-- split-needed family rate
-- review disagreement rate (if available)
+All metrics below are surfaced by the Phase 3 endpoint and rendered in the admin panel. Each has a code-level test that locks its definition.
+
+- `total_clusters` (active only — at least one undetached member)
+- `semantic_clusters` (cluster_key prefix `semantic:`)
+- `deterministic_fallback_clusters` (cluster_key prefix `title:`)
+- `multi_member_clusters`
+- `singleton_rate_by_category` (Map: heuristic Topic slug → singleton rate)
+- `singleton_rate_by_subcategory` (Map: LLM subcategory → singleton rate)
+- `multi_member_clusters_by_category`
+- `multi_member_clusters_by_subcategory`
+- `dominant_category_share_distribution` (histogram: [<0.5, 0.5-0.7, 0.7-0.9, 0.9-1.0] over multi-member classified clusters — this is how the plan's "dominant share per cluster" requirement is satisfied: each multi-member classified cluster lands in exactly one bucket, and the bucketed view scales to thousands of clusters where a per-row table would not)
+- `mixed_category_clusters` (count where dominant LLM category share < threshold)
+- `mixed_subcategory_clusters` (count where dominant LLM subcategory share < threshold)
+- `top_mixed_topic_clusters` (top-N drill-down by `mv_cluster_topic_metadata.mixed_topic_score` — the per-cluster spot-check surface for the over-merged regime)
+- `family_classification_coverage` (clusters with a `family_classification_current` row / total clusters)
+- `coherent_family_rate` (`family_kind = 'coherent_single_issue'` / classified clusters)
+- `split_needed_family_rate` (`family_kind = 'mixed_multi_causal'` / classified clusters)
+- `review_disagreement_rate` (`family_classification_review_current` rows where `actual_family_kind != expected_family_kind` / total reviewed clusters; null when no reviews exist)
+
+### Phase 3 success thresholds (locked — accepted in PR #192 review)
+
+These are the numbers Phase 6's soft-prior experiment and Phase 11's go-live gate will be measured against. **Status: accepted by the repo owner in PR #192 review.** Any later phase that wants to revise a threshold must (a) propose the change in a PR that edits this table, (b) cite measurement evidence (not feels), and (c) get explicit acceptance — the same protocol used here.
+
+| Phase 6 / Phase 11 outcome | Threshold |
+|---|---|
+| **Win** — `singleton_rate` improvement | must drop by ≥ 5 percentage points (e.g., 90% → 85%) |
+| **No-regress** — `mixed_cluster_rate` | must NOT rise by more than 2 percentage points |
+| **Win** — `coherent_cluster_rate` improvement | must rise by ≥ 3 percentage points OR stay flat with documented qualitative improvement (manual spot-check of 10+ representative clusters) |
+| **Operational gate** — rollback path | must be exercised end-to-end at least once (no rebuild in production has rolled back without operator intervention as of baseline) |
+
+Tuning rationale (kept for future reviewers): with the current corpus singletons dominate (per PR #186 / PR #191 diagnostics), so a 5pp improvement is meaningful but achievable. A 2pp mixed-cluster regression cap accepts that some merging will surface mixed clusters that were singletons before — the question is whether they're truly mixed or just under-coherent. The 3pp coherent-rate win is generous because family classification coverage is currently low (~15% per the v2 diagnostic) — most clusters can't even be evaluated for coherence today.
 
 ### Exit criteria
 
-- Metrics available without clustering behavior changes.
-- Baseline recorded in this plan.
-- Dashboard/report can identify singleton-heavy, over-merged, and fallback-heavy regimes.
+- All KPIs and diagnostics computable via a single admin endpoint without clustering behavior changes.
+- Baseline numbers recorded in this plan (see [Phase 3 baseline snapshot](#phase-3-baseline-snapshot) below — populated post-merge by running the endpoint against production).
+- Dashboard panel can identify singleton-heavy, over-merged (high mixed-cluster rate), and fallback-heavy (high `title:` share) regimes.
+- Phase 6 success thresholds locked above.
 
 ### Decision gate
-Proceed only if baseline and success thresholds are defined.
+**Phase 4 is BLOCKED until both of the following are true:**
+1. The baseline snapshot table below has at least one populated row (not "TBD"), recorded against production by running `GET /api/admin/cluster-quality?days=0`. Phase 4 work MUST NOT start before this commit lands. The PR that adds the snapshot row is the gate; merging the Phase 3 endpoint alone does not unblock Phase 4.
+2. The success thresholds in the table above remain locked (no in-flight revision PR) — or, if a revision is proposed, it has been accepted before any Phase 4 work begins.
+
+### Phase 3 baseline snapshot
+
+**Canonical baseline mode**: `GET /api/admin/cluster-quality?days=0` (all-time). The 7 / 30 / 90-day windows surfaced in the admin panel are diagnostic drift views only — they show how recent activity compares to the full corpus. The snapshot row pasted into the table below MUST come from `days=0`; do not snapshot a windowed view.
+
+> Populated post-merge by running `GET /api/admin/cluster-quality?days=0` against production and pasting the CSV row below. Add new snapshot rows as the corpus grows; never edit historical rows so we preserve a time series to compare against.
+
+| Recorded | total_clusters | singleton_rate | coherent_cluster_rate | mixed_cluster_rate | family_coverage | semantic:% | title:% |
+|---|---|---|---|---|---|---|---|
+| YYYY-MM-DD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 
 ---
 
 ## PHASE 4 — Classification-aware embedding generation (versioned, opt-in)
+
+> **Prerequisite gate (do not start Phase 4 until satisfied):** the Phase 3 baseline snapshot table must have a populated row (not "TBD") and the locked Phase 6 / Phase 11 thresholds must still be accepted. See [Phase 3 decision gate](#decision-gate) above.
 
 ### Goal
 Generate v3 embeddings without making them default for clustering.

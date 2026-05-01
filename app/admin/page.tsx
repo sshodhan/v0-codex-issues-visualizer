@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
+import { ClusterQualityBaselinePanel } from "@/components/admin/cluster-quality-baseline-panel"
 import { FamilyClassificationPanel } from "@/components/admin/family-classification-panel"
 import { TopicReviewPanel } from "@/components/admin/topic-review-panel"
 import { WhatToKnowCard } from "@/components/admin/what-to-know-card"
@@ -580,6 +581,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
             <TabsTrigger value="backfill">Layer 0 Backfill</TabsTrigger>
             <TabsTrigger value="classify-backfill">Layer C Backfill</TabsTrigger>
             <TabsTrigger value="clustering">Layer A Clustering</TabsTrigger>
+            <TabsTrigger value="cluster-quality">Layer A Quality</TabsTrigger>
             <TabsTrigger value="trace">Cross-layer Trace</TabsTrigger>
             <TabsTrigger value="topic-review">Stage 5: Topic Review</TabsTrigger>
             <TabsTrigger value="schema">Schema / Contracts</TabsTrigger>
@@ -972,6 +974,24 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               }
             />
             <ClusteringPanel secret={secret} />
+          </TabsContent>
+          <TabsContent value="cluster-quality" className="space-y-4">
+            <WhatToKnowCard
+              title="Layer A Quality (Phase 3 baseline)"
+              summary="Read-only baseline of clustering quality. Captures singleton rate, coherent rate, and mixed rate before any Phase 4/6 behavior change."
+              purpose="Lock numeric baselines so Phase 6's soft-prior experiment and Phase 11's go-live gate have a measurable success criterion to compare against. No clustering writes."
+              pipelineFit="Reads from cluster_members, clusters, mv_cluster_topic_metadata, family_classification_current, family_classification_review_current, and classifications. Does not mutate any of them."
+              whenToRun="Once before Phase 4 to record the baseline (paste output into docs/CLASSIFICATION_EVOLUTION_PLAN.md §3 'Phase 3 baseline snapshot'). Re-run periodically to track drift."
+              impact="No production impact — read-only. Output drives Phase 6 / Phase 11 go/no-go decisions."
+              howToRun={
+                <ol className="list-decimal pl-5">
+                  <li>Click <strong>Refresh</strong> to load latest metrics.</li>
+                  <li>Click <strong>Snapshot CSV</strong> to download a single-row CSV.</li>
+                  <li>Append the CSV row to the baseline table in <code>docs/CLASSIFICATION_EVOLUTION_PLAN.md</code> (see §3 &quot;Phase 3 baseline snapshot&quot;).</li>
+                </ol>
+              }
+            />
+            <ClusterQualityBaselinePanel secret={secret} />
           </TabsContent>
           <TabsContent value="trace" className="space-y-4">
             <WhatToKnowCard
