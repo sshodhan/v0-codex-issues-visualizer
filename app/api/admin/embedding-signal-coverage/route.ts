@@ -97,14 +97,25 @@ export async function GET(request: NextRequest) {
     new Set((mvRows ?? []).map((r) => r.category_id as string | null).filter(Boolean) as string[]),
   )
 
-  // ---- Step 2: side-tables for category_slug, classifications side fields, reviewer overrides ----
+  // ---- Step 2: side-tables for category_slug, classifications row, reviewer overrides ----
   // All three lookups are best-effort. If any fails we log and continue
   // with the partial dataset — the summary numbers will be slightly
   // lower than reality but the endpoint still returns a usable response.
-  // The `classifications` query fetches reproducibility / impact / tags
-  // (Tier 2 helper inputs that the MV doesn't expose) plus a duplicate
-  // of subcategory we use as a freshness check; we take the latest row
-  // per observation_id.
+  //
+  // Why we fetch ALL LLM fields from `classifications` (not from
+  // `mv_observation_current.llm_*`):
+  // The MV refreshes on a periodic cadence; `classifications` is
+  // always current. If the MV is N seconds behind a fresh
+  // classification write, mixing MV-sourced fields (category /
+  // subcategory / severity / confidence) with side-table-sourced
+  // fields (reproducibility / impact / tags) yields a Frankenstein
+  // row where one half reflects the older state and the other half
+  // reflects the newer. Sourcing all LLM fields from the same
+  // side-table query — single latest row per observation_id — keeps
+  // the row internally consistent (each row reflects one specific
+  // classification write). MV's llm_* fields become a fallback path
+  // ONLY when the side-table query fails entirely (logged, then we
+  // degrade to MV state with a Frankenstein note in the telemetry).
   const [catRes, clsRes, reviewRes] = await Promise.all([
     categoryIds.length > 0
       ? supabase.from("categories").select("id, slug").in("id", categoryIds)
@@ -112,7 +123,9 @@ export async function GET(request: NextRequest) {
     observationIds.length > 0
       ? supabase
           .from("classifications")
-          .select("observation_id, reproducibility, impact, tags, created_at")
+          .select(
+            "observation_id, category, subcategory, primary_tag, severity, confidence, reproducibility, impact, tags, created_at",
+          )
           .in("observation_id", observationIds)
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [], error: null }),
@@ -142,22 +155,44 @@ export async function GET(request: NextRequest) {
     if (row.id && row.slug) slugById.set(row.id, row.slug)
   }
 
-  // Latest classification row per observation. The query was ordered
-  // by `created_at desc` so the first row we see for a given
+  // Latest classification row per observation. Ordered by
+  // `created_at desc` so the first row we see for a given
   // observation_id is the freshest; we take that and ignore older
   // rows. `tags` is `text[]`; PostgREST returns it as a JS array.
+  // `confidence` is `numeric(3,2)` and may arrive as a number or as
+  // a JSON string ("0.80") — bucketConfidence in the summarizer
+  // handles both shapes.
   const clsByObsId = new Map<
     string,
-    { reproducibility: string | null; impact: string | null; tags: string[] | null }
+    {
+      category: string | null
+      subcategory: string | null
+      primary_tag: string | null
+      severity: string | null
+      confidence: number | string | null
+      reproducibility: string | null
+      impact: string | null
+      tags: string[] | null
+    }
   >()
   for (const row of (clsRes.data ?? []) as Array<{
     observation_id: string
+    category: string | null
+    subcategory: string | null
+    primary_tag: string | null
+    severity: string | null
+    confidence: number | string | null
     reproducibility: string | null
     impact: string | null
     tags: string[] | null
   }>) {
     if (!row.observation_id || clsByObsId.has(row.observation_id)) continue
     clsByObsId.set(row.observation_id, {
+      category: row.category ?? null,
+      subcategory: row.subcategory ?? null,
+      primary_tag: row.primary_tag ?? null,
+      severity: row.severity ?? null,
+      confidence: row.confidence ?? null,
       reproducibility: row.reproducibility ?? null,
       impact: row.impact ?? null,
       tags: row.tags ?? null,
@@ -206,6 +241,13 @@ export async function GET(request: NextRequest) {
     const reviewFlagged =
       review?.needs_human_review === true || FLAGGED_REVIEW_STATUSES.has(reviewStatusLower)
 
+    // LLM fields prefer the side-table `classifications` row (always
+    // current); MV columns are a fallback when the side-table query
+    // failed entirely (the lookup was logged + degraded above). Within
+    // a single row, all LLM fields come from the SAME source — never
+    // mixed — to prevent Frankenstein rows where category and tags
+    // reflect different classification writes.
+    const llmSource = cls != null ? "classifications" : "mv"
     return {
       observation_id: obsId,
       title: (mv.title as string | null) ?? null,
@@ -219,17 +261,33 @@ export async function GET(request: NextRequest) {
       fp_editor: (mv.fp_editor as string | null) ?? null,
       model_id: (mv.model_id as string | null) ?? null,
       repro_markers: (mv.repro_markers as number | null) ?? null,
-      llm_category: (mv.llm_category as string | null) ?? null,
-      llm_subcategory: (mv.llm_subcategory as string | null) ?? null,
-      llm_primary_tag: (mv.llm_primary_tag as string | null) ?? null,
-      llm_severity: (mv.llm_severity as string | null) ?? null,
-      // Tier 2 helper inputs from `classifications` (not on the MV).
+      llm_category:
+        llmSource === "classifications"
+          ? (cls?.category ?? null)
+          : ((mv.llm_category as string | null) ?? null),
+      llm_subcategory:
+        llmSource === "classifications"
+          ? (cls?.subcategory ?? null)
+          : ((mv.llm_subcategory as string | null) ?? null),
+      llm_primary_tag:
+        llmSource === "classifications"
+          ? (cls?.primary_tag ?? null)
+          : ((mv.llm_primary_tag as string | null) ?? null),
+      llm_severity:
+        llmSource === "classifications"
+          ? (cls?.severity ?? null)
+          : ((mv.llm_severity as string | null) ?? null),
+      llm_confidence:
+        llmSource === "classifications"
+          ? (cls?.confidence ?? null)
+          : ((mv.llm_confidence as number | string | null) ?? null),
+      // These three are only on `classifications` (not on the MV).
+      // When the side-table query failed, we have no fallback —
+      // they're null and the helper falls through to the raw-only
+      // path for these fields.
       llm_reproducibility: cls?.reproducibility ?? null,
       llm_impact: cls?.impact ?? null,
       llm_tags: cls?.tags ?? null,
-      // PostgREST may return `numeric` as either string or number;
-      // bucketConfidence in the summarizer handles both.
-      llm_confidence: (mv.llm_confidence as number | string | null) ?? null,
       review_flagged: reviewFlagged,
       reviewer_category: review?.category ?? null,
       reviewer_subcategory: review?.subcategory ?? null,

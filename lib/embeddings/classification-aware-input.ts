@@ -1,20 +1,59 @@
+/**
+ * Phase 1 v3 embedding text helper — reshaped in PR #194 for the
+ * user-feedback corpus signal hierarchy (see "Corpus characteristics"
+ * in docs/CLASSIFICATION_EVOLUTION_PLAN.md).
+ *
+ * ⚠️  NOT WIRED INTO PRODUCTION YET
+ *
+ * Production cluster rebuild calls `buildEmbeddingInputText` from
+ * `lib/storage/semantic-cluster-core.ts` (the v2 builder), via
+ * `ensureEmbedding` and `recomputeObservationEmbedding` in
+ * `lib/storage/semantic-clusters.ts`. As of PR #194 merge, no production
+ * code path imports this file. The complete list of importers is:
+ *   - lib/embeddings/signal-coverage.ts (Phase 2 admin metric — read-only)
+ *   - tests/classification-aware-input.test.ts
+ *
+ * Phase 4 PR2 will add a dispatch layer in `recomputeObservationEmbedding`
+ * that calls this helper when `CURRENT_VERSIONS.observation_embedding`
+ * is bumped to "v3". Until that PR lands, `git grep` for imports of this
+ * module should return only the two files above. If you find a third
+ * importer in `lib/storage/` or `app/api/`, the safety invariant of
+ * PR #194 has been violated — please revert before any v3 rows can be
+ * generated.
+ */
 export type ConfidenceBucket = "high" | "medium" | "low" | "unknown"
 
-/** v3 algorithm signature — the numeric and structural parameters that
- *  define what "v3" means in `observation_embeddings.algorithm_version`.
- *  These are the only knobs that affect output text. Changing any value
- *  here implies a new algorithm version (v4): existing v3 rows would no
- *  longer be reproducible from the new code, and the
+/** v3 algorithm signature — the numeric parameters that define what
+ *  "v3" means in `observation_embeddings.algorithm_version`. Changing
+ *  any value here implies a new algorithm version (v4): existing v3
+ *  rows would no longer be reproducible from the new code, and the
  *  `algorithm_version` filter in `ensureEmbedding` would still match
- *  them as cache hits despite producing different text. Bump in lockstep
- *  with `lib/storage/algorithm-versions.ts` and a new migration script.
+ *  them as cache hits despite producing different text. Bump in
+ *  lockstep with `lib/storage/algorithm-versions.ts` and a new
+ *  migration script.
  *
- *  The hierarchy of signals (Tier 1 / Tier 2 / Tier 3) is documented in
- *  the plan doc's "Corpus characteristics" section and enforced by the
- *  emit order below. The hierarchy is not encoded as data here because
- *  it's a structural property of the function, not a tunable parameter
- *  — re-tiering signals would also require renaming the function and
- *  rewriting tests, which is a stronger signal than a constant change. */
+ *  STRUCTURAL changes also require a version bump even when none of
+ *  the numeric values here change. The structural properties of v3
+ *  are pinned by `tests/classification-aware-input.test.ts`, not by
+ *  this constant:
+ *    - emit order (Tier 1 → Tier 2 → Tier 3)
+ *    - Environment line collapse format and field order within it
+ *      (`cli os shell editor model`)
+ *    - confidence / review-flag gating policy (which fields are
+ *      omitted under low-confidence vs review-flagged states)
+ *    - tag normalization rules (trim → dedupe → ASCII sort)
+ *    - the set of fields that are emitted at all
+ *  If a test in that file is updated to reflect a new structural
+ *  shape, that's a v4 signature change even if `V3_ALGORITHM_SIGNATURE`
+ *  itself stays unchanged.
+ *
+ *  The Tier 1 / Tier 2 / Tier 3 hierarchy is documented in the plan
+ *  doc's "Corpus characteristics" section and enforced by the emit
+ *  order in `buildClassificationAwareEmbeddingText` below. The
+ *  hierarchy is not encoded as data here because it's a structural
+ *  property of the function, not a tunable parameter — re-tiering
+ *  signals would also require renaming the function and rewriting
+ *  tests, which is a stronger signal than a constant change. */
 export const V3_ALGORITHM_SIGNATURE = Object.freeze({
   /** Body / Summary truncation cap. Matches Phase 1 v3 spec; chosen so
    *  the embedding model's context budget stays comfortably within
@@ -205,21 +244,38 @@ export function buildClassificationAwareEmbeddingText(input: ClassificationAware
     if (tags.length > 0) lines.push(`Tags: ${tags.map((t) => t.slice(0, FIELD_VALUE_MAX)).join(", ")}`)
   }
 
-  // ---- Tier 2: secondary signals (always emit when present) ----
-  // Severity / Confidence / Reproducibility / Impact intentionally
-  // bypass `canUseTaxonomySignals`. Rationale: severity/impact/repro
-  // are short scalar enums where the model treats `high` / `low` /
-  // `unknown` as honest signals about the *report*; even at low
-  // overall classification confidence, knowing the LLM rated the
-  // severity as "high" is useful self-anchoring data. The taxonomy
-  // gate exists to protect against false-positive *grouping* on
-  // hallucinated category/tag strings — a different failure mode than
-  // a single severity enum. The `pushIfPresent` "unknown" filter
-  // already prevents the most-common low-confidence noise.
-  pushIfPresent(lines, "Severity", cls?.severity)
-  pushIfPresent(lines, "Reproducibility", cls?.reproducibility)
-  pushIfPresent(lines, "Impact", cls?.impact)
-  pushIfPresent(lines, "Confidence", cls?.confidence_bucket)
+  // ---- Tier 2: secondary signals (gated on review-flagged only) ----
+  // Two failure modes Tier 2 must protect against:
+  //
+  //   1. Low overall classification confidence. The original Phase 1
+  //      design intentionally lets these scalars through even at low
+  //      confidence: severity/impact/repro are short scalar enums
+  //      where the model treats `high` / `low` / `unknown` as honest
+  //      signals about the *report*. Even when overall confidence is
+  //      low, the LLM's per-axis self-rating is useful self-anchoring
+  //      data. The taxonomy gate (`canUseTaxonomySignals`) protects
+  //      against false-positive *grouping* on hallucinated
+  //      category/tag strings — a different failure mode than a
+  //      single severity enum. The `pushIfPresent` "unknown" filter
+  //      already prevents the most-common low-confidence noise.
+  //
+  //   2. Review-flagged classifications. Stronger signal than low
+  //      confidence: a human reviewer explicitly rejected the LLM
+  //      output. Trusting the LLM's severity/impact/repro values
+  //      while gating out its category/subcategory/tags is
+  //      inconsistent — both come from the same LLM call the
+  //      reviewer just rejected. So Tier 2 scalars are gated on
+  //      review_flagged.
+  //
+  // Net effect:
+  //   low-confidence + not-flagged → emit (existing rationale holds)
+  //   review-flagged                → omit (reviewer veto trumps)
+  if (!cls?.review_flagged) {
+    pushIfPresent(lines, "Severity", cls?.severity)
+    pushIfPresent(lines, "Reproducibility", cls?.reproducibility)
+    pushIfPresent(lines, "Impact", cls?.impact)
+    pushIfPresent(lines, "Confidence", cls?.confidence_bucket)
+  }
 
   // ---- Tier 3: supportive context (collapsed; emit last) ----
   const fp = input.bugFingerprint

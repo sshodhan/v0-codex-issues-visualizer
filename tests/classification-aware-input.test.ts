@@ -360,6 +360,67 @@ test("Environment line: filters 'unknown' values (sentinel pollution guard)", ()
   assert.doesNotMatch(envLine!, /editor=/)
 })
 
+test("Tier 2 scalars: review_flagged omits Severity/Reproducibility/Impact/Confidence", () => {
+  // Stronger gate than low confidence: a reviewer explicitly rejected
+  // this LLM output. The helper omits ALL LLM-sourced lines (both
+  // Tier 1 taxonomy and Tier 2 scalars) — every field that came from
+  // the rejected LLM call.
+  const text = buildClassificationAwareEmbeddingText({
+    title: "T",
+    classification: {
+      category: "bugs",
+      subcategory: "ui",
+      tags: ["alpha"],
+      severity: "high",
+      reproducibility: "always",
+      impact: "blocking",
+      confidence_bucket: "high",
+      review_flagged: true,
+    },
+  })
+  // Title still present (not LLM-derived).
+  assert.match(text, /^Title: T$/m)
+  // All LLM signals omitted.
+  assert.doesNotMatch(text, /^Category:/m)
+  assert.doesNotMatch(text, /^Subcategory:/m)
+  assert.doesNotMatch(text, /^Tags:/m)
+  assert.doesNotMatch(text, /^Severity:/m)
+  assert.doesNotMatch(text, /^Reproducibility:/m)
+  assert.doesNotMatch(text, /^Impact:/m)
+  assert.doesNotMatch(text, /^Confidence:/m)
+})
+
+test("Tier 2 scalars: low-confidence (NOT flagged) STILL emits scalars (only Tier 1 gated)", () => {
+  // The Phase 1 rationale stands for low-confidence-but-not-flagged
+  // rows: the LLM's per-axis scalar self-rating is honest data even
+  // when overall confidence is low. Only the taxonomy strings (which
+  // can hallucinate category/tag values) are gated on confidence.
+  // Pinning this so the review_flagged gate doesn't accidentally
+  // also tighten the low-confidence case.
+  const text = buildClassificationAwareEmbeddingText({
+    title: "T",
+    classification: {
+      category: "bugs",
+      subcategory: "ui",
+      tags: ["alpha"],
+      severity: "high",
+      reproducibility: "always",
+      impact: "blocking",
+      confidence_bucket: "low",
+      // review_flagged not set — defaults to undefined/false
+    },
+  })
+  // Tier 1 LLM signals gated out (low confidence).
+  assert.doesNotMatch(text, /^Category:/m)
+  assert.doesNotMatch(text, /^Subcategory:/m)
+  assert.doesNotMatch(text, /^Tags:/m)
+  // Tier 2 scalars STILL emitted (the only thing that gates these is review_flagged).
+  assert.match(text, /^Severity: high$/m)
+  assert.match(text, /^Reproducibility: always$/m)
+  assert.match(text, /^Impact: blocking$/m)
+  assert.match(text, /^Confidence: low$/m)
+})
+
 test("V3_ALGORITHM_SIGNATURE: locked numeric parameters", () => {
   // Pinning the version-defining numeric parameters in the test so a
   // future change forces an explicit choice: re-tune in this test AND

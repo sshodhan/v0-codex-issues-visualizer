@@ -3,9 +3,11 @@ import assert from "node:assert/strict"
 
 import {
   buildCoveragePreview,
+  helperInputFromRow,
   summarizeEmbeddingSignalCoverage,
   type EmbeddingSignalCoverageRow,
 } from "../lib/embeddings/signal-coverage.ts"
+import { buildClassificationAwareEmbeddingText } from "../lib/embeddings/classification-aware-input.ts"
 
 // All test rows use the production-shape: `llm_confidence` as a numeric
 // string (e.g. "0.80") matching what PostgREST returns for numeric(3,2),
@@ -267,6 +269,149 @@ test("summary.percentages returns null on empty input (no divide-by-zero)", () =
   assert.equal(summary.percentages.high_confidence_pct, null)
   assert.equal(summary.percentages.review_flagged_pct, null)
   assert.equal(summary.percentages.any_structured_signal_pct, null)
+})
+
+// ============================================================================
+// helperInputFromRow → buildClassificationAwareEmbeddingText parity
+//
+// Phase 4 PR2's production wiring will reuse helperInputFromRow to map
+// flat DB rows into the helper's input shape. If the row type or the
+// helper's input shape ever grows a field without the mapper updating,
+// signals silently disappear from the v3 embedding text. The test below
+// builds a fully-populated EmbeddingSignalCoverageRow and asserts every
+// expected line lands in the v3 output. Adding a new field to either
+// shape WITHOUT updating this test means the mapper isn't covered for
+// that field — the test will fail to prove the lift-through happens.
+// ============================================================================
+
+test("helperInputFromRow → buildClassificationAwareEmbeddingText: every coverage-row field reaches v3 text", () => {
+  const fullRow: EmbeddingSignalCoverageRow = {
+    observation_id: "obs-full",
+    title: "Full row test",
+    content: "Body content for full row test",
+    category_slug: "performance",
+    error_code: "TIMEOUT",
+    top_stack_frame: "save_handler",
+    cli_version: "0.10.4",
+    fp_os: "macos",
+    fp_shell: "zsh",
+    fp_editor: "vscode",
+    model_id: "gpt-4o",
+    repro_markers: 3,
+    llm_category: "bugs",
+    llm_subcategory: "ui-freeze",
+    llm_primary_tag: "blocking",
+    llm_severity: "high",
+    llm_reproducibility: "always",
+    llm_impact: "single-user",
+    llm_confidence: "0.90",
+    llm_tags: ["alpha", "beta"],
+    review_flagged: false,
+    reviewer_category: null,
+    reviewer_subcategory: null,
+  }
+
+  const helperInput = helperInputFromRow(fullRow)
+  const text = buildClassificationAwareEmbeddingText(helperInput)
+
+  // Tier 1 — primary
+  assert.match(text, /^Title: Full row test$/m)
+  assert.match(text, /^Summary: Body content for full row test$/m)
+  assert.match(text, /^Topic: performance$/m)
+  assert.match(text, /^Category: bugs$/m)
+  assert.match(text, /^Subcategory: ui-freeze$/m)
+  assert.match(text, /^Tags: alpha, beta$/m)
+
+  // Tier 2 — secondary
+  assert.match(text, /^Severity: high$/m)
+  assert.match(text, /^Reproducibility: always$/m)
+  assert.match(text, /^Impact: single-user$/m)
+  assert.match(text, /^Confidence: high$/m)
+
+  // Tier 3 — supportive (collapsed)
+  assert.match(text, /^Environment: cli=0\.10\.4 os=macos shell=zsh editor=vscode model=gpt-4o$/m)
+  assert.match(text, /^Error: TIMEOUT$/m)
+  assert.match(text, /^Stack: save_handler$/m)
+  assert.match(text, /^Repro markers: 3$/m)
+
+  // No legacy individual fingerprint lines (collapse must hold).
+  assert.doesNotMatch(text, /^CLI:/m)
+  assert.doesNotMatch(text, /^OS:/m)
+  assert.doesNotMatch(text, /^Shell:/m)
+  assert.doesNotMatch(text, /^Editor:/m)
+  assert.doesNotMatch(text, /^Model:/m)
+})
+
+test("helperInputFromRow: review-flagged row omits Tier 1 LLM AND Tier 2 scalars", () => {
+  // Stronger gate than low confidence: a reviewer explicitly rejected
+  // this LLM output. Helper should omit category/subcategory/tags
+  // (Tier 1 LLM signals) AND severity/reproducibility/impact/confidence
+  // (Tier 2 scalars) — every field that came from the rejected LLM
+  // call.
+  const flaggedRow: EmbeddingSignalCoverageRow = {
+    observation_id: "obs-flagged",
+    title: "T",
+    content: "B",
+    category_slug: "performance",
+    llm_category: "bugs",
+    llm_subcategory: "ui",
+    llm_severity: "high",
+    llm_reproducibility: "always",
+    llm_impact: "single-user",
+    llm_confidence: "0.90",
+    llm_tags: ["alpha"],
+    review_flagged: true,
+  }
+
+  const helperInput = helperInputFromRow(flaggedRow)
+  const text = buildClassificationAwareEmbeddingText(helperInput)
+
+  // Title / Summary / Topic still present (not LLM-derived).
+  assert.match(text, /^Title: T$/m)
+  assert.match(text, /^Topic: performance$/m)
+
+  // All LLM signals (Tier 1 + Tier 2) gated out.
+  assert.doesNotMatch(text, /^Category:/m)
+  assert.doesNotMatch(text, /^Subcategory:/m)
+  assert.doesNotMatch(text, /^Tags:/m)
+  assert.doesNotMatch(text, /^Severity:/m)
+  assert.doesNotMatch(text, /^Reproducibility:/m)
+  assert.doesNotMatch(text, /^Impact:/m)
+  assert.doesNotMatch(text, /^Confidence:/m)
+})
+
+test("helperInputFromRow: low-confidence (not flagged) emits Tier 2 scalars but not Tier 1 LLM", () => {
+  // Existing rationale: at low confidence, the LLM's per-axis scalar
+  // self-rating is still honest data. Only the taxonomy strings are
+  // gated (to prevent hallucinated category/tag false-positive
+  // grouping). Pinning this distinction so the gate-on-flagged change
+  // doesn't accidentally tighten the low-confidence case too.
+  const lowConfRow: EmbeddingSignalCoverageRow = {
+    observation_id: "obs-low",
+    title: "T",
+    llm_category: "bugs",
+    llm_subcategory: "ui",
+    llm_severity: "high",
+    llm_reproducibility: "always",
+    llm_impact: "single-user",
+    llm_confidence: "0.30",
+    llm_tags: ["alpha"],
+    review_flagged: false,
+  }
+
+  const helperInput = helperInputFromRow(lowConfRow)
+  const text = buildClassificationAwareEmbeddingText(helperInput)
+
+  // Tier 1 LLM signals gated out (low confidence).
+  assert.doesNotMatch(text, /^Category:/m)
+  assert.doesNotMatch(text, /^Subcategory:/m)
+  assert.doesNotMatch(text, /^Tags:/m)
+
+  // Tier 2 scalars STILL emitted (only review_flagged gates these).
+  assert.match(text, /^Severity: high$/m)
+  assert.match(text, /^Reproducibility: always$/m)
+  assert.match(text, /^Impact: single-user$/m)
+  assert.match(text, /^Confidence: low$/m)
 })
 
 test("summary.confidence_bucket_distribution sums to total_observations", () => {
