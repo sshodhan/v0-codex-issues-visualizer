@@ -52,6 +52,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ClusterLabelBackfillPanel } from "@/components/admin/label-backfill-runbook"
 import { ClusterQualityBaselinePanel } from "@/components/admin/cluster-quality-baseline-panel"
+import { V3EmbeddingBackfillPanel } from "@/components/admin/v3-embedding-backfill-panel"
 import { FamilyClassificationPanel } from "@/components/admin/family-classification-panel"
 import { TopicReviewPanel } from "@/components/admin/topic-review-panel"
 import { WhatToKnowCard } from "@/components/admin/what-to-know-card"
@@ -992,6 +993,7 @@ function AdminPageContent({ initialTab }: { initialTab: AdminTab }) {
               }
             />
             <ClusterQualityBaselinePanel secret={secret} />
+            <V3EmbeddingBackfillPanel secret={secret} />
           </TabsContent>
           <TabsContent value="trace" className="space-y-4">
             <WhatToKnowCard
