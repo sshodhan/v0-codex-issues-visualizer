@@ -254,18 +254,18 @@ All metrics below are surfaced by the Phase 3 endpoint and rendered in the admin
 - `singleton_rate_by_subcategory` (Map: LLM subcategory → singleton rate)
 - `multi_member_clusters_by_category`
 - `multi_member_clusters_by_subcategory`
-- `dominant_category_share_distribution` (histogram: [<0.5, 0.5-0.7, 0.7-0.9, 0.9-1.0] over multi-member classified clusters)
+- `dominant_category_share_distribution` (histogram: [<0.5, 0.5-0.7, 0.7-0.9, 0.9-1.0] over multi-member classified clusters — this is how the plan's "dominant share per cluster" requirement is satisfied: each multi-member classified cluster lands in exactly one bucket, and the bucketed view scales to thousands of clusters where a per-row table would not)
 - `mixed_category_clusters` (count where dominant LLM category share < threshold)
 - `mixed_subcategory_clusters` (count where dominant LLM subcategory share < threshold)
-- `topic_distribution_per_cluster` (already in `mv_cluster_topic_metadata`; surface top-N clusters with `mixed_topic_score`)
+- `top_mixed_topic_clusters` (top-N drill-down by `mv_cluster_topic_metadata.mixed_topic_score` — the per-cluster spot-check surface for the over-merged regime)
 - `family_classification_coverage` (clusters with a `family_classification_current` row / total clusters)
 - `coherent_family_rate` (`family_kind = 'coherent_single_issue'` / classified clusters)
 - `split_needed_family_rate` (`family_kind = 'mixed_multi_causal'` / classified clusters)
 - `review_disagreement_rate` (`family_classification_review_current` rows where `actual_family_kind != expected_family_kind` / total reviewed clusters; null when no reviews exist)
 
-### Phase 3 success thresholds (proposed for Phase 6 / Phase 11 use)
+### Phase 3 success thresholds (locked — accepted in PR #192 review)
 
-These are the numbers Phase 6's soft-prior experiment will be measured against. **Proposing here so the discussion happens against a recorded baseline rather than feels.** Phase 6 may revise these but must do so explicitly.
+These are the numbers Phase 6's soft-prior experiment and Phase 11's go-live gate will be measured against. **Status: accepted by the repo owner in PR #192 review.** Any later phase that wants to revise a threshold must (a) propose the change in a PR that edits this table, (b) cite measurement evidence (not feels), and (c) get explicit acceptance — the same protocol used here.
 
 | Phase 6 / Phase 11 outcome | Threshold |
 |---|---|
@@ -274,7 +274,7 @@ These are the numbers Phase 6's soft-prior experiment will be measured against. 
 | **Win** — `coherent_cluster_rate` improvement | must rise by ≥ 3 percentage points OR stay flat with documented qualitative improvement (manual spot-check of 10+ representative clusters) |
 | **Operational gate** — rollback path | must be exercised end-to-end at least once (no rebuild in production has rolled back without operator intervention as of baseline) |
 
-These are coarse first-pass thresholds. Tuning rationale: with the current corpus singletons dominate (per PR #186 / PR #191 diagnostics), so a 5pp improvement is meaningful but achievable. A 2pp mixed-cluster regression cap accepts that some merging will surface mixed clusters that were singletons before — the question is whether they're truly mixed or just under-coherent. The 3pp coherent-rate win is generous because family classification coverage is currently low (~15% per the v2 diagnostic) — most clusters can't even be evaluated for coherence today.
+Tuning rationale (kept for future reviewers): with the current corpus singletons dominate (per PR #186 / PR #191 diagnostics), so a 5pp improvement is meaningful but achievable. A 2pp mixed-cluster regression cap accepts that some merging will surface mixed clusters that were singletons before — the question is whether they're truly mixed or just under-coherent. The 3pp coherent-rate win is generous because family classification coverage is currently low (~15% per the v2 diagnostic) — most clusters can't even be evaluated for coherence today.
 
 ### Exit criteria
 
@@ -284,11 +284,15 @@ These are coarse first-pass thresholds. Tuning rationale: with the current corpu
 - Phase 6 success thresholds locked above.
 
 ### Decision gate
-Proceed to Phase 4 only if baseline is recorded AND success thresholds are accepted (or revised + accepted).
+**Phase 4 is BLOCKED until both of the following are true:**
+1. The baseline snapshot table below has at least one populated row (not "TBD"), recorded against production by running `GET /api/admin/cluster-quality?days=0`. Phase 4 work MUST NOT start before this commit lands. The PR that adds the snapshot row is the gate; merging the Phase 3 endpoint alone does not unblock Phase 4.
+2. The success thresholds in the table above remain locked (no in-flight revision PR) — or, if a revision is proposed, it has been accepted before any Phase 4 work begins.
 
 ### Phase 3 baseline snapshot
 
-> Populated post-merge by running `GET /api/admin/cluster-quality?days=0` against production and pasting the response below. Add new snapshot rows below as the corpus grows; never edit historical rows so we have a time series to compare against.
+**Canonical baseline mode**: `GET /api/admin/cluster-quality?days=0` (all-time). The 7 / 30 / 90-day windows surfaced in the admin panel are diagnostic drift views only — they show how recent activity compares to the full corpus. The snapshot row pasted into the table below MUST come from `days=0`; do not snapshot a windowed view.
+
+> Populated post-merge by running `GET /api/admin/cluster-quality?days=0` against production and pasting the CSV row below. Add new snapshot rows as the corpus grows; never edit historical rows so we preserve a time series to compare against.
 
 | Recorded | total_clusters | singleton_rate | coherent_cluster_rate | mixed_cluster_rate | family_coverage | semantic:% | title:% |
 |---|---|---|---|---|---|---|---|
@@ -297,6 +301,8 @@ Proceed to Phase 4 only if baseline is recorded AND success thresholds are accep
 ---
 
 ## PHASE 4 — Classification-aware embedding generation (versioned, opt-in)
+
+> **Prerequisite gate (do not start Phase 4 until satisfied):** the Phase 3 baseline snapshot table must have a populated row (not "TBD") and the locked Phase 6 / Phase 11 thresholds must still be accepted. See [Phase 3 decision gate](#decision-gate) above.
 
 ### Goal
 Generate v3 embeddings without making them default for clustering.

@@ -31,11 +31,20 @@ interface BaselineResponse {
   baseline: ClusterQualityBaseline
 }
 
+/**
+ * `value: "0"` (all-time) is the canonical baseline mode per
+ * docs/CLASSIFICATION_EVOLUTION_PLAN.md §3 — it is the only value an
+ * operator should snapshot into the plan's baseline table. The 7/30/90
+ * windows are surfaced as diagnostic drift views (how recent activity
+ * compares to the full corpus) and must NOT be used for the recorded
+ * baseline. The label spells this out so an operator opening the panel
+ * for the first time can't pick the wrong window by accident.
+ */
 const DAYS_OPTIONS = [
-  { value: "7", label: "Last 7 days" },
-  { value: "30", label: "Last 30 days" },
-  { value: "90", label: "Last 90 days" },
-  { value: "0", label: "All-time" },
+  { value: "0", label: "All-time (canonical baseline)" },
+  { value: "7", label: "Last 7 days (diagnostic)" },
+  { value: "30", label: "Last 30 days (diagnostic)" },
+  { value: "90", label: "Last 90 days (diagnostic)" },
 ] as const
 
 /** Format a 0..1 ratio as "XX.X%" or "—" for null. Snapshot-friendly. */
@@ -65,7 +74,9 @@ export function ClusterQualityBaselinePanel({ secret }: { secret: string }) {
   const [data, setData] = useState<BaselineResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [days, setDays] = useState<string>("30")
+  // Default to "0" (all-time) — that's the canonical baseline mode per
+  // the plan doc. Operators wanting recent-window diagnostics can switch.
+  const [days, setDays] = useState<string>("0")
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -123,9 +134,13 @@ export function ClusterQualityBaselinePanel({ secret }: { secret: string }) {
           <div>
             <CardTitle>Cluster quality baseline</CardTitle>
             <CardDescription>
-              Read-only metrics for the current clustering pipeline. Snapshot
-              these numbers into the plan doc to lock the baseline before any
-              Phase 4/6 behavior change.
+              Read-only metrics for the current clustering pipeline. The
+              canonical baseline is{" "}
+              <span className="font-medium text-foreground">All-time</span>
+              {" "}(<code className="rounded bg-muted px-1 py-0.5 text-[10px]">days=0</code>);
+              7/30/90-day windows are diagnostic drift views only. Snapshot the
+              All-time CSV into the plan doc to record the Phase 3 baseline
+              before any Phase 4/6 behavior change.
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
