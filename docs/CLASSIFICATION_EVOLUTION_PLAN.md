@@ -472,7 +472,70 @@ Rules:
 
 ---
 
-## PHASE 9 — Controlled rollout
+
+## PHASE 9 — Admin screen integration + Cross-layer Observation Trace
+
+### Goal
+Ensure each new signal and metric is visible in existing admin surfaces and that reviewers can trace an observation across layers end-to-end.
+
+### Admin surfaces to wire and verify
+
+- **Admin cluster rebuild screen** (`app/api/admin/cluster/route.ts` + related UI):
+  - show embedding algorithm version used
+  - show classification-aware embedding coverage stats (when run)
+  - show dry-run comparison summaries
+- **Layer A Labels admin tab**:
+  - display label source/fallback rung and label confidence
+  - show whether cluster label changed across algorithm versions
+- **Family classification admin panel** (`components/admin/family-classification-panel.tsx` + APIs):
+  - show family coherence fields/status when available
+  - show review-needed reasons and reviewer disagreement indicators
+- **Topic review admin screens**:
+  - preserve deterministic Topic provenance and review history
+- **Classification triage/admin screens**:
+  - keep Layer B grouping explicit as read-time only (never membership)
+
+### Cross-layer Observation Trace requirements
+
+Add/verify a trace view that can answer, for any observation and cluster:
+
+1. Raw observation evidence (`observations` + revision context)
+2. Stage 1 Topic + deterministic signals/fingerprints
+3. Stage 2 embedding version + input mode (raw vs classification-aware)
+4. Stage 3 current and historical cluster membership edges
+5. Stage 4a baseline classification + effective override state
+6. Layer B grouping (`effective_category` + `effective_subcategory`) as read-time only
+7. Stage 4b family classification/coherence interpretation
+8. Stage 4c cluster label source/fallback rationale
+9. Stage 5 review events timeline (classification/topic/family/cluster reviews)
+
+Trace constraints:
+
+- Append-only timeline semantics
+- Algorithm-version stamps on derivations
+- Explicit distinction between evidence, derivation, interpretation, and review
+- Exportable debug payload for incident review
+
+### Observability/log events for admin + trace
+
+- `embedding_rebuild_started|batch_completed|completed`
+- `embedding_signal_coverage_summary`
+- `cluster_rebuild_started|batch_completed|completed`
+- `classification_soft_prior_dry_run_started|completed`
+- `family_validation_started|completed|quality_summary`
+- `cluster_review_recorded|classification_review_recorded|topic_review_recorded`
+- `cross_layer_trace_viewed` (optional, for audit/usage)
+
+### Exit criteria
+
+- All required admin screens display new phase artifacts without ambiguity.
+- Reviewer can open one trace view and identify failure source layer (Topic vs classification vs embedding vs clustering vs family label/review).
+- Layer B is visibly marked read-time grouping only.
+- No new writes to membership from admin visualization flows.
+
+---
+
+## PHASE 10 — Controlled rollout
 
 ### Rollout order
 
@@ -485,7 +548,8 @@ Rules:
 7. Soft-prior clustering experiment
 8. Family validator improvements
 9. Reviewer feedback loop
-10. Default switch only after metrics pass
+10. Admin + Cross-layer Observation Trace verification
+11. Default switch only after metrics pass
 
 ### Default-switch criteria
 
