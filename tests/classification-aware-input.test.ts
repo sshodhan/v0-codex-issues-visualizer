@@ -1,7 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { buildClassificationAwareEmbeddingText } from "../lib/embeddings/classification-aware-input.ts"
+import {
+  bucketConfidence,
+  buildClassificationAwareEmbeddingText,
+  canUseTaxonomySignals,
+} from "../lib/embeddings/classification-aware-input.ts"
 
 test("raw title/body always present", () => {
   const text = buildClassificationAwareEmbeddingText({
@@ -42,6 +46,24 @@ test("low-confidence classification category/subcategory/tags are omitted", () =
   assert.doesNotMatch(text, /Category:/)
   assert.doesNotMatch(text, /Subcategory:/)
   assert.doesNotMatch(text, /Tags:/)
+})
+
+test("medium-confidence classification category/subcategory/tags are INCLUDED", () => {
+  // Phase 1 spec gates on "high or medium" — medium must be included
+  // by the helper. The signal-coverage metric uses the same gate via
+  // canUseTaxonomySignals so the two never drift.
+  const text = buildClassificationAwareEmbeddingText({
+    title: "A",
+    classification: {
+      category: "bugs",
+      subcategory: "state-loss",
+      tags: ["sync"],
+      confidence_bucket: "medium",
+    },
+  })
+  assert.match(text, /Category: bugs/)
+  assert.match(text, /Subcategory: state-loss/)
+  assert.match(text, /Tags: sync/)
 })
 
 test("review-flagged classification category/subcategory/tags are omitted", () => {
@@ -87,14 +109,26 @@ test("evidence quotes are excluded", () => {
   assert.doesNotMatch(text, /quote/i)
 })
 
-test("repro markers are de-duplicated and sorted", () => {
-  const text = buildClassificationAwareEmbeddingText({
+test("repro markers count: emitted only when count >= 2", () => {
+  // Schema reality: bug_fingerprints.repro_markers is `integer` (count),
+  // not `text[]` (list). Helper now matches.
+  const lowCount = buildClassificationAwareEmbeddingText({
     title: "A",
-    bugFingerprint: {
-      repro_markers: ["intermittent", "always", "always", " sometimes "],
-    },
+    bugFingerprint: { repro_markers: 1 },
   })
-  assert.match(text, /Repro markers: always, intermittent, sometimes/)
+  assert.doesNotMatch(lowCount, /Repro markers/)
+
+  const zeroCount = buildClassificationAwareEmbeddingText({
+    title: "A",
+    bugFingerprint: { repro_markers: 0 },
+  })
+  assert.doesNotMatch(zeroCount, /Repro markers/)
+
+  const highCount = buildClassificationAwareEmbeddingText({
+    title: "A",
+    bugFingerprint: { repro_markers: 5 },
+  })
+  assert.match(highCount, /Repro markers: 5/)
 })
 
 test("summary is truncated to bounded length", () => {
@@ -115,4 +149,66 @@ test("tag sorting is stable ascii order", () => {
     },
   })
   assert.match(text, /Tags: A, a, b/)
+})
+
+// ============================================================================
+// bucketConfidence — numeric and string-numeric inputs
+// ============================================================================
+
+test("bucketConfidence: high boundary at 0.80 inclusive", () => {
+  assert.equal(bucketConfidence(0.8), "high")
+  assert.equal(bucketConfidence(0.95), "high")
+  assert.equal(bucketConfidence(1.0), "high")
+})
+
+test("bucketConfidence: medium range [0.50, 0.80)", () => {
+  assert.equal(bucketConfidence(0.5), "medium")
+  assert.equal(bucketConfidence(0.65), "medium")
+  // Just below 0.80
+  assert.equal(bucketConfidence(0.7999), "medium")
+})
+
+test("bucketConfidence: low below 0.50", () => {
+  assert.equal(bucketConfidence(0.0), "low")
+  assert.equal(bucketConfidence(0.49), "low")
+})
+
+test("bucketConfidence: numeric strings are coerced (PostgREST returns numeric as string)", () => {
+  // Critical: the production schema returns `classifications.confidence`
+  // (numeric(3,2)) as a JSON string like "0.80" — the previous
+  // implementation's HIGH_CONFIDENCE_VALUES set lookup never matched
+  // these and silently reported 0% high-confidence forever.
+  assert.equal(bucketConfidence("0.80"), "high")
+  assert.equal(bucketConfidence("0.65"), "medium")
+  assert.equal(bucketConfidence("0.20"), "low")
+})
+
+test("bucketConfidence: null/undefined/non-finite map to 'unknown'", () => {
+  assert.equal(bucketConfidence(null), "unknown")
+  assert.equal(bucketConfidence(undefined), "unknown")
+  assert.equal(bucketConfidence("not-a-number"), "unknown")
+  assert.equal(bucketConfidence(Number.NaN), "unknown")
+})
+
+// ============================================================================
+// canUseTaxonomySignals — exported gate
+// ============================================================================
+
+test("canUseTaxonomySignals: gates exactly as documented", () => {
+  // High + not flagged → use
+  assert.equal(canUseTaxonomySignals({ confidence_bucket: "high" }), true)
+  // Medium + not flagged → use (same as helper internal behavior)
+  assert.equal(canUseTaxonomySignals({ confidence_bucket: "medium" }), true)
+  // Low → reject
+  assert.equal(canUseTaxonomySignals({ confidence_bucket: "low" }), false)
+  // Unknown → reject
+  assert.equal(canUseTaxonomySignals({ confidence_bucket: "unknown" }), false)
+  // High but flagged → reject
+  assert.equal(
+    canUseTaxonomySignals({ confidence_bucket: "high", review_flagged: true }),
+    false,
+  )
+  // null/undefined classification → reject
+  assert.equal(canUseTaxonomySignals(null), false)
+  assert.equal(canUseTaxonomySignals(undefined), false)
 })
