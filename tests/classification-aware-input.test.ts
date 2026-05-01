@@ -301,6 +301,65 @@ test("tier ordering: Tier 1 (primary) → Tier 2 (secondary) → Tier 3 (support
   }
 })
 
+test("tier ordering: exact line-by-line content match (stricter form)", () => {
+  // Companion to the regex-form tier-ordering test above. The regex
+  // form catches "is this line a Title:?" but is forgiving on the
+  // exact text — a reformatted Title (e.g. trimmed differently or
+  // with extra whitespace) would still pass. This deepEqual form
+  // pins the exact full output for a fully-populated input.
+  //
+  // Both forms exist intentionally:
+  //   - regex form: structural pin (right kind of line in the right
+  //     position), forgives content evolution
+  //   - deepEqual form: literal pin (exact bytes), forgives nothing
+  //     — catches accidental whitespace, formatting, or content drift
+  //
+  // If the helper's output text shape ever changes intentionally, BOTH
+  // tests must update — that double-update is the v3-algorithm-signature
+  // change signal documented at the top of classification-aware-input.ts.
+  const text = buildClassificationAwareEmbeddingText({
+    title: "T",
+    body: "B",
+    topic: "performance",
+    classification: {
+      category: "stability",
+      subcategory: "timeout",
+      tags: ["beta", "alpha"],
+      severity: "high",
+      reproducibility: "always",
+      impact: "single-user",
+      confidence_bucket: "high",
+    },
+    bugFingerprint: {
+      cli_version: "1.2.3",
+      os: "macos",
+      shell: "zsh",
+      editor: "vscode",
+      model_id: "gpt-4o",
+      error_code: "E1",
+      top_stack_frame: "frame",
+      repro_markers: 2,
+    },
+  })
+
+  assert.deepEqual(text.split("\n"), [
+    "Title: T",
+    "Summary: B",
+    "Topic: performance",
+    "Category: stability",
+    "Subcategory: timeout",
+    "Tags: alpha, beta",
+    "Severity: high",
+    "Reproducibility: always",
+    "Impact: single-user",
+    "Confidence: high",
+    "Environment: cli=1.2.3 os=macos shell=zsh editor=vscode model=gpt-4o",
+    "Error: E1",
+    "Stack: frame",
+    "Repro markers: 2",
+  ])
+})
+
 test("Environment collapse: 5 fingerprint fields → ONE Environment line, not five", () => {
   const text = buildClassificationAwareEmbeddingText({
     title: "A",
