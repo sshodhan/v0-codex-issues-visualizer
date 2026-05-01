@@ -336,7 +336,7 @@ Tuning rationale (kept for future reviewers): with the current corpus singletons
 
 | Recorded | total_clusters | singleton_rate | coherent_cluster_rate | mixed_cluster_rate | family_coverage | semantic:% | title:% |
 |---|---|---|---|---|---|---|---|
-| YYYY-MM-DD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| 2026-05-01 | 488 | 95.9% | 13.7% | 0.0% | 76.2% | 3.9% | 96.1% |
 
 ---
 
