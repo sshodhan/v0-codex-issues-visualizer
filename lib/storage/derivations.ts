@@ -1,5 +1,6 @@
 import type { createAdminClient } from "@/lib/supabase/admin"
 import { CURRENT_VERSIONS, LEXICON_VERSION } from "@/lib/storage/algorithm-versions"
+import { emitEmbeddingStaleMarkerIfNeeded } from "@/lib/storage/embedding-staleness-marker"
 
 // The only module permitted to write to the derivation layer.
 // Every write is stamped with algorithm_version; derivations are immutable
@@ -8,6 +9,24 @@ import { CURRENT_VERSIONS, LEXICON_VERSION } from "@/lib/storage/algorithm-versi
 // See docs/ARCHITECTURE.md v10 §§3.1b, 5.2, 7.4.
 
 type AdminClient = ReturnType<typeof createAdminClient>
+
+/**
+ * Look up the `observation_id` for a given classification_id. Used
+ * by recordClassificationReview to find the observation a review
+ * targets, so we can emit a staleness marker for the right embedding.
+ */
+async function observationIdForClassification(
+  supabase: AdminClient,
+  classificationId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("classifications")
+    .select("observation_id")
+    .eq("id", classificationId)
+    .maybeSingle()
+  if (error || !data) return null
+  return (data as { observation_id: string | null }).observation_id ?? null
+}
 
 export type SentimentLabel = "positive" | "negative" | "neutral"
 
@@ -164,6 +183,29 @@ export async function recordClassification(
     console.error("[derivations] record_classification failed:", error)
     return null
   }
+
+  // Phase 4 staleness marker: if this observation already has an
+  // embedding at the current observation_embedding algorithm version,
+  // the new classification means the embedding's content is stale.
+  // Emit a processing_events row so the next admin cluster rebuild
+  // (with ?include_stale=true) re-embeds this observation. Same
+  // pattern for recordClassificationReview below — both paths
+  // invalidate the embedding's content.
+  //
+  // Best-effort: a failure here doesn't block the classification
+  // write, but the embedding will remain stale until manually
+  // re-embedded. Convergence model documented in
+  // docs/CLASSIFICATION_EVOLUTION_PLAN.md Phase 4 §"Stage 4a /
+  // Stage 2 sequencing model".
+  if (payload.observation_id) {
+    await emitEmbeddingStaleMarkerIfNeeded(
+      supabase,
+      payload.observation_id,
+      "classification_updated",
+      data as string | null, // classification_id returned by the RPC
+    )
+  }
+
   return data as string | null
 }
 
@@ -193,5 +235,24 @@ export async function recordClassificationReview(
     console.error("[derivations] record_classification_review failed:", error)
     return null
   }
+
+  // Phase 4 staleness marker. A review override changes what the
+  // v3 helper considers the "effective" category/subcategory for the
+  // observation, so the existing embedding is now stale. Resolve
+  // observation_id from classification_id (review_payload doesn't
+  // carry it directly), then emit. Best-effort.
+  const observationId = await observationIdForClassification(supabase, classificationId)
+  if (observationId) {
+    await emitEmbeddingStaleMarkerIfNeeded(
+      supabase,
+      observationId,
+      "review_updated",
+      // The RPC returns the new review_id; if it's null/unavailable
+      // we fall back to passing the classification_id so the marker
+      // still chains to the upstream identifier.
+      (data as string | null) ?? classificationId,
+    )
+  }
+
   return data as string | null
 }
