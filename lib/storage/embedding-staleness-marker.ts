@@ -53,9 +53,16 @@ export async function emitEmbeddingStaleMarkerIfNeeded(
 ): Promise<void> {
   if (!observationId) return
 
+  // Existence check only — we just need to know "does a v3 embedding
+  // exist for this observation at the current algorithm version?".
+  // Schema note: `observation_embeddings` has `computed_at` (not
+  // `created_at` — the column doesn't exist; verified
+  // scripts/012_semantic_clustering.sql:7-19). To avoid coupling this
+  // existence check to ANY specific timestamp column, we select the
+  // primary key `id` which is guaranteed to exist on every row.
   const { data, error } = await supabase
     .from("observation_embeddings")
-    .select("created_at")
+    .select("id")
     .eq("observation_id", observationId)
     .eq("algorithm_version", CURRENT_VERSIONS.observation_embedding)
     .maybeSingle()
