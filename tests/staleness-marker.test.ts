@@ -74,7 +74,7 @@ test("emits stale marker when v3 embedding exists for the obs", async () => {
   const mock = makeMockSupabase({
     selectResponses: {
       observation_embeddings: {
-        data: { created_at: "2026-04-01T00:00:00Z" },
+        data: { id: "embedding-row-1" },
         error: null,
       },
     },
@@ -163,7 +163,7 @@ test("review_updated reason + null trigger_id is handled", async () => {
   const mock = makeMockSupabase({
     selectResponses: {
       observation_embeddings: {
-        data: { created_at: "2026-04-01T00:00:00Z" },
+        data: { id: "embedding-row-1" },
         error: null,
       },
     },
@@ -204,7 +204,7 @@ test("insert error logs but doesn't throw", async () => {
   const mock = makeMockSupabase({
     selectResponses: {
       observation_embeddings: {
-        data: { created_at: "2026-04-01T00:00:00Z" },
+        data: { id: "embedding-row-1" },
         error: null,
       },
     },
