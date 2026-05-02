@@ -18,6 +18,35 @@ import { logServer, logServerError } from "@/lib/error-tracking/server-logger"
 // orchestrator without importing the constants module directly.
 export { MIN_IMPACT_SCORE, clampMinImpact }
 
+/**
+ * Apply the impact-score threshold filter to a PostgREST query builder,
+ * with NULL-aware semantics:
+ *
+ *   threshold > 0  → `.gte("impact_score", threshold)` (strict gating;
+ *                    NULL impact_score rows are EXCLUDED, matching the
+ *                    daily cron's "skip low-priority obs" intent)
+ *   threshold = 0  → no filter at all (process EVERYTHING, including
+ *                    rows where impact_score IS NULL)
+ *
+ * The NULL handling is what was missing before this helper existed.
+ * Postgres semantics: `NULL >= 0` evaluates to NULL, which is FALSY in
+ * a WHERE clause — so a naive `.gte("impact_score", 0)` would silently
+ * exclude every row that hasn't had an impact_score computed yet
+ * (~92% of unclassified obs in the 2026-05 corpus snapshot, per the
+ * Phase 4 4a-coverage-push diagnostic).
+ *
+ * The operator-facing meaning of "threshold = 0" must be "process all
+ * candidates" — not "process candidates whose impact happens to be
+ * non-null and >= 0". This helper enforces that.
+ */
+function applyImpactThreshold<T>(query: T, threshold: number): T {
+  if (threshold > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (query as any).gte("impact_score", threshold) as T
+  }
+  return query
+}
+
 // Shared orchestrator for the classify-backfill flow. Two callers:
 //   - /api/cron/classify-backfill (daily Vercel cron, CRON_SECRET gate)
 //   - /api/admin/classify-backfill (operator one-shot, ADMIN_SECRET gate)
@@ -76,12 +105,14 @@ export async function runClassifyBackfill(
   const shouldRefreshMvs = options.refreshMvs !== false
   const threshold = clampMinImpact(options.minImpactScore)
 
-  const { data: rows, error: queryErr } = await supabase
-    .from("mv_observation_current")
-    .select(BACKFILL_SELECT_CLAUSE)
-    .is("llm_classified_at", null)
-    .eq("is_canonical", true)
-    .gte("impact_score", threshold)
+  const { data: rows, error: queryErr } = await applyImpactThreshold(
+    supabase
+      .from("mv_observation_current")
+      .select(BACKFILL_SELECT_CLAUSE)
+      .is("llm_classified_at", null)
+      .eq("is_canonical", true),
+    threshold,
+  )
     .order("impact_score", { ascending: false })
     .order("published_at", { ascending: false, nullsFirst: false })
     .limit(limit)
@@ -178,12 +209,14 @@ export async function countBackfillCandidates(
   opts: CountBackfillOptions = {},
 ): Promise<number> {
   const threshold = clampMinImpact(opts.minImpactScore)
-  let q = supabase
-    .from("mv_observation_current")
-    .select("observation_id", { count: "exact", head: true })
-    .is("llm_classified_at", null)
-    .eq("is_canonical", true)
-    .gte("impact_score", threshold)
+  let q = applyImpactThreshold(
+    supabase
+      .from("mv_observation_current")
+      .select("observation_id", { count: "exact", head: true })
+      .is("llm_classified_at", null)
+      .eq("is_canonical", true),
+    threshold,
+  )
   if (opts.publishedSince) {
     q = q.gte("published_at", opts.publishedSince.toISOString())
   }
