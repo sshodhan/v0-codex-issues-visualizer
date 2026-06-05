@@ -31,6 +31,7 @@ import { PipelineFreshnessStrip } from "@/components/dashboard/pipeline-freshnes
 import { DashboardStoryView } from "@/components/dashboard/dashboard-story-view"
 import { V3View } from "@/components/dashboard/v3-view"
 import { QuickStatsBar } from "@/components/dashboard/quick-stats-bar"
+import { ClassificationOverviewCard } from "@/components/dashboard/classification-overview-card"
 
 import { ClusterTrustRibbon } from "@/components/dashboard/cluster-trust-ribbon"
 import { TopFamiliesSection } from "@/components/dashboard/family-card"
@@ -582,6 +583,13 @@ const handleHeroLlmCategoryDrill = (
   }
   }
 
+  const handleOpenClassificationsTab = () => {
+    setActiveTab("classifications")
+    if (typeof window !== "undefined") {
+      requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }))
+    }
+  }
+
   const handleOpenDashboardFromStoryAtlas = () => {
     setActiveTab("v3")
     if (typeof window !== "undefined") {
@@ -953,6 +961,14 @@ const handleHeroLlmCategoryDrill = (
                 windowLabelForCopy={fingerprintWindowLabel}
                 onFilter={(compoundKey) => handleFilterChange({ compound_key: compoundKey })}
                 variant="v2"
+              />
+              <ClassificationOverviewCard
+                rows={stats.llmCategoryBreakdown ?? []}
+                classifiedCount={stats.llmClassifiedInWindow ?? 0}
+                pendingCount={stats.llmPendingInWindow ?? 0}
+                selectedSlug={llmCategoryFromUrl && llmCategoryFromUrl !== "all" ? llmCategoryFromUrl : null}
+                onOpenClassifications={handleOpenClassificationsTab}
+                onOpenLlmCategory={handleStoryLlmTriage}
               />
               {nowNextCrosswalk && (
                 <Card className="border-primary/20 bg-primary/5">
