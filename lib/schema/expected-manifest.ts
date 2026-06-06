@@ -409,11 +409,16 @@ export const EXPECTED_MANIFEST: ExpectedManifest = {
     // 012 added these two registry kinds. Bumped v1 → v2 by 034 to
     // change the embedding input from prose-only (`Title: …\nSummary: …`)
     // to structured-prefix (`[Type: bug] [Error: TIMEOUT] [Component: …]
-    // \nTitle: …\nSummary: …`). v1 rows remain in observation_embeddings
-    // for replay; v2 rows compute on demand once the next admin rebuild
-    // runs. See scripts/034_observation_embedding_v2_bump.sql and the
-    // 2026-04 production diagnostic that motivated the bump.
-    observation_embedding: "v2",
+    // \nTitle: …\nSummary: …`). 035 bumped v2 → v3 to replace the
+    // structured-prefix approach with classification-aware tier-ordered
+    // text (Title → Summary → Topic → gated LLM Category/Subcategory/Tags
+    // → Tier 2 scalars → collapsed Environment line → Error/Stack/Repro
+    // markers) — see lib/embeddings/classification-aware-input.ts and
+    // PR #199. v1/v2 rows remain in observation_embeddings for replay;
+    // v3 rows compute on demand once the next admin rebuild runs. See
+    // scripts/035_observation_embedding_v3_bump.sql and
+    // docs/CLASSIFICATION_EVOLUTION_PLAN.md Phase 4.
+    observation_embedding: "v3",
     // Bumped v1 → v2 alongside the deterministic-fallback labeller in
     // lib/storage/cluster-label-fallback.ts (Topic+error fallback,
     // small→large LLM escalation). See lib/storage/algorithm-versions.ts
