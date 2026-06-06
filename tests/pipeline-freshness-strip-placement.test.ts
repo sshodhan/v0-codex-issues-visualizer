@@ -9,13 +9,11 @@ import { resolve } from "node:path"
 // execute .tsx files or render React components. Instead, this file asserts
 // the placement contract at the source level:
 //
-//   1. The strip must be imported and mounted in app/page.tsx.
-//   2. It must live ABOVE the loading/error/empty branching inside <main>,
-//      so "no issues" vs "pipeline not caught up" is visible in every state.
-//   3. It must be reachable from the triage context (Classifications tab).
-//      Since all tabs share the same <main>, a single mount above the tab
-//      branching satisfies this — the test enforces that invariant.
-//   4. It must be passed the prerequisite + stats-error signals (not just
+//   1. The strip must be imported and mounted in app/page.tsx, inside <main>.
+//   2. It is scoped to the Dashboard tab — mounted inside
+//      <TabsContent value="dashboard"> (under the Hot themes area), below the
+//      stats-loading branch — rather than as a global header above the tabs.
+//   3. It must be passed the prerequisite + stats-error signals (not just
 //      a single status string).
 //
 // Failure messages below point the reader at the exact property or pattern
@@ -48,15 +46,20 @@ test("placement: PipelineFreshnessStrip is mounted inside <main>", async () => {
   )
 })
 
-test("placement: strip is rendered ABOVE the loading/error/empty branching", async () => {
+test("placement: strip is mounted inside the Dashboard tab content", async () => {
   const src = await readSource("app/page.tsx")
   const stripIdx = src.indexOf("<PipelineFreshnessStrip")
-  const branchingIdx = src.indexOf("{statsLoading ?")
+  const dashboardTabIdx = src.indexOf('<TabsContent value="dashboard"')
+  // The next tab marks the end of the dashboard tab's content block.
+  const nextTabIdx = src.indexOf('<TabsContent value="v3"')
   assert.ok(stripIdx > -1, "strip not found")
-  assert.ok(branchingIdx > -1, "expected statsLoading branch not found")
   assert.ok(
-    stripIdx < branchingIdx,
-    "strip must precede the loading/error/empty branching so it is visible in every state (not gated by stats being loaded)",
+    dashboardTabIdx > -1 && nextTabIdx > dashboardTabIdx,
+    "dashboard tab block not found",
+  )
+  assert.ok(
+    dashboardTabIdx < stripIdx && stripIdx < nextTabIdx,
+    "strip must be mounted inside the Dashboard TabsContent (dashboard-scoped, not a global header)",
   )
 })
 
@@ -91,31 +94,28 @@ test("placement: strip receives prereq, pendingReviewCount, statsError, and wind
   }
 })
 
-test("placement: triage context (Classifications tab) inherits the same strip via shared <main>", async () => {
+test("placement: strip is scoped inside the Tabs block, not a global header above the tabs", async () => {
   const src = await readSource("app/page.tsx")
-  // All three tabs live inside the same Tabs block, which itself sits
-  // inside the <main> that hosts the strip. Verify the structural chain:
-  //   <main> > <PipelineFreshnessStrip> > … > <TabsContent value="classifications">
-  const mainOpenIdx = src.indexOf("<main")
+  // The strip lives inside the <Tabs> block (dashboard-scoped), not as a
+  // shared header rendered above the tab branching for every tab.
+  const tabsIdx = src.indexOf("<Tabs ")
   const stripIdx = src.indexOf("<PipelineFreshnessStrip")
-  const classificationsTabIdx = src.indexOf('<TabsContent value="classifications"')
   const mainCloseIdx = src.lastIndexOf("</main>")
+  assert.ok(tabsIdx > -1 && stripIdx > -1, "could not locate <Tabs> and the strip")
   assert.ok(
-    mainOpenIdx < stripIdx &&
-      stripIdx < classificationsTabIdx &&
-      classificationsTabIdx < mainCloseIdx,
-    "strip must appear above the classifications tab inside the shared <main> scope",
+    tabsIdx < stripIdx && stripIdx < mainCloseIdx,
+    "strip must live inside the <Tabs> block (tab-scoped), not as a header above all tabs",
   )
 })
 
-test("placement: dashboard tab has access to the strip (strip precedes TabsContent dashboard)", async () => {
+test("placement: strip renders below the stats-loading branch (loaded-dashboard view)", async () => {
   const src = await readSource("app/page.tsx")
   const stripIdx = src.indexOf("<PipelineFreshnessStrip")
-  const dashboardTabIdx = src.indexOf('<TabsContent value="dashboard"')
-  assert.ok(stripIdx > -1 && dashboardTabIdx > -1)
+  const branchingIdx = src.indexOf("{statsLoading ?")
+  assert.ok(stripIdx > -1 && branchingIdx > -1, "strip or statsLoading branch not found")
   assert.ok(
-    stripIdx < dashboardTabIdx,
-    "strip must appear above the dashboard tab",
+    branchingIdx < stripIdx,
+    "strip is mounted in the loaded-stats Dashboard view, after the statsLoading branch",
   )
 })
 

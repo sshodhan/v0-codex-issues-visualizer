@@ -16,8 +16,16 @@ function validateAsOfParam(asOfRaw: string | null): {
     return { valid: true, parsed: null }
   }
 
+  // Enforce ISO8601 *format* before delegating to Date. `new Date()` is
+  // permissive — it happily parses "2026/04/21" and "April 21, 2026" —
+  // so a bare NaN check lets non-ISO8601 strings through. The leading
+  // regex pins YYYY-MM-DD with an optional time/zone suffix; the NaN
+  // check below still catches format-valid-but-impossible dates like
+  // "2026-13-45T99:99:99.999Z".
+  const ISO8601_RE =
+    /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/
   const parsed = new Date(asOfRaw)
-  if (Number.isNaN(parsed.getTime())) {
+  if (!ISO8601_RE.test(asOfRaw) || Number.isNaN(parsed.getTime())) {
     return {
       valid: false,
       parsed: null,

@@ -242,27 +242,27 @@ test("buildEmbeddingInputText v2: empty signals object → identical to no-signa
 })
 
 // ============================================================================
-// v2 algorithm-version invalidation — guards the migration contract
+// v3 algorithm-version invalidation — guards the migration contract
 // ============================================================================
 
-// The v1 → v2 invalidation is implicit: ensureEmbedding queries
+// The v2 → v3 invalidation is implicit: ensureEmbedding queries
 // observation_embeddings filtered by `algorithm_version =
-// CURRENT_VERSIONS.observation_embedding`. When CURRENT_VERSIONS is "v2",
-// existing v1 rows must not match — they're effectively invisible to
-// the cache check, forcing recomputeObservationEmbedding to write a v2
+// CURRENT_VERSIONS.observation_embedding`. When CURRENT_VERSIONS is "v3",
+// existing v1/v2 rows must not match — they're effectively invisible to
+// the cache check, forcing recomputeObservationEmbedding to write a v3
 // row. This test set guards both ends of that contract: (a) the
-// version constant is actually v2, and (b) ensureEmbedding's source
+// version constant is actually v3, and (b) ensureEmbedding's source
 // still filters on the current version (no accidental refactor that
 // drops the constraint).
 
-test("v2 invalidation: CURRENT_VERSIONS.observation_embedding === 'v2'", () => {
-  // If this assertion ever fails, every other v2-related claim in
-  // this PR (and the migration script 034) is invalid — pin it
+test("v3 invalidation: CURRENT_VERSIONS.observation_embedding === 'v3'", () => {
+  // If this assertion ever fails, every other v3-related claim in
+  // this PR (and the migration script 035) is invalid — pin it
   // explicitly so a future un-bump is caught at test time.
-  assert.equal(CURRENT_VERSIONS.observation_embedding, "v2")
+  assert.equal(CURRENT_VERSIONS.observation_embedding, "v3")
 })
 
-test("v2 invalidation: ensureEmbedding's cache lookup filters by CURRENT_VERSIONS.observation_embedding", () => {
+test("v3 invalidation: ensureEmbedding's cache lookup filters by CURRENT_VERSIONS.observation_embedding", () => {
   // Static-source check (cheap, no Supabase mocking required). Reads
   // semantic-clusters.ts and asserts the cache lookup contains both:
   //   .from("observation_embeddings")

@@ -71,7 +71,11 @@ test("empty path: 0 observations but pipeline caught up — distinguishes 'no is
   assert.equal(vm.metrics.classified.status, "unknown")
 })
 
-test("degraded path: pending classification surfaces the classify-backfill CTA", () => {
+test("pending classification stays healthy with informational subtext (no degraded nag)", () => {
+  // Pending backlog is the steady state — the corpus is perpetually
+  // behind on classification — so it surfaces as informational subtext
+  // on a healthy strip rather than a degraded warning. Only staleness
+  // (> 24h since last scrape) downgrades. See pipeline-freshness.ts:197.
   const vm = derivePipelineFreshness(
     base({
       prereq: healthyPrereq({
@@ -80,15 +84,16 @@ test("degraded path: pending classification surfaces the classify-backfill CTA",
       }),
     }),
   )
-  assert.equal(vm.state, "degraded")
-  assert.equal(vm.reason, "pending-classification")
-  assert.ok(vm.cta, "degraded path must surface a CTA")
-  assert.match(vm.cta!.href, /classify-backfill/)
+  assert.equal(vm.state, "healthy")
+  assert.equal(vm.reason, "all-caught-up")
+  assert.equal(vm.cta, null, "healthy strip does not nag with a CTA")
+  assert.match(vm.subtext ?? "", /5 awaiting classification/)
+  // The ratio metric still flags attention so the number stays visible.
   assert.equal(vm.metrics.classified.status, "attention")
   assert.equal(vm.metrics.classified.value, "5 / 10 (50%)")
 })
 
-test("degraded path: pending classification AND clustering marks reason accordingly", () => {
+test("pending classification AND clustering both surface in informational subtext", () => {
   const vm = derivePipelineFreshness(
     base({
       prereq: healthyPrereq({
@@ -99,11 +104,16 @@ test("degraded path: pending classification AND clustering marks reason accordin
       }),
     }),
   )
-  assert.equal(vm.state, "degraded")
-  assert.equal(vm.reason, "pending-classification-and-clustering")
+  assert.equal(vm.state, "healthy")
+  assert.equal(vm.reason, "all-caught-up")
+  assert.match(vm.subtext ?? "", /6 awaiting classification/)
+  assert.match(vm.subtext ?? "", /3 awaiting clustering/)
 })
 
-test("degraded path: last classify-backfill failed is surfaced as a flag + reason", () => {
+test("last classify-backfill failure is surfaced as a flag, not a degraded state", () => {
+  // A failed backfill sets the flag (so the renderer can annotate the
+  // classified metric) but no longer downgrades the whole strip — scrape
+  // freshness is what governs healthy/degraded now.
   const vm = derivePipelineFreshness(
     base({
       prereq: healthyPrereq({
@@ -111,8 +121,8 @@ test("degraded path: last classify-backfill failed is surfaced as a flag + reaso
       }),
     }),
   )
-  assert.equal(vm.state, "degraded")
-  assert.equal(vm.reason, "classify-backfill-failed")
+  assert.equal(vm.state, "healthy")
+  assert.equal(vm.reason, "all-caught-up")
   assert.equal(vm.flags.lastClassifyBackfillFailed, true)
 })
 
@@ -120,8 +130,8 @@ test("degraded path: stale last-scrape downgrades a caught-up pipeline", () => {
   const vm = derivePipelineFreshness(
     base({
       prereq: healthyPrereq({
-        // 3 hours ago — well past the 120-min default SLA.
-        lastScrape: { at: "2026-04-24T09:00:00Z", status: "completed" },
+        // ~28 hours ago — past the 1440-min (24h) default SLA.
+        lastScrape: { at: "2026-04-23T08:00:00Z", status: "completed" },
       }),
     }),
   )
@@ -231,35 +241,18 @@ const NON_HEALTHY_SCENARIOS: Array<{
     name: "openai-missing-with-observations",
     inputs: () => base({ prereq: healthyPrereq({ openaiConfigured: false }) }),
   },
-  {
-    name: "pending-classification",
-    inputs: () =>
-      base({
-        prereq: healthyPrereq({ classifiedCount: 4, pendingClassification: 6 }),
-      }),
-  },
-  {
-    name: "pending-clustering",
-    inputs: () =>
-      base({
-        prereq: healthyPrereq({ clusteredCount: 3, pendingClustering: 7 }),
-      }),
-  },
-  {
-    name: "classify-backfill-failed",
-    inputs: () =>
-      base({
-        prereq: healthyPrereq({
-          lastClassifyBackfill: { at: "2026-04-24T11:00:00Z", status: "failed" },
-        }),
-      }),
-  },
+  // NOTE: pending-classification, pending-clustering, and
+  // classify-backfill-failed are deliberately NOT in this list. They now
+  // surface as informational subtext on a *healthy* strip rather than as
+  // non-healthy states (see pipeline-freshness.ts:197). Staleness is the
+  // only backlog-adjacent signal that still downgrades.
   {
     name: "stale-scrape",
     inputs: () =>
       base({
         prereq: healthyPrereq({
-          lastScrape: { at: "2026-04-24T08:00:00Z", status: "completed" },
+          // ~28h ago — past the 24h freshness SLA.
+          lastScrape: { at: "2026-04-23T08:00:00Z", status: "completed" },
         }),
       }),
   },
@@ -356,7 +349,12 @@ test("invariant: all five legal states are reachable via the public input surfac
   ) // empty
   reached.add(
     derivePipelineFreshness(
-      base({ prereq: healthyPrereq({ classifiedCount: 4, pendingClassification: 6 }) }),
+      base({
+        // Staleness (> 24h) is now the only path to `degraded`.
+        prereq: healthyPrereq({
+          lastScrape: { at: "2026-04-23T08:00:00Z", status: "completed" },
+        }),
+      }),
     ).state,
   ) // degraded
   reached.add(
@@ -449,12 +447,11 @@ test("formatTimestamp is used for the last-scrape display value", () => {
 // the banner needs to surface both numbers AND the CTA behavior must match
 // what the admin classify-backfill panel will actually do.
 
-test("banner: when every pending row is below impact threshold, suppress the Run CTA and explain", () => {
+test("banner: when every pending row is below impact threshold, explain in informational subtext", () => {
   // Production repro: 110 awaiting classification, 0 high-impact. The
-  // banner must name the threshold so a reviewer understands the 0/110
-  // mismatch before clicking into the admin panel. The CTA falls back
-  // to "View classify-backfill policy" (not "Run…") so the click-
-  // through doesn't dead-end on the panel's "All caught up" message.
+  // strip stays healthy (pending backlog is not a degraded state), but
+  // the subtext names the below-threshold count so a reviewer
+  // understands why the backfill panel reports "all caught up".
   const vm = derivePipelineFreshness(
     base({
       prereq: healthyPrereq({
@@ -465,18 +462,19 @@ test("banner: when every pending row is below impact threshold, suppress the Run
       }),
     }),
   )
-  assert.equal(vm.state, "degraded")
-  assert.equal(vm.reason, "pending-classification")
-  assert.match(vm.subtext ?? "", /below impact-\d+ threshold/)
-  assert.ok(vm.cta, "must still surface *some* CTA so the reviewer has a next step")
-  assert.match(vm.cta!.label, /policy/i)
-  assert.doesNotMatch(vm.cta!.label, /^Run /)
+  assert.equal(vm.state, "healthy")
+  assert.equal(vm.reason, "all-caught-up")
+  assert.match(
+    vm.subtext ?? "",
+    /110 previously classified below review threshold \(impact-\d+\)/,
+  )
+  assert.equal(vm.cta, null, "healthy strip does not nag with a CTA")
 })
 
 test("banner: when pending is split between high-impact and below-threshold, show both counts", () => {
-  // 110 pending total, 6 high-impact. The Run CTA is valid (backfill has
-  // 6 rows of work) and the reviewer needs to know the other 104 are
-  // not reachable via backfill without a policy change.
+  // 110 pending total, 6 high-impact. Subtext breaks out the 6
+  // high-impact rows (reachable by backfill) from the 104 below-threshold
+  // rows (not reachable without a policy change). Still a healthy strip.
   const vm = derivePipelineFreshness(
     base({
       prereq: healthyPrereq({
@@ -487,11 +485,12 @@ test("banner: when pending is split between high-impact and below-threshold, sho
       }),
     }),
   )
-  assert.equal(vm.state, "degraded")
-  assert.match(vm.subtext ?? "", /110 awaiting classification \(6 high-impact\)/)
-  assert.ok(vm.cta)
-  assert.match(vm.cta!.href, /classify-backfill/)
-  assert.equal(vm.cta!.label, "Run classify-backfill")
+  assert.equal(vm.state, "healthy")
+  assert.match(vm.subtext ?? "", /6 awaiting classification/)
+  assert.match(
+    vm.subtext ?? "",
+    /104 previously classified below review threshold \(impact-\d+\)/,
+  )
 })
 
 test("banner: when high-impact and total pending match, copy stays single-number (no regression)", () => {

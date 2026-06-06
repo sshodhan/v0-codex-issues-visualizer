@@ -252,7 +252,7 @@ test("global filters apply days filter relative to as_of anchor", () => {
 
   const rows: ObservationRow[] = [
     { id: "obs-1", category_id: "cat-1", published_at: "2026-04-20T10:00:00.000Z" }, // 1 day ago
-    { id: "obs-2", category_id: "cat-1", published_at: "2026-04-14T10:00:00.000Z" }, // 7 days ago
+    { id: "obs-2", category_id: "cat-1", published_at: "2026-04-14T12:00:00.000Z" }, // exactly 7 days ago (boundary-inclusive)
     { id: "obs-3", category_id: "cat-1", published_at: "2026-04-01T10:00:00.000Z" }, // 20 days ago
   ]
 
