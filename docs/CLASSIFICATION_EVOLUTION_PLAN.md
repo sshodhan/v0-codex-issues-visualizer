@@ -425,7 +425,16 @@ with at-most one rebuild's worth of lag after the latest input
 change.
 ```
 
-**4a coverage co-requisite.** v3 embedding *quality* is bounded by 4a coverage. As of the Phase 3 baseline (2026-05-01), 4a coverage is 16% (78 / 487 active observations). The remaining 84% of v3 embeddings will fall through the gate and emit only Tier 1 minus LLM taxonomy — functionally a small upgrade over v2, but not the full v3 win. Phase 4 PR3 (the backfill UI) MUST NOT trigger v3 generation until 4a coverage is pushed to ≥ 80% via the existing classification admin tools. This is an operational track that runs in parallel with PR2 review, not a code change.
+**4a coverage co-requisite.** v3 embedding *quality* is bounded by 4a coverage. As of the Phase 3 baseline (2026-05-01), 4a coverage was 16% (78 / 487 active observations). The remaining 84% of v3 embeddings will fall through the gate and emit only Tier 1 minus LLM taxonomy — functionally a small upgrade over v2, but not the full v3 win. Phase 4 PR3 (the backfill UI) MUST NOT trigger v3 generation until 4a coverage is pushed to ≥ 80% via the existing classification admin tools. This is an operational track that runs in parallel with PR2 review, not a code change.
+
+> **Update (2026-06-06): coverage has REGRESSED to 10.9%, not improved.** The corpus grew ~4× (487 → 1,934 active observations) while the daily, `impact_score >= 6`-gated cron classified only ~3.7 obs/day — and the gate permanently excluded the below-threshold long tail (most of the 1,724 unclassified rows). The gap to the 80% PR3 gate is now **+1,338 observations**, not +312. Two responses: (1) the `classify-backfill` cron is now **impact-ungated and runs every 6 h** (≤40 obs/day, impact-DESC order) so it converges instead of regressing — see ARCHITECTURE.md §3.5; (2) a one-shot admin "Run until done" (`minImpactScore=0`, ~1,338 calls ≈ $7 at gpt-5-mini rates) clears the standing gap in hours rather than ~34 cron-days. PR3 apply-mode remains gated on ≥ 80%.
+
+**Stage 4a coverage history** (append-only — never edit historical rows; coverage = classified / active observations, active = ≥ 1 undetached `cluster_member`, measured via `docs/PHASE_4_4A_COVERAGE_RUNBOOK.md` Step 1):
+
+| Recorded | Classified | Active obs | Coverage | Gap to 80% | Notes |
+|---|---|---|---|---|---|
+| 2026-05-01 | 78 | 487 | 16.0% | +312 | Phase 3 baseline |
+| 2026-06-06 | 210 | 1,934 | 10.9% | +1,338 | Regressed under corpus growth + impact-gated daily cron. Cron changed to impact-ungated / every-6h in response. |
 
 **At-least-once consistency.** The stale-marker mechanism is at-least-once: extra re-embeds during a race window (classification write commits, marker emits, second classification write happens, rebuild runs once) are wasted work but produce a correct final state on the next rebuild. Embedding writes are idempotent so duplicate work doesn't produce duplicate rows.
 

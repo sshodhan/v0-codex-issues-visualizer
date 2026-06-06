@@ -1,8 +1,16 @@
 # Phase 4 4a Coverage Push — Operator Runbook
 
-**Goal:** push Stage 4a (LLM classification) coverage from the
-2026-05-01 baseline of **16%** (78 / 487 active observations) to
-**≥ 80%** before triggering the Phase 4 PR3 backfill UI.
+**Goal:** push Stage 4a (LLM classification) coverage to **≥ 80%**
+before triggering the Phase 4 PR3 backfill UI.
+
+> **Status (2026-06-06): coverage is 10.9% (210 / 1,934 active obs) and
+> has REGRESSED from the 2026-05-01 baseline of 16% (78 / 487)** — the
+> corpus grew ~4× while the impact-gated daily cron couldn't keep up.
+> The gap to 80% is now ~1,338 observations. The `classify-backfill`
+> cron has been changed to impact-ungated / every-6h so it stops
+> regressing; this runbook (a one-shot admin "Run until done") is still
+> the fast path to clear the standing gap. See the Stage 4a coverage
+> history table in the plan doc.
 
 **Why:** v3 embedding quality is bounded by 4a coverage. The Phase 4
 helper gates on `canUseTaxonomySignals` (confidence ≥ medium AND not
@@ -159,17 +167,16 @@ embedding generation runs against this output.
 
 ### Step 6 — record the post-push coverage
 
-Append a row to a coverage history table (or just commit a note in
-the plan doc). Format:
-
-```
-Date         Coverage  Classifications  Active obs  Notes
-2026-05-01   16.0%     78               487         Phase 3 baseline
-2026-05-XX   ##.#%     ###              ###         Pre-PR3 push
-```
+Append a row to the **Stage 4a coverage history** table in the plan
+doc (`docs/CLASSIFICATION_EVOLUTION_PLAN.md`, under "4a coverage
+co-requisite" in Phase 4). That table is the canonical, append-only
+log — never edit historical rows. Columns: Recorded · Classified ·
+Active obs · Coverage · Gap to 80% · Notes.
 
 This becomes the "we pushed coverage before generating v3 rows"
-breadcrumb when reading the plan doc later.
+breadcrumb when reading the plan doc later. As of the last reading
+(2026-06-06) coverage had *regressed* to 10.9% (210 / 1,934) — see
+that table for the gap math and the cron change that addresses it.
 
 ---
 
@@ -181,7 +188,9 @@ than schema-level deletes, which would corrupt the audit trail.
 
 **If the push needs to be paused:** simply stop calling the admin
 endpoint. Existing classifications stay; the queue stops draining.
-The daily cron continues to drain at 10 obs/run.
+The `classify-backfill` cron continues to drain on its own — now
+impact-ungated and every 6 h (≤ 40 obs/day, impact-DESC order), so it
+converges toward the gate over days instead of regressing.
 
 **If the push produces obviously-wrong classifications at scale:**
 - Mark them `review_flagged=true` via the reviewer surface (PR3 +
