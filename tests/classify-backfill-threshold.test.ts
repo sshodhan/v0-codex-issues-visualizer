@@ -13,8 +13,10 @@ import {
 // outside the documented 0..10 range.
 
 test("clampMinImpact returns the default when input is undefined", () => {
-  // The daily cron and the dashboard-banner path both hit this branch —
-  // they never pass an override, and must get the policy default.
+  // The dashboard-banner path hits this branch — it never passes an
+  // override and must get the policy default. (The classify-backfill
+  // cron now passes an explicit minImpactScore=0 to drain the long
+  // tail, so it no longer relies on this default — see the cron route.)
   assert.equal(clampMinImpact(undefined), MIN_IMPACT_SCORE)
 })
 

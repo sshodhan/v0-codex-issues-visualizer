@@ -3,9 +3,22 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { runClassifyBackfill } from "@/lib/classification/run-backfill"
 import { logServerError } from "@/lib/error-tracking/server-logger"
 
-// Daily Vercel-cron entry that catches up the long tail of unclassified
-// high-impact observations the ingest-time pipeline never reached
+// Vercel-cron entry (every 6h) that catches up the long tail of
+// unclassified observations the ingest-time pipeline never reached
 // (pre-fingerprint backfill rows, ingest-time classifier failures, etc.).
+//
+// IMPACT-UNGATED by default (minImpactScore=0). Stage 4a coverage is a
+// Phase-4 v3 prerequisite (docs/PHASE_4_4A_COVERAGE_RUNBOOK.md), and the
+// old `impact_score >= 6` gate permanently excluded the below-threshold
+// long tail — so as the corpus grew, coverage *regressed* (10.9% =
+// 210/1934 active obs as of 2026-06-06, down from 16% at the 2026-05-01
+// baseline). Rows are still processed in impact-DESC order, so high-impact
+// reports go first; the change is that low-impact rows are no longer
+// skipped forever. Override per-run with `?minImpactScore=` or globally
+// with the CLASSIFY_BACKFILL_MIN_IMPACT env var (clamped to [0, 10]).
+// Note: this only changes what THIS cron processes — the shared
+// MIN_IMPACT_SCORE policy default (dashboard banner, admin panel) is
+// unchanged.
 //
 // The orchestration (mv_observation_current query → buildBackfillCandidates
 // → processObservationClassificationQueue → MV refresh) lives in
@@ -17,8 +30,10 @@ import { logServerError } from "@/lib/error-tracking/server-logger"
 //
 // Budget: DEFAULT_LIMIT canonicals/run × ~3-5s/call must fit under
 // Vercel's plan-specific maxDuration (Hobby caps at 60s; Pro at 300s).
-// 10/run leaves headroom on Hobby; bump via ?limit= when on Pro, or use
-// the admin panel's "Run until done" loop to clear a backlog.
+// 10/run leaves headroom on Hobby; the every-6h cadence (4 runs/day = up
+// to 40 obs/day) is what keeps pace with corpus growth without risking
+// the per-run timeout. Bump via ?limit= when on Pro, or use the admin
+// panel's "Run until done" loop to clear a standing backlog faster.
 //
 // Run summary is logged to scrape_logs(source_id=null) so admin surfaces
 // can distinguish backfill activity from scrape activity. /api/stats
@@ -38,6 +53,12 @@ export const maxDuration = 60
 
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 100
+
+// Impact-ungated by default so the below-threshold long tail is reached.
+// runClassifyBackfill clamps this to [0, 10]; 0 means "process everything,
+// impact-DESC order". Overridable per-run (?minImpactScore=) or globally
+// (CLASSIFY_BACKFILL_MIN_IMPACT) without touching the shared policy default.
+const DEFAULT_CRON_MIN_IMPACT = 0
 
 export async function GET(request: NextRequest) {
   if (process.env.CLASSIFY_BACKFILL_DISABLED === "1") {
@@ -81,6 +102,17 @@ export async function GET(request: NextRequest) {
     Math.min(Number.isFinite(limitParam) ? limitParam : DEFAULT_LIMIT, MAX_LIMIT),
   )
 
+  // Threshold precedence: ?minImpactScore= query > CLASSIFY_BACKFILL_MIN_IMPACT
+  // env > DEFAULT_CRON_MIN_IMPACT (0). runClassifyBackfill clamps to [0, 10].
+  const minImpactRaw =
+    url.searchParams.get("minImpactScore") ??
+    process.env.CLASSIFY_BACKFILL_MIN_IMPACT ??
+    String(DEFAULT_CRON_MIN_IMPACT)
+  const minImpactParsed = Number(minImpactRaw)
+  const minImpactScore = Number.isFinite(minImpactParsed)
+    ? minImpactParsed
+    : DEFAULT_CRON_MIN_IMPACT
+
   const supabase = createAdminClient()
 
   // Open the run row up front so a mid-flight crash is visible as
@@ -110,7 +142,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const result = await runClassifyBackfill(supabase, { limit })
+    const result = await runClassifyBackfill(supabase, { limit, minImpactScore })
 
     await finalize({
       status: "completed",
@@ -127,6 +159,7 @@ export async function GET(request: NextRequest) {
       skipped: result.skipped,
       failed: result.failed,
       refreshedMvs: result.refreshedMvs,
+      minImpactScore: result.minImpactScore,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
