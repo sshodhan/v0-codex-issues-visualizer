@@ -110,7 +110,13 @@ export function computeFamilyQualityFlags(row: unknown): FamilyQualityFlags {
 
   const llmNeedsReview =
     llmStatus === "needs_review" || llmStatus === "needs_human_review"
-  const llmErrored = llmStatus === "error" || llmStatus === "auth_error"
+  const llmErrored =
+    llmStatus === "failed" ||
+    llmStatus === "error" ||
+    llmStatus === "auth_error" ||
+    llmStatus === "skipped_missing_api_key" ||
+    llmStatus === "skipped_no_representatives" ||
+    llmStatus === "low_confidence_fallback"
 
   return {
     missingEvidence: evidence === null,
@@ -137,8 +143,7 @@ export function computeFamilyQualityFlags(row: unknown): FamilyQualityFlags {
     strictObservationPass: observationCount !== null && observationCount >= OBSERVATION_SAFE_MIN,
     strictRepresentativePass: representatives.length > 0,
     strictPhrasePass: phrases.length > 0,
-    strictLlmPass:
-      llmStatus !== null && llmStatus !== "error" && llmStatus !== "auth_error" && !llmNeedsReview,
+    strictLlmPass: llmStatus !== null && !llmNeedsReview && !llmErrored,
     strictNoReviewSignalsPass: !needsHumanReview && reviewReasons.length === 0,
   }
 }
@@ -152,6 +157,9 @@ export function computeFamilyQualityBucket(row: unknown): FamilyQualityDecision 
   if (flags.malformedRepresentatives) inputReasons.push("malformed_representatives")
   if (flags.malformedCommonMatchedPhrases) inputReasons.push("malformed_common_matched_phrases")
   if (flags.malformedLlmStatus) inputReasons.push("malformed_llm_status")
+  if (flags.missingRepresentatives) inputReasons.push("missing_representatives")
+  if (flags.lowCoverage) inputReasons.push("low_classification_coverage")
+  if (flags.fallbackClusterPath) inputReasons.push("fallback_cluster_path")
 
   if (inputReasons.length > 0) {
     return {
@@ -164,14 +172,11 @@ export function computeFamilyQualityBucket(row: unknown): FamilyQualityDecision 
 
   // 2) needs_review second.
   const reviewReasons: string[] = []
-  if (flags.missingRepresentatives) reviewReasons.push("missing_representatives")
   if (flags.missingCommonMatchedPhrases) reviewReasons.push("missing_common_matched_phrases")
   if (flags.missingLlmStatus) reviewReasons.push("missing_llm_status")
   if (flags.llmNeedsReview) reviewReasons.push("llm_needs_review")
   if (flags.llmErrored) reviewReasons.push("llm_error")
-  if (flags.lowCoverage) reviewReasons.push("low_classification_coverage")
   if (flags.highMixedness) reviewReasons.push("high_topic_mixedness")
-  if (flags.fallbackClusterPath) reviewReasons.push("fallback_cluster_path")
   if (flags.lowObservationCount) reviewReasons.push("low_observation_count")
   if (flags.existingNeedsHumanReview) reviewReasons.push("existing_needs_human_review")
   if (flags.hasReviewReasons) reviewReasons.push("existing_review_reasons_present")
